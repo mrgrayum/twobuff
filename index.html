@@ -360,6 +360,15 @@ const FIREBASE_CONFIG = {
 
 firebase.initializeApp(FIREBASE_CONFIG);
 const _db = firebase.firestore();
+// Force long-polling instead of Firestore's default streaming connection.
+// The default tries to keep a persistent connection open and renegotiate it
+// when interrupted — but iOS aggressively kills background connections the
+// moment Safari/a home-screen app is backgrounded, and that renegotiation can
+// take upwards of a minute on some mobile networks. This app never needs
+// realtime updates (only one-off reads/writes), so long-polling is a safe,
+// more reliable choice here — it re-establishes much faster after the app
+// has been idle or backgrounded.
+_db.settings({ experimentalForceLongPolling: true, merge: true });
 // NOTE: Firestore's offline IndexedDB persistence was tried here for speed,
 // but it has known hangs on iOS Safari in standalone/home-screen ("Add to
 // Home Screen") mode. Removed for reliability — in-memory caching (in the
