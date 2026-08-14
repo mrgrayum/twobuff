@@ -362,8 +362,8 @@ firebase.initializeApp(FIREBASE_CONFIG);
 const _db = firebase.firestore();
 // NOTE: Firestore's offline IndexedDB persistence was tried here for speed,
 // but it has known hangs on iOS Safari in standalone/home-screen ("Add to
-// Home Screen") mode. Removed for reliability — in-memory caching (below,
-// in the app logic itself) handles the speed side instead.
+// Home Screen") mode. Removed for reliability — in-memory caching (in the
+// app logic below) plus the fixed list() query (below) handle speed instead.
 const _KV_COLLECTION = 'kv_store';
 
 // Drop-in replacement for Claude's built-in window.storage, backed by Firestore.
@@ -392,7 +392,12 @@ window.storage = {
         .where(firebase.firestore.FieldPath.documentId(), '<', prefix + '\uf8ff');
     }
     const snap = await query.get();
-    return { keys: snap.docs.map(d => d.id), prefix, shared: !!shared };
+    // The query already downloaded every matching document's full content —
+    // return it directly (as `values`) so callers don't need a second round
+    // of individual .get() calls just to re-fetch data we already have.
+    const values = {};
+    snap.docs.forEach(d => { values[d.id] = d.data().value; });
+    return { keys: snap.docs.map(d => d.id), values, prefix, shared: !!shared };
   }
 };
 /* =============================== END FIREBASE SETUP =============================== */
@@ -501,7 +506,28 @@ async function loadRsvp(eventId){
 }
 async function saveRsvp(eventId, data){
   state.rsvpCache[eventId] = data;
+  if(state.allRsvpCache) state.allRsvpCache[eventId] = data; // keep the bulk cache in sync
   await storeSet('dg_rsvp_' + eventId, JSON.stringify(data), true);
+}
+async function getAllRsvpData(){
+  if(state.allRsvpCache) return state.allRsvpCache;
+  const listRes = await window.storage.list('dg_rsvp_', true);
+  const keys = (listRes && listRes.keys) || [];
+  const map = {};
+  if(listRes && listRes.values){
+    keys.forEach(k=>{
+      const raw = listRes.values[k];
+      if(raw) map[k.slice('dg_rsvp_'.length)] = JSON.parse(raw);
+    });
+  } else {
+    const raws = await Promise.all(keys.map(k=>storeGet(k, true)));
+    keys.forEach((k,i)=>{
+      if(!raws[i]) return;
+      map[k.slice('dg_rsvp_'.length)] = JSON.parse(raws[i]);
+    });
+  }
+  state.allRsvpCache = map;
+  return map;
 }
 async function loadStats(eventId){
   if(state.statsCache[eventId]) return state.statsCache[eventId];
@@ -883,6 +909,7 @@ function setView(v){
   state.currentEventId = null;
   state.matchupStateCache = null; // always fetch fresh matchup/team data when (re)entering a tab
   state.allStatsCache = null;
+  state.allRsvpCache = null;
   state.oppTeamsCache = null;
   document.querySelectorAll('.navbtn').forEach(b=>b.classList.toggle('active', b.dataset.view === v));
   document.getElementById('viewRoot').innerHTML = '<div class="loading-dots">Loading…</div>';
@@ -1075,7 +1102,11 @@ async function renderEvents(){
     </div>`;
 
   const needsOppTeams = inSeason.some(e=>e.opponentTeamId);
-  const oppTeamsForList = needsOppTeams ? await loadOppTeams() : [];
+  const [oppTeamsForList, allRsvp, allStats] = await Promise.all([
+    needsOppTeams ? loadOppTeams() : Promise.resolve([]),
+    getAllRsvpData(),
+    getAllStatsData()
+  ]);
   function resolveOpponentName(e){
     if(e.opponentTeamId){
       const t = oppTeamsForList.find(x=>x.id===e.opponentTeamId);
@@ -1084,11 +1115,13 @@ async function renderEvents(){
     return e.opponentName || '';
   }
 
-  async function cardFor(e, past){
+  function cardFor(e, past){
     const d = fmtDate(e.date);
-    const [rsvp, teamResult] = await Promise.all([loadRsvp(e.id), computeTeamResult(e.id)]);
+    const rsvp = allRsvp[e.id] || {};
     const counts = rsvpCounts(rsvp);
     const opponentName = resolveOpponentName(e);
+    const details = computeMatchDetailsFromData(allStats[e.id] || {});
+    const teamResult = { result: details.result, ourScore: details.totalUsPts, oppScore: details.totalOppPts };
     const resultBadge = teamResult.result ? (()=>{
       const color = teamResult.result==='W' ? 'var(--forest)' : teamResult.result==='L' ? 'var(--red)' : '#8A6112';
       const bg = teamResult.result==='W' ? '#BFE0CE' : teamResult.result==='L' ? '#F0B7B1' : '#FBEFD8';
@@ -1127,8 +1160,7 @@ async function renderEvents(){
 
   let upcomingHtml = '';
   if(upcoming.length){
-    const cards = await Promise.all(upcoming.map(e=>cardFor(e, false)));
-    upcomingHtml = cards.join('');
+    upcomingHtml = upcoming.map(e=>cardFor(e, false)).join('');
   } else {
     upcomingHtml = `<div class="card empty"><span class="em">📋</span><p>No upcoming events in ${esc(season)} yet.</p></div>`;
   }
@@ -1138,8 +1170,7 @@ async function renderEvents(){
     const expanded = !!state.pastExpanded[season];
     let pastCards = '';
     if(expanded){
-      const cards = await Promise.all(past.map(e=>cardFor(e, true)));
-      pastCards = cards.join('');
+      pastCards = past.map(e=>cardFor(e, true)).join('');
     }
     pastHtml = `
       <button class="past-toggle" onclick="togglePastExpanded('${season}')">
@@ -1722,12 +1753,21 @@ async function getAllStatsData(){
   if(state.allStatsCache) return state.allStatsCache;
   const listRes = await window.storage.list('dg_stats_', true);
   const keys = (listRes && listRes.keys) || [];
-  const raws = await Promise.all(keys.map(k=>storeGet(k, true)));
   const map = {};
-  keys.forEach((k,i)=>{
-    if(!raws[i]) return;
-    map[k.slice('dg_stats_'.length)] = JSON.parse(raws[i]);
-  });
+  if(listRes && listRes.values){
+    // Fast path: the list query already returned every document's data — no extra round trips needed.
+    keys.forEach(k=>{
+      const raw = listRes.values[k];
+      if(raw) map[k.slice('dg_stats_'.length)] = JSON.parse(raw);
+    });
+  } else {
+    // Fallback for storage backends that only return key names from list().
+    const raws = await Promise.all(keys.map(k=>storeGet(k, true)));
+    keys.forEach((k,i)=>{
+      if(!raws[i]) return;
+      map[k.slice('dg_stats_'.length)] = JSON.parse(raws[i]);
+    });
+  }
   state.allStatsCache = map;
   return map;
 }
