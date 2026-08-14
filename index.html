@@ -4,8 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1">
 <title>Two Buff — Team Hub</title>
-<!-- Firebase (free tier) replaces Claude's built-in window.storage for real hosting.
-     Fill in YOUR_FIREBASE_CONFIG below — see SETUP.md for step-by-step instructions. -->
+<!-- Firebase (free tier) replaces Claude's built-in window.storage for real hosting. -->
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 <style>
@@ -82,11 +81,11 @@
     box-shadow:0 -4px 16px rgba(21,36,32,0.06);
   }
   .navbtn{
-    flex:1; padding:10px 4px 12px; background:none; border:none; cursor:pointer;
-    display:flex; flex-direction:column; align-items:center; gap:3px;
-    color:var(--ink-soft); font-size:11px; font-weight:700; letter-spacing:0.3px;
+    flex:1; padding:9px 2px 11px; background:none; border:none; cursor:pointer;
+    display:flex; flex-direction:column; align-items:center; gap:2px;
+    color:var(--ink-soft); font-size:10px; font-weight:700; letter-spacing:0.2px;
   }
-  .navbtn .ic{font-size:20px;}
+  .navbtn .ic{font-size:18px;}
   .navbtn.active{color:var(--forest);}
   .navbtn.active .ic{transform:scale(1.08);}
 
@@ -271,6 +270,22 @@
     border:none; border-radius:14px; padding:13px 16px; font-weight:800; font-size:13px; color:var(--ink-soft);
     cursor:pointer; margin:6px 0 14px;
   }
+  .matchup-cols{display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:12px;}
+  .matchup-col-label{font-size:11px; font-weight:800; color:var(--ink-soft); text-transform:uppercase; letter-spacing:0.4px; margin-bottom:8px; text-align:center;}
+  .matchup-chip{
+    display:block; width:100%; text-align:left; background:#fff; border:2px solid var(--line); border-radius:12px;
+    padding:10px 12px; margin-bottom:8px; font-size:13.5px; font-weight:700; color:var(--ink); cursor:pointer;
+  }
+  .matchup-chip.armed{background:var(--orange); border-color:var(--orange); color:#fff;}
+  .matchup-chip.paired{background:#E1E8F5; border-color:var(--forest); color:var(--forest);}
+  .matchup-chip .sub{display:block; font-size:10.5px; font-weight:700; opacity:0.8; margin-top:2px;}
+  .matchup-pair-row{
+    display:flex; align-items:center; justify-content:space-between; background:var(--chip-bg); border-radius:12px;
+    padding:10px 12px; margin-bottom:8px;
+  }
+  .matchup-pair-row .vs{font-size:13px; font-weight:800; color:var(--ink);}
+  .matchup-team-pill{flex-shrink:0; padding:9px 16px; border-radius:20px; border:2px solid var(--line); background:#fff; font-weight:800; font-size:13px; color:var(--ink-soft); cursor:pointer; white-space:nowrap;}
+  .matchup-team-pill.active{background:var(--forest); border-color:var(--forest); color:#fff;}
 </style>
 </head>
 <body>
@@ -311,6 +326,8 @@
     <button class="navbtn" data-view="events" onclick="setView('events')"><span class="ic">📅</span>Events</button>
     <button class="navbtn" data-view="team" onclick="setView('team')"><span class="ic">👥</span>Team</button>
     <button class="navbtn" data-view="stats" onclick="setView('stats')"><span class="ic">🏆</span>Stats</button>
+    <button class="navbtn" data-view="board" onclick="setView('board')"><span class="ic">📌</span>Board</button>
+    <button class="navbtn" data-view="matchups" onclick="setView('matchups')"><span class="ic">🎯</span>Match</button>
   </div>
 </div>
 
@@ -319,8 +336,7 @@
 
 <script>
 /* =============================================================
-   FIREBASE SETUP — fill this in with YOUR project's config.
-   See SETUP.md for exactly how to get these values (it's free).
+   FIREBASE SETUP — two-buff-team-hub project
    ============================================================= */
 const FIREBASE_CONFIG = {
   apiKey: "AIzaSyBahXQyVDLVuKdNfsSVG8MuUNSMtjmZe1s",
@@ -333,6 +349,10 @@ const FIREBASE_CONFIG = {
 
 firebase.initializeApp(FIREBASE_CONFIG);
 const _db = firebase.firestore();
+// Cache reads locally (IndexedDB) so revisiting the same data doesn't always
+// need a fresh network round-trip — meaningfully faster on mobile connections.
+// Safe to ignore failures (e.g. private browsing, multiple tabs open).
+_db.enablePersistence({ synchronizeTabs: true }).catch(()=>{});
 const _KV_COLLECTION = 'kv_store';
 
 // Drop-in replacement for Claude's built-in window.storage, backed by Firestore.
@@ -381,6 +401,9 @@ const state = {
   selectedSeason: null,   // set on first render of the Events tab
   pastExpanded: {},       // season -> bool, whether the "past events" group is expanded
   statsScope: 'season',   // 'season' = current season only (default), 'all' = all-time
+  expandedPlayerId: null, // Team tab: which player card is expanded to show their event history
+  armedSinglesTB: null,   // Matchups: Two Buff player currently selected, awaiting an opponent tap
+  armedDoublesTB: null,   // Matchups: Two Buff player currently selected, awaiting a doubles-partner tap
 };
 
 const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
@@ -488,6 +511,27 @@ async function saveTeamResult(eventId, data){
   state.teamResultCache[eventId] = data;
   await storeSet('dg_teamresult_' + eventId, JSON.stringify(data), true);
 }
+async function loadNotes(){
+  const raw = await storeGet('dg_notes', true);
+  return raw ? JSON.parse(raw) : [];
+}
+async function saveNotes(notes){
+  await storeSet('dg_notes', JSON.stringify(notes), true);
+}
+async function loadOppTeams(){
+  const raw = await storeGet('dg_opp_teams', true);
+  return raw ? JSON.parse(raw) : [];
+}
+async function saveOppTeams(teams){
+  await storeSet('dg_opp_teams', JSON.stringify(teams), true);
+}
+async function loadMatchupState(){
+  const raw = await storeGet('dg_matchup', true);
+  return raw ? JSON.parse(raw) : { teamId: null, singles: {}, doubles: [] };
+}
+async function saveMatchupState(ms){
+  await storeSet('dg_matchup', JSON.stringify(ms), true);
+}
 
 /* ============================= INIT ============================= */
 async function init(){
@@ -504,10 +548,26 @@ async function getAppPin(){
 }
 async function submitAppPin(){
   const entered = (document.getElementById('app_pin_input').value || '').trim();
-  const correct = await getAppPin();
-  if(entered === correct){
+  const [superPin, regularPin, teamPin] = await Promise.all([getSuperAdminPin(), getAdminPin(), getAppPin()]);
+  let matched = true;
+  if(entered === superPin){
+    state.adminMode = true;
+    state.isSuperAdmin = true;
+  } else if(entered === regularPin){
+    state.adminMode = true;
+    state.isSuperAdmin = false;
+  } else if(entered === teamPin){
+    state.adminMode = false;
+    state.isSuperAdmin = false;
+  } else {
+    matched = false;
+  }
+  if(matched){
+    document.getElementById('adminSwitch').classList.toggle('on', state.adminMode);
     document.getElementById('appGate').style.display = 'none';
     document.getElementById('mainApp').style.visibility = 'visible';
+    if(state.adminMode) showToast(state.isSuperAdmin ? 'Super admin unlocked' : 'Admin mode unlocked');
+    render();
   } else {
     document.getElementById('app_pin_error').style.display = 'block';
     showToast('Incorrect PIN');
@@ -803,6 +863,7 @@ async function saveNewSuperPin(){
 function setView(v){
   state.view = v;
   state.currentEventId = null;
+  state.matchupStateCache = null; // always fetch fresh matchup data when (re)entering the tab
   document.querySelectorAll('.navbtn').forEach(b=>b.classList.toggle('active', b.dataset.view === v));
   document.getElementById('viewRoot').innerHTML = '<div class="loading-dots">Loading…</div>';
   render();
@@ -823,8 +884,10 @@ async function render(){
   if(state.view === 'home') root.innerHTML = await renderHome();
   else if(state.view === 'events') root.innerHTML = await renderEvents();
   else if(state.view === 'eventDetail') root.innerHTML = await renderEventDetail(state.currentEventId);
-  else if(state.view === 'team') root.innerHTML = renderTeam();
+  else if(state.view === 'team') root.innerHTML = await renderTeam();
   else if(state.view === 'stats') root.innerHTML = await renderStats();
+  else if(state.view === 'board') root.innerHTML = await renderBoard();
+  else if(state.view === 'matchups') root.innerHTML = await renderMatchups();
 }
 
 /* ============================= HOME ============================= */
@@ -872,11 +935,26 @@ async function renderHome(){
   }
 
   const roster = state.players.filter(p=>p.active !== false);
+  const allNotes = await loadNotes();
+  const recentNotes = [...allNotes].sort((a,b)=> b.createdAt - a.createdAt).slice(0,3);
+  const notesPreviewHtml = recentNotes.length ? `
+    <div class="section-label" style="margin-top:0;">📌 From the Board</div>
+    <div class="card" style="cursor:pointer;" onclick="setView('board')">
+      ${recentNotes.map((n,i)=>`
+        <div style="${i>0 ? 'border-top:1px solid var(--line); margin-top:10px; padding-top:10px;' : ''}">
+          <div style="font-size:13.5px; line-height:1.4; overflow:hidden; text-overflow:ellipsis; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical;">${esc(n.text)}</div>
+          <div style="font-size:10.5px; color:var(--ink-soft); font-weight:700; margin-top:4px;">${fmtNoteDate(n.createdAt)}</div>
+        </div>
+      `).join('')}
+      <div style="font-size:11.5px; color:var(--orange-dark); font-weight:800; margin-top:10px;">View all on the Board →</div>
+    </div>
+  ` : '';
 
   return `
     <div class="page-title">Welcome back 👋</div>
     <div class="page-sub">${roster.length} active player${roster.length===1?'':'s'} · ${upcoming.length} upcoming event${upcoming.length===1?'':'s'}</div>
     ${nextHtml}
+    ${notesPreviewHtml}
     <div class="section-label">Quick Links</div>
     <div class="btn-row" style="margin-bottom:10px;">
       <button class="btn btn-outline" onclick="setView('events')">📅 All Events</button>
@@ -944,9 +1022,8 @@ async function renderEvents(){
 
   async function cardFor(e, past){
     const d = fmtDate(e.date);
-    const rsvp = await loadRsvp(e.id);
+    const [rsvp, teamResult] = await Promise.all([loadRsvp(e.id), loadTeamResult(e.id)]);
     const counts = rsvpCounts(rsvp);
-    const teamResult = await loadTeamResult(e.id);
     const resultBadge = teamResult.result ? (()=>{
       const color = teamResult.result==='W' ? 'var(--forest)' : teamResult.result==='L' ? 'var(--red)' : '#8A6112';
       const bg = teamResult.result==='W' ? '#BFE0CE' : teamResult.result==='L' ? '#F0B7B1' : '#FBEFD8';
@@ -1149,9 +1226,11 @@ async function deleteEvent(id){
 async function renderEventDetail(eventId){
   const ev = state.events.find(e=>e.id===eventId);
   if(!ev) return `<div class="empty"><p>Event not found.</p></div>`;
-  const rsvp = await loadRsvp(eventId);
-  const stats = state.adminMode ? await loadStats(eventId) : null;
-  const teamResult = await loadTeamResult(eventId);
+  const [rsvp, stats, teamResult] = await Promise.all([
+    loadRsvp(eventId),
+    state.adminMode ? loadStats(eventId) : Promise.resolve(null),
+    loadTeamResult(eventId)
+  ]);
   const counts = rsvpCounts(rsvp);
   const roster = state.players.filter(p=>p.active !== false);
   const lunchPct = counts.total ? Math.round((counts.lunchResp / counts.total) * 100) : 0;
@@ -1265,18 +1344,32 @@ function statusPill(status){
 
 function renderMatchRow(eventId, playerId, stats){
   const s = (stats && stats[playerId]) || {};
-  const mp = s.matchplay || {played:false, result:null};
-  const db = s.doubles || {played:false, result:null};
+  const mp = s.matchplay || {played:false, result:null, powerRank:null};
+  const db = s.doubles || {played:false, result:null, powerRank:null};
   const wlBtns = (kind, cur) => `
     <button class="wl-btn ${cur.played && cur.result==='W' ? 'win-sel':''}" onclick="setMatchResult('${eventId}','${playerId}','${kind}','W')">Won</button>
     <button class="wl-btn ${cur.played && cur.result==='L' ? 'loss-sel':''}" onclick="setMatchResult('${eventId}','${playerId}','${kind}','L')">Lost</button>
     <button class="wl-btn ${!cur.played ? 'none-sel':''}" onclick="setMatchResult('${eventId}','${playerId}','${kind}',null)">N/A</button>
   `;
+  const powerRankRow = (kind, cur) => {
+    if(!cur.played) return '';
+    const rank = cur.powerRank || 5;
+    const hint = rank>=8 ? 'Elite opponent' : rank>=5 ? 'Quality opponent' : rank>=3 ? 'Weaker opponent' : 'Much weaker opponent';
+    return `
+      <div style="display:flex; align-items:center; gap:10px; margin-top:6px; padding-left:74px;">
+        <input type="range" min="1" max="10" value="${rank}" style="flex:1;" oninput="this.nextElementSibling.nextElementSibling.textContent=this.value" onchange="setPowerRank('${eventId}','${playerId}','${kind}', this.value)">
+        <span style="font-size:11px; color:var(--ink-soft); font-weight:700; width:78px;">${hint}</span>
+        <span style="font-size:13px; font-weight:800; color:var(--forest-dark); width:16px; text-align:right;">${rank}</span>
+      </div>`;
+  };
   return `
     <div class="divider"></div>
     <div style="font-size:11px; font-weight:800; color:var(--ink-soft); text-transform:uppercase; letter-spacing:0.3px; margin-bottom:2px;">Admin · Match Results</div>
     <div class="match-row"><div class="match-label">Singles</div>${wlBtns('matchplay', mp)}</div>
+    ${powerRankRow('matchplay', mp)}
     <div class="match-row"><div class="match-label">Doubles</div>${wlBtns('doubles', db)}</div>
+    ${powerRankRow('doubles', db)}
+    <div style="font-size:10.5px; color:var(--ink-soft); margin-top:8px; line-height:1.4;">Opponent quality (1–10): rate how good the player they faced was — 5 or above is a quality/strong opponent, below 5 is a weaker one. This isn't shown anywhere else; it just quietly informs the season rankings (a loss to a strong opponent won't hurt them, a loss to a weak one will; a win over a strong opponent helps them more than a win over a weak one).</div>
   `;
 }
 
@@ -1299,14 +1392,25 @@ async function setLunchItem(eventId, playerId, value){
 async function setMatchResult(eventId, playerId, kind, result){
   const stats = await loadStats(eventId);
   const cur = stats[playerId] || {};
-  const existing = cur[kind] || {played:false, result:null};
+  const existing = cur[kind] || {played:false, result:null, powerRank:null};
   if(result === null){
-    cur[kind] = {played:false, result:null};
+    cur[kind] = {played:false, result:null, powerRank:null};
   } else if(existing.played && existing.result === result){
-    cur[kind] = {played:false, result:null};
+    cur[kind] = {played:false, result:null, powerRank:null};
   } else {
-    cur[kind] = {played:true, result:result};
+    cur[kind] = {played:true, result:result, powerRank: existing.powerRank || 5};
   }
+  stats[playerId] = cur;
+  await saveStats(eventId, stats);
+  render();
+}
+async function setPowerRank(eventId, playerId, kind, value){
+  const stats = await loadStats(eventId);
+  const cur = stats[playerId] || {};
+  const existing = cur[kind] || {played:false, result:null, powerRank:null};
+  if(!existing.played) return;
+  existing.powerRank = Math.max(1, Math.min(10, Number(value) || 5));
+  cur[kind] = existing;
   stats[playerId] = cur;
   await saveStats(eventId, stats);
   render();
@@ -1328,42 +1432,94 @@ async function setTeamScore(eventId, side, value){
 }
 
 /* ============================= TEAM ============================= */
-function renderTeam(){
+async function getPlayerEventHistory(playerId){
+  const listRes = await window.storage.list('dg_stats_', true);
+  const keys = (listRes && listRes.keys) || [];
+  const raws = await Promise.all(keys.map(k=>storeGet(k, true)));
+  const history = [];
+  keys.forEach((k,i)=>{
+    if(!raws[i]) return;
+    const eventId = k.slice('dg_stats_'.length);
+    const ev = state.events.find(e=>e.id===eventId);
+    if(!ev) return; // event deleted
+    const data = JSON.parse(raws[i]);
+    const s = data[playerId];
+    if(!s) return;
+    const playedMp = !!(s.matchplay && s.matchplay.played);
+    const playedDb = !!(s.doubles && s.doubles.played);
+    if(!playedMp && !playedDb) return;
+    history.push({ event: ev, matchplay: playedMp ? s.matchplay : null, doubles: playedDb ? s.doubles : null });
+  });
+  history.sort((a,b)=> b.event.date.localeCompare(a.event.date));
+  return history;
+}
+function toggleExpandPlayer(id){
+  state.expandedPlayerId = (state.expandedPlayerId === id) ? null : id;
+  render();
+}
+async function teamCardFor(p){
+  const expanded = state.expandedPlayerId === p.id;
+  let historyHtml = '';
+  if(expanded){
+    const history = await getPlayerEventHistory(p.id);
+    if(history.length === 0){
+      historyHtml = `<div style="font-size:12.5px; color:var(--ink-soft); padding:10px 2px 2px;">No recorded results yet.</div>`;
+    } else {
+      const resultPill = (label, entry) => !entry ? '' : `<span class="pill" style="background:${entry.result==='W' ? '#E1E8F5' : '#F5D9D6'}; color:${entry.result==='W' ? 'var(--forest)' : 'var(--red)'}; margin-left:6px;">${label} ${entry.result}</span>`;
+      historyHtml = history.map(h=>{
+        const d = fmtDate(h.event.date);
+        return `
+          <div style="display:flex; justify-content:space-between; align-items:center; padding:9px 2px; border-top:1px solid var(--line);">
+            <div>
+              <div style="font-size:13px; font-weight:800;">${esc(h.event.name)}</div>
+              <div style="font-size:10.5px; color:var(--ink-soft); font-weight:700;">${d.mon} ${d.day}</div>
+            </div>
+            <div>${resultPill('Singles', h.matchplay)}${resultPill('Doubles', h.doubles)}</div>
+          </div>`;
+      }).join('');
+    }
+  }
+  return `
+    <div class="team-row" style="flex-direction:column; align-items:stretch;">
+      <div style="display:flex; align-items:flex-start; justify-content:space-between;">
+        <div class="team-name-row" style="cursor:pointer;" onclick="toggleExpandPlayer('${p.id}')">
+          <div class="avatar">${initials(p.name)}</div>
+          <div>
+            <div style="display:flex; align-items:center; gap:6px;">
+              <span style="font-weight:800; font-size:15px;">${esc(p.name)}</span>
+              <span class="gender-badge ${p.gender==='F' ? 'g-f':'g-m'}">${p.gender==='F' ? 'F':'M'}</span>
+              <span style="font-size:11px; color:var(--ink-soft);">${expanded ? '▲' : '▼'}</span>
+            </div>
+            <div style="font-size:12px; color:var(--ink-soft);">${p.active===false ? 'Inactive' : 'Active'} · tap for stats</div>
+            ${state.adminMode && (p.phone || p.email) ? `
+              <div style="font-size:11.5px; color:var(--ink-soft); margin-top:3px; line-height:1.5;">
+                ${p.phone ? `📞 ${esc(p.phone)}` : ''}${p.phone && p.email ? '<br>' : ''}${p.email ? `✉️ ${esc(p.email)}` : ''}
+              </div>
+              <div style="display:flex; gap:6px; margin-top:6px;">
+                ${p.phone ? `<a class="icon-btn" style="text-decoration:none; color:inherit; display:inline-flex; align-items:center; gap:5px; font-size:11.5px; font-weight:800;" href="sms:${cleanPhoneHref(p.phone)}" onclick="event.stopPropagation()">💬 Text</a>` : ''}
+                ${p.email ? `<a class="icon-btn" style="text-decoration:none; color:inherit; display:inline-flex; align-items:center; gap:5px; font-size:11.5px; font-weight:800;" href="mailto:${encodeURIComponent(p.email).replace(/%40/g,'@')}" onclick="event.stopPropagation()">✉️ Email</a>` : ''}
+              </div>
+            ` : ''}
+          </div>
+        </div>
+        ${state.adminMode ? `
+          <div class="btn-row" style="width:auto; gap:6px;">
+            <button class="icon-btn" onclick="event.stopPropagation(); togglePlayerActive('${p.id}')">${p.active===false ? '↩️' : '⏸️'}</button>
+            <button class="icon-btn" onclick="event.stopPropagation(); openPlayerModal('${p.id}')">✏️</button>
+          </div>
+        ` : ''}
+      </div>
+      ${expanded ? `<div>${historyHtml}</div>` : ''}
+    </div>`;
+}
+async function renderTeam(){
   const sorted = [...state.players].sort((a,b)=>a.name.localeCompare(b.name));
   let rows = '';
   if(sorted.length===0){
     rows = `<div class="card empty"><span class="em">👥</span><p>No players added yet.</p></div>`;
   } else {
-    for(const p of sorted){
-      rows += `
-        <div class="team-row">
-          <div class="team-name-row">
-            <div class="avatar">${initials(p.name)}</div>
-            <div>
-              <div style="display:flex; align-items:center; gap:6px;">
-                <span style="font-weight:800; font-size:15px;">${esc(p.name)}</span>
-                <span class="gender-badge ${p.gender==='F' ? 'g-f':'g-m'}">${p.gender==='F' ? 'F':'M'}</span>
-              </div>
-              <div style="font-size:12px; color:var(--ink-soft);">${p.active===false ? 'Inactive' : 'Active'}</div>
-              ${state.adminMode && (p.phone || p.email) ? `
-                <div style="font-size:11.5px; color:var(--ink-soft); margin-top:3px; line-height:1.5;">
-                  ${p.phone ? `📞 ${esc(p.phone)}` : ''}${p.phone && p.email ? '<br>' : ''}${p.email ? `✉️ ${esc(p.email)}` : ''}
-                </div>
-                <div style="display:flex; gap:6px; margin-top:6px;">
-                  ${p.phone ? `<a class="icon-btn" style="text-decoration:none; color:inherit; display:inline-flex; align-items:center; gap:5px; font-size:11.5px; font-weight:800;" href="sms:${cleanPhoneHref(p.phone)}">💬 Text</a>` : ''}
-                  ${p.email ? `<a class="icon-btn" style="text-decoration:none; color:inherit; display:inline-flex; align-items:center; gap:5px; font-size:11.5px; font-weight:800;" href="mailto:${encodeURIComponent(p.email).replace(/%40/g,'@')}">✉️ Email</a>` : ''}
-                </div>
-              ` : ''}
-            </div>
-          </div>
-          ${state.adminMode ? `
-            <div class="btn-row" style="width:auto; gap:6px;">
-              <button class="icon-btn" onclick="togglePlayerActive('${p.id}')">${p.active===false ? '↩️' : '⏸️'}</button>
-              <button class="icon-btn" onclick="openPlayerModal('${p.id}')">✏️</button>
-            </div>
-          ` : ''}
-        </div>`;
-    }
+    const cards = await Promise.all(sorted.map(p=>teamCardFor(p)));
+    rows = cards.join('');
   }
   return `
     <div class="page-title">Team</div>
@@ -1511,6 +1667,364 @@ async function togglePlayerActive(id){
 }
 
 /* ============================= STATS ============================= */
+/* ============================= BULLETIN BOARD ============================= */
+function fmtNoteDate(ts){
+  const d = new Date(ts);
+  return d.toLocaleDateString(undefined, {month:'short', day:'numeric'}) + ' at ' + d.toLocaleTimeString(undefined, {hour:'numeric', minute:'2-digit'});
+}
+async function renderBoard(){
+  const notes = await loadNotes();
+  const sorted = [...notes].sort((a,b)=> b.createdAt - a.createdAt);
+  let cards = '';
+  if(sorted.length === 0){
+    cards = `<div class="card empty"><span class="em">📌</span><p>No notes yet.</p></div>`;
+  } else {
+    cards = sorted.map(n=>`
+      <div class="card" style="position:relative;">
+        ${state.adminMode ? `<button class="icon-btn" style="position:absolute; top:12px; right:12px;" onclick="openDeleteNoteConfirm('${n.id}')" aria-label="Delete note">🗑️</button>` : ''}
+        <div style="white-space:pre-wrap; font-size:14.5px; line-height:1.5; padding-right:${state.adminMode ? '36px' : '0'};">${esc(n.text)}</div>
+        <div style="font-size:11px; color:var(--ink-soft); font-weight:700; margin-top:10px;">📌 ${fmtNoteDate(n.createdAt)}</div>
+      </div>
+    `).join('');
+  }
+  return `
+    <div class="page-title">Bulletin Board</div>
+    <div class="page-sub">Notes and reminders for the whole team.</div>
+    ${state.adminMode ? `<div class="fab-row"><button class="btn btn-orange btn-sm" onclick="openNoteModal()">+ Add Note</button></div>` : ''}
+    ${cards}
+  `;
+}
+function openNoteModal(){
+  const modal = document.getElementById('modalRoot');
+  modal.innerHTML = `
+    <div class="overlay" onclick="closeModalIfBackdrop(event)">
+      <div class="sheet" onclick="event.stopPropagation()">
+        <h3>Add Note</h3>
+        <div class="field">
+          <label>Note</label>
+          <textarea id="note_text" rows="4" placeholder="Something to remember or let the team know..." style="width:100%; padding:12px; border-radius:12px; border:2px solid var(--line); font-size:15px; font-family:inherit; resize:vertical;"></textarea>
+        </div>
+        <div class="btn-row">
+          <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+          <button class="btn btn-primary" onclick="saveNewNote()">Post Note</button>
+        </div>
+      </div>
+    </div>`;
+}
+async function saveNewNote(){
+  const text = document.getElementById('note_text').value.trim();
+  if(!text){ showToast('Write something first'); return; }
+  const notes = await loadNotes();
+  notes.push({id: uid('note'), text, createdAt: Date.now()});
+  await saveNotes(notes);
+  closeModal();
+  showToast('Note posted');
+  render();
+}
+function openDeleteNoteConfirm(id){
+  const modal = document.getElementById('modalRoot');
+  modal.innerHTML = `
+    <div class="overlay" onclick="closeModalIfBackdrop(event)">
+      <div class="sheet" onclick="event.stopPropagation()">
+        <h3>Delete this note?</h3>
+        <div style="font-size:13.5px; color:var(--ink-soft); margin-bottom:16px;">This removes it for everyone. This can't be undone.</div>
+        <div class="btn-row">
+          <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+          <button class="btn btn-danger" onclick="performDeleteNote('${id}')">Delete</button>
+        </div>
+      </div>
+    </div>`;
+}
+async function performDeleteNote(id){
+  const notes = await loadNotes();
+  const filtered = notes.filter(n=>n.id!==id);
+  await saveNotes(filtered);
+  closeModal();
+  showToast('Note deleted');
+  render();
+}
+
+/* ============================= MOCK MATCHUPS ============================= */
+async function renderMatchups(){
+  const [teams, ms] = await Promise.all([
+    loadOppTeams(),
+    state.matchupStateCache ? Promise.resolve(state.matchupStateCache) : loadMatchupState()
+  ]);
+  state.matchupStateCache = ms; // reused by tap handlers so every tap doesn't re-fetch over the network
+  const activeTB = state.players.filter(p=>p.active !== false);
+  const currentTeam = teams.find(t=>t.id===ms.teamId) || null;
+
+  const teamPills = `
+    <div class="season-tabs">
+      ${teams.map(t=>`<button class="matchup-team-pill ${t.id===ms.teamId?'active':''}" ${state.adminMode ? `onclick="selectMatchupTeam('${t.id}')"` : ''}>${esc(t.name)}</button>`).join('')}
+    </div>`;
+
+  if(!currentTeam){
+    return `
+      <div class="page-title">Mock Matchups</div>
+      <div class="page-sub">Plan out how singles and doubles might line up before an event.</div>
+      ${teams.length ? teamPills : ''}
+      <div class="card empty">
+        <span class="em">🎯</span>
+        <p>${teams.length ? 'Select an opponent team above to start a mock matchup.' : 'No opponent teams yet.'}</p>
+        ${state.adminMode ? `<button class="btn btn-orange" onclick="openTeamsManageModal()">⚙️ Manage Opponent Teams</button>` : ''}
+      </div>
+    `;
+  }
+
+  // ---- Singles ----
+  const usedOppIds = new Set(Object.values(ms.singles));
+  const availableOpp = currentTeam.players.filter(p=>!usedOppIds.has(p.id));
+  const pairedSinglesHtml = Object.keys(ms.singles).map(tbId=>{
+    const tb = activeTB.find(p=>p.id===tbId);
+    const opp = currentTeam.players.find(p=>p.id===ms.singles[tbId]);
+    if(!tb || !opp) return '';
+    return `
+      <div class="matchup-pair-row">
+        <div class="vs">${esc(tb.name)} <span style="color:var(--ink-soft); font-weight:700;">vs</span> ${esc(opp.name)}</div>
+        ${state.adminMode ? `<button class="icon-btn" onclick="unpairSingles('${tbId}')">✕</button>` : ''}
+      </div>`;
+  }).join('');
+
+  const tbSinglesChips = activeTB.map(p=>{
+    const isArmed = state.armedSinglesTB === p.id;
+    const pairedOppId = ms.singles[p.id];
+    const pairedOpp = pairedOppId ? currentTeam.players.find(o=>o.id===pairedOppId) : null;
+    const cls = isArmed ? 'armed' : pairedOpp ? 'paired' : '';
+    return `<button class="matchup-chip ${cls}" ${state.adminMode ? `onclick="tapSinglesTB('${p.id}')"` : 'disabled'}>${esc(p.name)}${pairedOpp ? `<span class="sub">vs ${esc(pairedOpp.name)}</span>` : isArmed ? `<span class="sub">Tap an opponent →</span>` : ''}</button>`;
+  }).join('');
+
+  const oppSinglesChips = availableOpp.length ? availableOpp.map(o=>`
+    <button class="matchup-chip" ${state.adminMode ? `onclick="tapSinglesOpp('${o.id}')"` : 'disabled'}>${esc(o.name)}</button>
+  `).join('') : `<div style="font-size:12.5px; color:var(--ink-soft); text-align:center; padding:10px 0;">${currentTeam.players.length ? 'All matched up' : 'No players on this roster yet'}</div>`;
+
+  // ---- Doubles (Two Buff only) ----
+  const pairedIds = new Set(ms.doubles.flat());
+  const doublesPairedHtml = ms.doubles.map((pair, i)=>{
+    const a = activeTB.find(p=>p.id===pair[0]);
+    const b = activeTB.find(p=>p.id===pair[1]);
+    if(!a || !b) return '';
+    return `
+      <div class="matchup-pair-row">
+        <div class="vs">${esc(a.name)} <span style="color:var(--ink-soft); font-weight:700;">&amp;</span> ${esc(b.name)}</div>
+        ${state.adminMode ? `<button class="icon-btn" onclick="unpairDoubles(${i})">✕</button>` : ''}
+      </div>`;
+  }).join('');
+
+  const doublesChips = activeTB.map(p=>{
+    const isArmed = state.armedDoublesTB === p.id;
+    const pair = ms.doubles.find(pr=>pr.includes(p.id));
+    const partner = pair ? activeTB.find(x=>x.id === pair.find(id=>id!==p.id)) : null;
+    const cls = isArmed ? 'armed' : partner ? 'paired' : '';
+    return `<button class="matchup-chip ${cls}" ${state.adminMode ? `onclick="tapDoublesPlayer('${p.id}')"` : 'disabled'}>${esc(p.name)}${partner ? `<span class="sub">with ${esc(partner.name)}</span>` : isArmed ? `<span class="sub">Tap a partner →</span>` : ''}</button>`;
+  }).join('');
+
+  return `
+    <div class="page-title">Mock Matchups</div>
+    <div class="page-sub">Plan out how singles and doubles might line up before an event.</div>
+    ${teamPills}
+    <div class="btn-row" style="margin:10px 0 4px;">
+      ${state.adminMode ? `<button class="btn btn-ghost btn-sm" onclick="openTeamsManageModal()">⚙️ Manage Teams</button>` : ''}
+      ${state.adminMode ? `<button class="btn btn-ghost btn-sm" onclick="resetMatchup()">↺ Reset Board</button>` : ''}
+    </div>
+
+    <div class="stats-section-header">🥏 Singles</div>
+    ${pairedSinglesHtml}
+    <div class="matchup-cols">
+      <div>
+        <div class="matchup-col-label">Two Buff</div>
+        ${tbSinglesChips}
+      </div>
+      <div>
+        <div class="matchup-col-label">${esc(currentTeam.name)}</div>
+        ${oppSinglesChips}
+      </div>
+    </div>
+
+    <div class="stats-section-header">👥 Doubles (Two Buff pairings)</div>
+    ${doublesPairedHtml}
+    <div class="matchup-col-label">Tap two Two Buff players to group them as a doubles team</div>
+    ${doublesChips}
+    <div class="card" style="background:var(--chip-bg); border:none; box-shadow:none; margin-top:6px;">
+      <div style="font-size:12px; color:var(--ink-soft); line-height:1.5;">We don't know the opponent's doubles pairings ahead of time, so this section only groups our own players. Tap a player again to undo their pairing and re-pair them.</div>
+    </div>
+  `;
+}
+
+async function selectMatchupTeam(teamId){
+  const ms = { teamId, singles: {}, doubles: [] };
+  state.armedSinglesTB = null;
+  state.armedDoublesTB = null;
+  state.matchupStateCache = ms;
+  await saveMatchupState(ms);
+  render();
+}
+async function resetMatchup(){
+  const ms = state.matchupStateCache || await loadMatchupState();
+  ms.singles = {};
+  ms.doubles = [];
+  state.armedSinglesTB = null;
+  state.armedDoublesTB = null;
+  state.matchupStateCache = ms;
+  await saveMatchupState(ms);
+  showToast('Matchup board reset');
+  render();
+}
+async function tapSinglesTB(tbId){
+  const ms = state.matchupStateCache || await loadMatchupState();
+  if(state.armedSinglesTB === tbId){ state.armedSinglesTB = null; render(); return; }
+  if(ms.singles[tbId] !== undefined){
+    delete ms.singles[tbId];
+    await saveMatchupState(ms);
+  }
+  state.armedSinglesTB = tbId;
+  render();
+}
+async function tapSinglesOpp(oppId){
+  if(!state.armedSinglesTB){ showToast('Select a Two Buff player first'); return; }
+  const ms = state.matchupStateCache || await loadMatchupState();
+  ms.singles[state.armedSinglesTB] = oppId;
+  state.armedSinglesTB = null;
+  await saveMatchupState(ms);
+  render();
+}
+async function unpairSingles(tbId){
+  const ms = state.matchupStateCache || await loadMatchupState();
+  delete ms.singles[tbId];
+  await saveMatchupState(ms);
+  render();
+}
+async function tapDoublesPlayer(playerId){
+  const ms = state.matchupStateCache || await loadMatchupState();
+  if(state.armedDoublesTB === playerId){ state.armedDoublesTB = null; render(); return; }
+  // free this player from any existing pair first
+  const existingIdx = ms.doubles.findIndex(pr=>pr.includes(playerId));
+  if(existingIdx !== -1) ms.doubles.splice(existingIdx, 1);
+  if(state.armedDoublesTB === null){
+    await saveMatchupState(ms);
+    state.armedDoublesTB = playerId;
+    render();
+  } else {
+    const a = state.armedDoublesTB;
+    const aIdx = ms.doubles.findIndex(pr=>pr.includes(a));
+    if(aIdx !== -1) ms.doubles.splice(aIdx, 1);
+    ms.doubles.push([a, playerId]);
+    state.armedDoublesTB = null;
+    await saveMatchupState(ms);
+    render();
+  }
+}
+async function unpairDoubles(index){
+  const ms = state.matchupStateCache || await loadMatchupState();
+  ms.doubles.splice(index, 1);
+  await saveMatchupState(ms);
+  render();
+}
+
+/* ---- Opponent team management (admin only) ---- */
+function openTeamsManageModal(){
+  loadOppTeams().then(teams=>{
+    const modal = document.getElementById('modalRoot');
+    modal.innerHTML = `
+      <div class="overlay" onclick="closeModalIfBackdrop(event)">
+        <div class="sheet" onclick="event.stopPropagation()">
+          <h3>Opponent Teams</h3>
+          ${teams.length === 0 ? '<div style="font-size:13px; color:var(--ink-soft); margin-bottom:14px;">No opponent teams yet.</div>' : teams.map(t=>`
+            <div class="team-row" style="margin-bottom:8px;">
+              <div>
+                <div style="font-weight:800; font-size:14.5px;">${esc(t.name)}</div>
+                <div style="font-size:11.5px; color:var(--ink-soft);">${t.players.length} player${t.players.length===1?'':'s'}</div>
+              </div>
+              <div class="btn-row" style="width:auto; gap:6px;">
+                <button class="icon-btn" onclick="openTeamEditModal('${t.id}')">✏️</button>
+                <button class="icon-btn" onclick="openDeleteTeamConfirm('${t.id}')">🗑️</button>
+              </div>
+            </div>
+          `).join('')}
+          <div class="btn-row" style="margin-top:14px;">
+            <button class="btn btn-ghost" onclick="closeModal()">Close</button>
+            <button class="btn btn-orange" onclick="openTeamEditModal()">+ Add Team</button>
+          </div>
+        </div>
+      </div>`;
+  });
+}
+function openTeamEditModal(teamId){
+  loadOppTeams().then(teams=>{
+    const t = teamId ? teams.find(x=>x.id===teamId) : null;
+    const modal = document.getElementById('modalRoot');
+    modal.innerHTML = `
+      <div class="overlay" onclick="closeModalIfBackdrop(event)">
+        <div class="sheet" onclick="event.stopPropagation()">
+          <h3>${t ? 'Edit Team' : 'Add Opponent Team'}</h3>
+          <div class="field">
+            <label>Team Name</label>
+            <input id="opp_team_name" type="text" placeholder="e.g. Riverside Ravens" value="${t ? esc(t.name) : ''}">
+          </div>
+          <div class="field">
+            <label>Roster — one player per line</label>
+            <textarea id="opp_team_roster" rows="8" placeholder="Jane Smith&#10;John Doe&#10;..." style="width:100%; padding:12px; border-radius:12px; border:2px solid var(--line); font-size:14px; font-family:inherit; resize:vertical;">${t ? t.players.map(p=>esc(p.name)).join('\n') : ''}</textarea>
+          </div>
+          <div class="btn-row">
+            ${t ? `<button class="btn btn-danger" onclick="openDeleteTeamConfirm('${t.id}')">Delete</button>` : `<button class="btn btn-ghost" onclick="openTeamsManageModal()">Back</button>`}
+            <button class="btn btn-primary" onclick="saveTeamFromModal('${teamId||''}')">${t ? 'Save Changes' : 'Add Team'}</button>
+          </div>
+        </div>
+      </div>`;
+  });
+}
+async function saveTeamFromModal(existingId){
+  const name = document.getElementById('opp_team_name').value.trim();
+  const lines = document.getElementById('opp_team_roster').value.split('\n').map(l=>l.trim()).filter(Boolean);
+  if(!name){ showToast('Enter a team name'); return; }
+  const teams = await loadOppTeams();
+  const existingTeam = existingId ? teams.find(t=>t.id===existingId) : null;
+  const players = lines.map(lineName=>{
+    const existingPlayer = existingTeam && existingTeam.players.find(p=>p.name===lineName);
+    return existingPlayer || { id: uid('opp'), name: lineName };
+  });
+  if(existingTeam){
+    existingTeam.name = name;
+    existingTeam.players = players;
+  } else {
+    teams.push({ id: uid('oppteam'), name, players });
+  }
+  await saveOppTeams(teams);
+  closeModal();
+  showToast(existingTeam ? 'Team updated' : 'Team added');
+  render();
+}
+function openDeleteTeamConfirm(teamId){
+  loadOppTeams().then(teams=>{
+    const t = teams.find(x=>x.id===teamId);
+    if(!t) return;
+    const modal = document.getElementById('modalRoot');
+    modal.innerHTML = `
+      <div class="overlay" onclick="closeModalIfBackdrop(event)">
+        <div class="sheet" onclick="event.stopPropagation()">
+          <h3>Remove ${esc(t.name)}?</h3>
+          <div style="font-size:13.5px; color:var(--ink-soft); margin-bottom:16px;">This deletes the team and its roster. If it's the currently selected matchup opponent, the board will reset. This can't be undone.</div>
+          <div class="btn-row">
+            <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+            <button class="btn btn-danger" onclick="performDeleteTeam('${teamId}')">Delete</button>
+          </div>
+        </div>
+      </div>`;
+  });
+}
+async function performDeleteTeam(teamId){
+  const teams = await loadOppTeams();
+  const filtered = teams.filter(t=>t.id!==teamId);
+  await saveOppTeams(filtered);
+  const ms = await loadMatchupState();
+  if(ms.teamId === teamId){
+    await saveMatchupState({ teamId: null, singles: {}, doubles: [] });
+  }
+  closeModal();
+  showToast('Team removed');
+  render();
+}
+
 async function renderStats(){
   const FINALS_MIN_EVENTS = 3;
   const currentSeason = inferSeason(todayISO());
@@ -1520,66 +2034,86 @@ async function renderStats(){
   const seasonByEvent = {};
   state.events.forEach(e=>{ seasonByEvent[e.id] = effectiveSeason(e); });
 
-  const record = {}; // playerId -> {mpW,mpL,dbW,dbL, eventsPlayed:Set}
-  state.players.forEach(p=>{ record[p.id] = {mpW:0,mpL:0,dbW:0,dbL:0, eventsPlayed:new Set()}; });
+  const record = {}; // playerId -> {mpW,mpL,dbW,dbL, eventsPlayed:Set, powerScore}
+  state.players.forEach(p=>{ record[p.id] = {mpW:0,mpL:0,dbW:0,dbL:0, eventsPlayed:new Set(), powerScore:0}; });
 
-  try{
-    const listRes = await window.storage.list('dg_stats_', true);
-    const keys = (listRes && listRes.keys) || [];
-    const relevantKeys = keys.filter(k=>{
-      const eventId = k.slice('dg_stats_'.length);
-      const eventSeason = seasonByEvent[eventId]; // undefined if the event was deleted
-      return state.statsScope === 'season' ? eventSeason === currentSeason : true;
-    });
-    const raws = await Promise.all(relevantKeys.map(k=>storeGet(k, true)));
-    raws.forEach((raw, i)=>{
-      if(!raw) return;
-      const eventId = relevantKeys[i].slice('dg_stats_'.length);
-      const data = JSON.parse(raw);
-      Object.keys(data).forEach(pid=>{
-        if(!record[pid]) record[pid] = {mpW:0,mpL:0,dbW:0,dbL:0, eventsPlayed:new Set()};
-        const s = data[pid];
-        const playedThisEvent = !!((s.matchplay && s.matchplay.played) || (s.doubles && s.doubles.played));
-        if(playedThisEvent) record[pid].eventsPlayed.add(eventId);
-        if(s.matchplay && s.matchplay.played){
-          if(s.matchplay.result==='W') record[pid].mpW++;
-          else if(s.matchplay.result==='L') record[pid].mpL++;
-        }
-        if(s.doubles && s.doubles.played){
-          if(s.doubles.result==='W') record[pid].dbW++;
-          else if(s.doubles.result==='L') record[pid].dbL++;
-        }
-      });
-    });
-  }catch(e){ /* no stats yet */ }
-
-  // ---- Team Result (Win/Loss/Tie + score) aggregation, same season/all-time scope ----
+  // ---- Team Result aggregation state (filled in by the parallel block below) ----
   const teamEvents = []; // {event, result, ourScore, oppScore}
   let sumOur = 0, sumTotal = 0, tW=0, tL=0, tT=0;
-  try{
-    const trList = await window.storage.list('dg_teamresult_', true);
-    const trKeys = (trList && trList.keys) || [];
-    const relevantTrKeys = trKeys.filter(k=>{
-      const eventId = k.slice('dg_teamresult_'.length);
-      const ev = state.events.find(e=>e.id===eventId);
-      if(!ev) return false; // skip orphaned entries from deleted events
-      return state.statsScope === 'season' ? effectiveSeason(ev) === currentSeason : true;
-    });
-    const raws = await Promise.all(relevantTrKeys.map(k=>storeGet(k, true)));
-    raws.forEach((raw, i)=>{
-      if(!raw) return;
-      const eventId = relevantTrKeys[i].slice('dg_teamresult_'.length);
-      const ev = state.events.find(e=>e.id===eventId);
-      const data = JSON.parse(raw);
-      if(!data.result && data.ourScore==null && data.oppScore==null) return;
-      teamEvents.push({event: ev, result: data.result, ourScore: data.ourScore, oppScore: data.oppScore});
-      if(data.result==='W') tW++; else if(data.result==='L') tL++; else if(data.result==='T') tT++;
-      if(data.ourScore!=null && data.oppScore!=null){
-        sumOur += data.ourScore;
-        sumTotal += data.ourScore + data.oppScore;
-      }
-    });
-  }catch(e){ /* no team results yet */ }
+
+  const loadPlayerStats = async ()=>{
+    try{
+      const listRes = await window.storage.list('dg_stats_', true);
+      const keys = (listRes && listRes.keys) || [];
+      const relevantKeys = keys.filter(k=>{
+        const eventId = k.slice('dg_stats_'.length);
+        const eventSeason = seasonByEvent[eventId]; // undefined if the event was deleted
+        return state.statsScope === 'season' ? eventSeason === currentSeason : true;
+      });
+      const raws = await Promise.all(relevantKeys.map(k=>storeGet(k, true)));
+      raws.forEach((raw, i)=>{
+        if(!raw) return;
+        const eventId = relevantKeys[i].slice('dg_stats_'.length);
+        const data = JSON.parse(raw);
+        Object.keys(data).forEach(pid=>{
+          if(!record[pid]) record[pid] = {mpW:0,mpL:0,dbW:0,dbL:0, eventsPlayed:new Set(), powerScore:0};
+          const s = data[pid];
+          const playedThisEvent = !!((s.matchplay && s.matchplay.played) || (s.doubles && s.doubles.played));
+          if(playedThisEvent) record[pid].eventsPlayed.add(eventId);
+          [
+            {entry: s.matchplay, weight: 1},   // singles matchplay counts full
+            {entry: s.doubles, weight: 0.5}    // doubles is a shared effort, so it counts half toward individual ranking
+          ].forEach(({entry, weight})=>{
+            if(!entry || !entry.played) return;
+            const rank = entry.powerRank || 5; // opponent quality, 1-10; defaults to a neutral 5 if never set
+            if(entry.result==='W'){
+              record[pid].powerScore += weight * ((rank >= 5) ? rank : 0); // beating a weak opponent doesn't boost you
+            } else {
+              record[pid].powerScore += weight * ((rank < 5) ? -(5 - rank) : 0); // losing to a quality opponent doesn't hurt you
+            }
+          });
+          if(s.matchplay && s.matchplay.played){
+            if(s.matchplay.result==='W') record[pid].mpW++;
+            else if(s.matchplay.result==='L') record[pid].mpL++;
+          }
+          if(s.doubles && s.doubles.played){
+            if(s.doubles.result==='W') record[pid].dbW++;
+            else if(s.doubles.result==='L') record[pid].dbL++;
+          }
+        });
+      });
+    }catch(e){ /* no stats yet */ }
+  };
+
+  const loadTeamResults = async ()=>{
+    try{
+      const trList = await window.storage.list('dg_teamresult_', true);
+      const trKeys = (trList && trList.keys) || [];
+      const relevantTrKeys = trKeys.filter(k=>{
+        const eventId = k.slice('dg_teamresult_'.length);
+        const ev = state.events.find(e=>e.id===eventId);
+        if(!ev) return false; // skip orphaned entries from deleted events
+        return state.statsScope === 'season' ? effectiveSeason(ev) === currentSeason : true;
+      });
+      const raws = await Promise.all(relevantTrKeys.map(k=>storeGet(k, true)));
+      raws.forEach((raw, i)=>{
+        if(!raw) return;
+        const eventId = relevantTrKeys[i].slice('dg_teamresult_'.length);
+        const ev = state.events.find(e=>e.id===eventId);
+        const data = JSON.parse(raw);
+        if(!data.result && data.ourScore==null && data.oppScore==null) return;
+        teamEvents.push({event: ev, result: data.result, ourScore: data.ourScore, oppScore: data.oppScore});
+        if(data.result==='W') tW++; else if(data.result==='L') tL++; else if(data.result==='T') tT++;
+        if(data.ourScore!=null && data.oppScore!=null){
+          sumOur += data.ourScore;
+          sumTotal += data.ourScore + data.oppScore;
+        }
+      });
+    }catch(e){ /* no team results yet */ }
+  };
+
+  await Promise.all([loadPlayerStats(), loadTeamResults()]);
+
   teamEvents.sort((a,b)=>b.event.date.localeCompare(a.event.date)); // most recent first
   const pointPct = sumTotal > 0 ? (sumOur/sumTotal*100) : null;
 
@@ -1614,14 +2148,8 @@ async function renderStats(){
     ${teamEventsHtml ? teamEventsHtml : `<div class="card empty" style="padding:20px;"><p style="margin:0; font-size:13px;">No team results recorded yet${state.statsScope==='season' ? ' for ' + esc(currentSeason) : ''}.</p></div>`}
   `;
 
-  const rows = [...state.players].sort((a,b)=>{
-    const ra = record[a.id], rb = record[b.id];
-    const qa = ra.eventsPlayed.size >= FINALS_MIN_EVENTS ? 1 : 0;
-    const qb = rb.eventsPlayed.size >= FINALS_MIN_EVENTS ? 1 : 0;
-    if(qb !== qa) return qb - qa;
-    const totalA = ra.mpW+ra.mpL+ra.dbW+ra.dbL, totalB = rb.mpW+rb.mpL+rb.dbW+rb.dbL;
-    return totalB - totalA;
-  }).map(p=>{
+  const rows = [...state.players].sort((a,b)=> record[b.id].powerScore - record[a.id].powerScore)
+  .map(p=>{
     const r = record[p.id];
     const hasMp = (r.mpW+r.mpL) > 0;
     const hasDb = (r.dbW+r.dbL) > 0;
@@ -1654,7 +2182,7 @@ async function renderStats(){
     </div>
     ${rows || `<div class="card empty"><span class="em">🏆</span><p>No results recorded yet${state.statsScope==='season' ? ' for ' + esc(currentSeason) : ''}. Enter results from an event page in Admin mode.</p></div>`}
     <div class="card" style="background:var(--chip-bg); border:none; box-shadow:none; margin-top:6px;">
-      <div style="font-size:12.5px; color:var(--ink-soft); line-height:1.5;">${state.statsScope==='season' ? `Showing <strong>${esc(currentSeason)}</strong> only — switch to All-Time above to see career totals across every season. ` : ''}<strong style="color:var(--orange-dark);">🏁 Finals Qualified</strong> means the player has a recorded result (singles or doubles) at ${FINALS_MIN_EVENTS} or more different events within the view you're looking at — just being confirmed for an event doesn't count, only an entered result does. Stats are otherwise optional per player — someone who only plays doubles will just show a dash for Singles. Coming soon: a mock matchup builder to plan pairings against another team's roster before the round.</div>
+      <div style="font-size:12.5px; color:var(--ink-soft); line-height:1.5;">${state.statsScope==='season' ? `Showing <strong>${esc(currentSeason)}</strong> only — switch to All-Time above to see career totals across every season. ` : ''}Players are ranked using their win-loss record, weighted behind the scenes by the quality of competition they faced — a loss to a strong opponent won't hurt someone's ranking, and a win over a weak one won't boost it. <strong style="color:var(--orange-dark);">🏁 Finals Qualified</strong> means a recorded result at ${FINALS_MIN_EVENTS}+ different events — just being confirmed doesn't count. Stats are optional per player — someone who only plays doubles just shows a dash for Singles.</div>
     </div>
   `;
 }
