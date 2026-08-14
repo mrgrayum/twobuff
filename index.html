@@ -362,9 +362,8 @@ firebase.initializeApp(FIREBASE_CONFIG);
 const _db = firebase.firestore();
 // NOTE: Firestore's offline IndexedDB persistence was tried here for speed,
 // but it has known hangs on iOS Safari in standalone/home-screen ("Add to
-// Home Screen") mode — exactly the "Stats page loads forever" symptom seen
-// in testing. Removed for reliability; the app is still fast thanks to the
-// parallel-fetch optimizations elsewhere in this file.
+// Home Screen") mode. Removed for reliability — in-memory caching (below,
+// in the app logic itself) handles the speed side instead.
 const _KV_COLLECTION = 'kv_store';
 
 // Drop-in replacement for Claude's built-in window.storage, backed by Firestore.
@@ -513,6 +512,7 @@ async function loadStats(eventId){
 }
 async function saveStats(eventId, data){
   state.statsCache[eventId] = data;
+  if(state.allStatsCache) state.allStatsCache[eventId] = data; // keep shared cache in sync
   await storeSet('dg_stats_' + eventId, JSON.stringify(data), true);
 }
 // NOTE: team-level win/loss/score used to be manually entered and stored under
@@ -526,10 +526,14 @@ async function saveNotes(notes){
   await storeSet('dg_notes', JSON.stringify(notes), true);
 }
 async function loadOppTeams(){
+  if(state.oppTeamsCache) return state.oppTeamsCache;
   const raw = await storeGet('dg_opp_teams', true);
-  return raw ? JSON.parse(raw) : [];
+  const data = raw ? JSON.parse(raw) : [];
+  state.oppTeamsCache = data;
+  return data;
 }
 async function saveOppTeams(teams){
+  state.oppTeamsCache = teams;
   await storeSet('dg_opp_teams', JSON.stringify(teams), true);
 }
 async function loadMatchupState(){
@@ -877,7 +881,9 @@ async function saveNewSuperPin(){
 function setView(v){
   state.view = v;
   state.currentEventId = null;
-  state.matchupStateCache = null; // always fetch fresh matchup data when (re)entering the tab
+  state.matchupStateCache = null; // always fetch fresh matchup/team data when (re)entering a tab
+  state.allStatsCache = null;
+  state.oppTeamsCache = null;
   document.querySelectorAll('.navbtn').forEach(b=>b.classList.toggle('active', b.dataset.view === v));
   document.getElementById('viewRoot').innerHTML = '<div class="loading-dots">Loading…</div>';
   render();
@@ -1712,18 +1718,26 @@ async function setPowerRank(eventId, playerId, kind, value){
 }
 
 /* ============================= TEAM ============================= */
-async function getPlayerEventHistory(playerId){
+async function getAllStatsData(){
+  if(state.allStatsCache) return state.allStatsCache;
   const listRes = await window.storage.list('dg_stats_', true);
   const keys = (listRes && listRes.keys) || [];
   const raws = await Promise.all(keys.map(k=>storeGet(k, true)));
-  const history = [];
+  const map = {};
   keys.forEach((k,i)=>{
     if(!raws[i]) return;
-    const eventId = k.slice('dg_stats_'.length);
+    map[k.slice('dg_stats_'.length)] = JSON.parse(raws[i]);
+  });
+  state.allStatsCache = map;
+  return map;
+}
+async function getPlayerEventHistory(playerId){
+  const allData = await getAllStatsData();
+  const history = [];
+  Object.keys(allData).forEach(eventId=>{
     const ev = state.events.find(e=>e.id===eventId);
     if(!ev) return; // event deleted
-    const data = JSON.parse(raws[i]);
-    const s = data[playerId];
+    const s = allData[eventId][playerId];
     if(!s) return;
     const playedMp = !!(s.matchplay && s.matchplay.played);
     const playedDb = !!(s.doubles && s.doubles.played);
@@ -1844,16 +1858,12 @@ async function renderEventMatchBreakdown(eventId){
     </div>`;
 }
 async function getOpponentPlayerHistory(oppPlayerId){
-  const listRes = await window.storage.list('dg_stats_', true);
-  const keys = (listRes && listRes.keys) || [];
-  const raws = await Promise.all(keys.map(k=>storeGet(k, true)));
+  const allData = await getAllStatsData();
   const history = [];
-  keys.forEach((k,i)=>{
-    if(!raws[i]) return;
-    const eventId = k.slice('dg_stats_'.length);
+  Object.keys(allData).forEach(eventId=>{
     const ev = state.events.find(e=>e.id===eventId);
     if(!ev) return; // event deleted
-    const data = JSON.parse(raws[i]);
+    const data = allData[eventId];
     Object.keys(data).forEach(ourPlayerId=>{
       const s = data[ourPlayerId];
       const ourPlayer = state.players.find(p=>p.id===ourPlayerId);
@@ -2566,18 +2576,11 @@ async function renderStats(){
 
   const loadPlayerStats = async ()=>{
     try{
-      const listRes = await window.storage.list('dg_stats_', true);
-      const keys = (listRes && listRes.keys) || [];
-      const relevantKeys = keys.filter(k=>{
-        const eventId = k.slice('dg_stats_'.length);
+      const allData = await getAllStatsData();
+      Object.keys(allData).forEach(eventId=>{
         const eventSeason = seasonByEvent[eventId]; // undefined if the event was deleted
-        return state.statsScope === 'season' ? eventSeason === currentSeason : true;
-      });
-      const raws = await Promise.all(relevantKeys.map(k=>storeGet(k, true)));
-      raws.forEach((raw, i)=>{
-        if(!raw) return;
-        const eventId = relevantKeys[i].slice('dg_stats_'.length);
-        const data = JSON.parse(raw);
+        if(state.statsScope === 'season' && eventSeason !== currentSeason) return;
+        const data = allData[eventId];
 
         // Player-level aggregation (win/loss records, power score)
         Object.keys(data).forEach(pid=>{
