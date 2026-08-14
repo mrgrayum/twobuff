@@ -193,6 +193,9 @@
   .stats-header-row{font-size:10.5px; font-weight:800; color:var(--ink-soft); text-transform:uppercase; letter-spacing:0.3px; padding:0 4px 8px;}
   .stats-row{background:var(--surface); border:1px solid var(--line); border-radius:14px; padding:12px; margin-bottom:8px;}
   .stats-row .pname{font-weight:800; font-size:14px;}
+  .player-stat-card{background:var(--surface); border:1px solid var(--line); border-radius:14px; padding:12px; margin-bottom:8px; cursor:pointer;}
+  .player-stat-card .row-grid{display:grid; grid-template-columns: 1.6fr 1fr 1fr; gap:6px; align-items:center;}
+  .player-stat-card .pname{font-weight:800; font-size:14px;}
   .rec{text-align:center; font-weight:800; font-size:14px;}
   .rec .sub{display:block; font-size:9.5px; font-weight:700; color:var(--ink-soft); text-transform:uppercase; letter-spacing:0.3px;}
 
@@ -284,6 +287,9 @@
     padding:10px 12px; margin-bottom:8px;
   }
   .matchup-pair-row .vs{font-size:13px; font-weight:800; color:var(--ink);}
+  .matchup-paired-card{display:flex; align-items:center; gap:8px; margin-bottom:9px;}
+  .matchup-chip.opp-paired{background:#FBE4D8; border-color:var(--orange); color:var(--orange-dark);}
+  .matchup-connector{flex-shrink:0; font-size:11px; font-weight:800; color:var(--ink-soft); text-transform:uppercase;}
   .matchup-team-pill{flex-shrink:0; padding:9px 16px; border-radius:20px; border:2px solid var(--line); background:#fff; font-weight:800; font-size:13px; color:var(--ink-soft); cursor:pointer; white-space:nowrap;}
   .matchup-team-pill.active{background:var(--forest); border-color:var(--forest); color:#fff;}
 </style>
@@ -1020,10 +1026,21 @@ async function renderEvents(){
       `).join('')}
     </div>`;
 
+  const needsOppTeams = inSeason.some(e=>e.opponentTeamId);
+  const oppTeamsForList = needsOppTeams ? await loadOppTeams() : [];
+  function resolveOpponentName(e){
+    if(e.opponentTeamId){
+      const t = oppTeamsForList.find(x=>x.id===e.opponentTeamId);
+      return t ? t.name : '';
+    }
+    return e.opponentName || '';
+  }
+
   async function cardFor(e, past){
     const d = fmtDate(e.date);
     const [rsvp, teamResult] = await Promise.all([loadRsvp(e.id), loadTeamResult(e.id)]);
     const counts = rsvpCounts(rsvp);
+    const opponentName = resolveOpponentName(e);
     const resultBadge = teamResult.result ? (()=>{
       const color = teamResult.result==='W' ? 'var(--forest)' : teamResult.result==='L' ? 'var(--red)' : '#8A6112';
       const bg = teamResult.result==='W' ? '#BFE0CE' : teamResult.result==='L' ? '#F0B7B1' : '#FBEFD8';
@@ -1040,7 +1057,7 @@ async function renderEvents(){
           <div>
             <div class="page-sub" style="margin-bottom:4px;">${past ? 'PAST EVENT' : d.mon + ' ' + d.day}</div>
             <h3 style="font-size:18px;">${esc(e.name)} ${e.isHome ? '<span class="home-badge">🏡 Home / Lunch Spread</span>' : ''}</h3>
-            <div style="color:var(--ink-soft); font-size:13px; margin-top:4px;">${fmtDateLong(e.date)}${e.time ? ' · ' + fmtTime(e.time) : ''}${e.location ? ' · ' + esc(e.location) : ''}</div>
+            <div style="color:var(--ink-soft); font-size:13px; margin-top:4px;">${fmtDateLong(e.date)}${e.time ? ' · ' + fmtTime(e.time) : ''}${e.location ? ' · ' + esc(e.location) : ''}${opponentName ? ' · vs ' + esc(opponentName) : ''}</div>
             ${resultBadge ? `<div>${resultBadge}</div>` : ''}
           </div>
           <div class="event-date" style="width:52px; ${past ? 'background:var(--ink-soft);' : ''}">
@@ -1144,43 +1161,62 @@ async function performRemoveSeason(season){
 /* ---- Add/edit event modal ---- */
 function openEventModal(existingId){
   const ev = existingId ? state.events.find(e=>e.id===existingId) : null;
-  const modal = document.getElementById('modalRoot');
-  modal.innerHTML = `
-    <div class="overlay" onclick="closeModalIfBackdrop(event)">
-      <div class="sheet" onclick="event.stopPropagation()">
-        <h3>${ev ? 'Edit Event' : 'Add Event'}</h3>
-        <div class="field">
-          <label>Event Name</label>
-          <input id="ev_name" type="text" placeholder="e.g. Fall Classic" value="${ev ? esc(ev.name) : ''}">
+  loadOppTeams().then(teams=>{
+    const modal = document.getElementById('modalRoot');
+    const isCustom = ev && !ev.opponentTeamId && ev.opponentName;
+    modal.innerHTML = `
+      <div class="overlay" onclick="closeModalIfBackdrop(event)">
+        <div class="sheet" onclick="event.stopPropagation()">
+          <h3>${ev ? 'Edit Event' : 'Add Event'}</h3>
+          <div class="field">
+            <label>Event Name</label>
+            <input id="ev_name" type="text" placeholder="e.g. Fall Classic" value="${ev ? esc(ev.name) : ''}">
+          </div>
+          <div class="field">
+            <label>Date</label>
+            <input id="ev_date" type="date" value="${ev ? ev.date : ''}">
+          </div>
+          <div class="field">
+            <label>Start Time</label>
+            <input id="ev_time" type="time" value="${ev ? (ev.time||'') : ''}">
+          </div>
+          <div class="field">
+            <label>Season</label>
+            <input id="ev_season" type="text" placeholder="e.g. 2026-2027" value="${ev ? esc(effectiveSeason(ev)) : esc(state.selectedSeason || inferSeason(todayISO()))}">
+          </div>
+          <div class="field">
+            <label>Location</label>
+            <input id="ev_location" type="text" placeholder="e.g. Riverside DGC" value="${ev ? esc(ev.location||'') : ''}">
+          </div>
+          <div class="field">
+            <label>Opponent</label>
+            ${teams.length > 0 ? `
+              <select id="ev_opponent_select" onchange="document.getElementById('ev_opponent_custom_wrap').style.display = this.value==='__custom__' ? 'block':'none';">
+                <option value="">— None / TBD —</option>
+                ${teams.map(t=>`<option value="${t.id}" ${ev && ev.opponentTeamId===t.id ? 'selected':''}>${esc(t.name)}</option>`).join('')}
+                <option value="__custom__" ${isCustom ? 'selected':''}>Other / Custom…</option>
+              </select>
+              <div id="ev_opponent_custom_wrap" style="margin-top:8px; display:${isCustom ? 'block':'none'};">
+                <input id="ev_opponent_custom" type="text" placeholder="Opponent name" value="${isCustom ? esc(ev.opponentName) : ''}">
+              </div>
+            ` : `
+              <input id="ev_opponent_custom" type="text" placeholder="Opponent name (optional)" value="${ev && ev.opponentName ? esc(ev.opponentName) : ''}">
+              <div style="font-size:11px; color:var(--ink-soft); margin-top:6px;">Add opponent teams on the Match tab to pick from a saved roster instead of typing a name.</div>
+            `}
+          </div>
+          <div class="toggle-row">
+            <label style="margin:0; text-transform:none; font-weight:700; color:var(--ink);">🏡 Home event (lunch spread)</label>
+            <div class="switch ${ev && ev.isHome ? 'on':''}" id="ev_homeSwitch" onclick="this.classList.toggle('on')"><div class="knob"></div></div>
+          </div>
+          <div style="font-size:11.5px; color:var(--ink-soft); margin-top:-4px;">Home events show a ⭐ on the date tile and unlock the lunch spread sign-up list.</div>
+          <div class="divider"></div>
+          <div class="btn-row">
+            ${ev ? `<button class="btn btn-danger" onclick="deleteEvent('${ev.id}')">Delete</button>` : ''}
+            <button class="btn btn-primary" onclick="saveEventFromModal('${ev ? ev.id : ''}')">${ev ? 'Save Changes' : 'Add Event'}</button>
+          </div>
         </div>
-        <div class="field">
-          <label>Date</label>
-          <input id="ev_date" type="date" value="${ev ? ev.date : ''}">
-        </div>
-        <div class="field">
-          <label>Start Time</label>
-          <input id="ev_time" type="time" value="${ev ? (ev.time||'') : ''}">
-        </div>
-        <div class="field">
-          <label>Season</label>
-          <input id="ev_season" type="text" placeholder="e.g. 2026-2027" value="${ev ? esc(effectiveSeason(ev)) : esc(state.selectedSeason || inferSeason(todayISO()))}">
-        </div>
-        <div class="field">
-          <label>Location</label>
-          <input id="ev_location" type="text" placeholder="e.g. Riverside DGC" value="${ev ? esc(ev.location||'') : ''}">
-        </div>
-        <div class="toggle-row">
-          <label style="margin:0; text-transform:none; font-weight:700; color:var(--ink);">🏡 Home event (lunch spread)</label>
-          <div class="switch ${ev && ev.isHome ? 'on':''}" id="ev_homeSwitch" onclick="this.classList.toggle('on')"><div class="knob"></div></div>
-        </div>
-        <div style="font-size:11.5px; color:var(--ink-soft); margin-top:-4px;">Home events show a ⭐ on the date tile and unlock the lunch spread sign-up list.</div>
-        <div class="divider"></div>
-        <div class="btn-row">
-          ${ev ? `<button class="btn btn-danger" onclick="deleteEvent('${ev.id}')">Delete</button>` : ''}
-          <button class="btn btn-primary" onclick="saveEventFromModal('${ev ? ev.id : ''}')">${ev ? 'Save Changes' : 'Add Event'}</button>
-        </div>
-      </div>
-    </div>`;
+      </div>`;
+  });
 }
 function closeModalIfBackdrop(e){
   if(e.target.classList.contains('overlay')) closeModal();
@@ -1194,12 +1230,24 @@ async function saveEventFromModal(existingId){
   const season = document.getElementById('ev_season').value.trim() || inferSeason(date);
   const location = document.getElementById('ev_location').value.trim();
   const isHome = document.getElementById('ev_homeSwitch').classList.contains('on');
+  let opponentTeamId = null, opponentName = '';
+  const oppSelect = document.getElementById('ev_opponent_select');
+  if(oppSelect){
+    if(oppSelect.value === '__custom__'){
+      opponentName = document.getElementById('ev_opponent_custom').value.trim();
+    } else if(oppSelect.value){
+      opponentTeamId = oppSelect.value;
+    }
+  } else {
+    const customInput = document.getElementById('ev_opponent_custom');
+    if(customInput) opponentName = customInput.value.trim();
+  }
   if(!name || !date){ showToast('Name and date are required'); return; }
   if(existingId){
     const ev = state.events.find(e=>e.id===existingId);
-    Object.assign(ev, {name, date, time, season, location, isHome});
+    Object.assign(ev, {name, date, time, season, location, isHome, opponentTeamId, opponentName});
   } else {
-    state.events.push({id: uid('ev'), name, date, time, season, location, isHome});
+    state.events.push({id: uid('ev'), name, date, time, season, location, isHome, opponentTeamId, opponentName});
   }
   await saveEvents();
   closeModal();
@@ -1226,11 +1274,14 @@ async function deleteEvent(id){
 async function renderEventDetail(eventId){
   const ev = state.events.find(e=>e.id===eventId);
   if(!ev) return `<div class="empty"><p>Event not found.</p></div>`;
-  const [rsvp, stats, teamResult] = await Promise.all([
+  const [rsvp, stats, teamResult, oppTeams] = await Promise.all([
     loadRsvp(eventId),
     state.adminMode ? loadStats(eventId) : Promise.resolve(null),
-    loadTeamResult(eventId)
+    loadTeamResult(eventId),
+    ev.opponentTeamId ? loadOppTeams() : Promise.resolve([])
   ]);
+  const oppTeamForEvent = ev.opponentTeamId ? oppTeams.find(t=>t.id===ev.opponentTeamId) : null;
+  const opponentDisplayName = oppTeamForEvent ? oppTeamForEvent.name : (ev.opponentName || '');
   const counts = rsvpCounts(rsvp);
   const roster = state.players.filter(p=>p.active !== false);
   const lunchPct = counts.total ? Math.round((counts.lunchResp / counts.total) * 100) : 0;
@@ -1256,7 +1307,7 @@ async function renderEventDetail(eventId){
           <input class="lunch-input" placeholder="🍽️ What are they bringing to the lunch spread?" value="${esc(r.lunch||'')}"
             onchange="setLunchItem('${eventId}','${p.id}', this.value)">
         ` : ''}
-        ${state.adminMode ? renderMatchRow(eventId, p.id, stats) : ''}
+        ${state.adminMode ? renderMatchRow(eventId, p.id, stats, oppTeamForEvent) : ''}
       </div>
     `;
   }
@@ -1264,7 +1315,7 @@ async function renderEventDetail(eventId){
   return `
     <button class="btn btn-ghost btn-sm" style="width:auto; margin-bottom:12px;" onclick="setView('events')">← All Events</button>
     <div class="page-title">${esc(ev.name)} ${ev.isHome ? '<span class="home-badge">🏡 Home / Lunch Spread</span>' : ''}</div>
-    <div class="page-sub">${fmtDateLong(ev.date)}${ev.time ? ' · ' + fmtTime(ev.time) : ''}${ev.location ? ' · ' + esc(ev.location) : ''}</div>
+    <div class="page-sub">${fmtDateLong(ev.date)}${ev.time ? ' · ' + fmtTime(ev.time) : ''}${ev.location ? ' · ' + esc(ev.location) : ''}${opponentDisplayName ? ' · vs ' + esc(opponentDisplayName) : ''}</div>
 
     ${state.adminMode ? `
       <div class="btn-row" style="margin-bottom:14px;">
@@ -1342,10 +1393,10 @@ function statusPill(status){
   return '<span class="pill pill-gray">⏳ No reply</span>';
 }
 
-function renderMatchRow(eventId, playerId, stats){
+function renderMatchRow(eventId, playerId, stats, oppTeam){
   const s = (stats && stats[playerId]) || {};
-  const mp = s.matchplay || {played:false, result:null, powerRank:null};
-  const db = s.doubles || {played:false, result:null, powerRank:null};
+  const mp = s.matchplay || {played:false, result:null, powerRank:null, opponentName:''};
+  const db = s.doubles || {played:false, result:null, powerRank:null, opponentName:''};
   const wlBtns = (kind, cur) => `
     <button class="wl-btn ${cur.played && cur.result==='W' ? 'win-sel':''}" onclick="setMatchResult('${eventId}','${playerId}','${kind}','W')">Won</button>
     <button class="wl-btn ${cur.played && cur.result==='L' ? 'loss-sel':''}" onclick="setMatchResult('${eventId}','${playerId}','${kind}','L')">Lost</button>
@@ -1362,14 +1413,27 @@ function renderMatchRow(eventId, playerId, stats){
         <span style="font-size:13px; font-weight:800; color:var(--forest-dark); width:16px; text-align:right;">${rank}</span>
       </div>`;
   };
+  const datalistId = `opp-roster-${eventId}`;
+  const opponentInputRow = (kind, cur) => {
+    if(!cur.played) return '';
+    return `
+      <input class="lunch-input" style="margin-top:6px; margin-left:74px; width:calc(100% - 74px);" type="text"
+        ${oppTeam && oppTeam.players.length ? `list="${datalistId}"` : ''}
+        placeholder="Played against (optional)" value="${esc(cur.opponentName || '')}"
+        onchange="setOpponentName('${eventId}','${playerId}','${kind}', this.value)">`;
+  };
+  const datalistHtml = (oppTeam && oppTeam.players.length) ? `<datalist id="${datalistId}">${oppTeam.players.map(p=>`<option value="${esc(p.name)}">`).join('')}</datalist>` : '';
   return `
     <div class="divider"></div>
     <div style="font-size:11px; font-weight:800; color:var(--ink-soft); text-transform:uppercase; letter-spacing:0.3px; margin-bottom:2px;">Admin · Match Results</div>
     <div class="match-row"><div class="match-label">Singles</div>${wlBtns('matchplay', mp)}</div>
     ${powerRankRow('matchplay', mp)}
+    ${opponentInputRow('matchplay', mp)}
     <div class="match-row"><div class="match-label">Doubles</div>${wlBtns('doubles', db)}</div>
     ${powerRankRow('doubles', db)}
-    <div style="font-size:10.5px; color:var(--ink-soft); margin-top:8px; line-height:1.4;">Opponent quality (1–10): rate how good the player they faced was — 5 or above is a quality/strong opponent, below 5 is a weaker one. This isn't shown anywhere else; it just quietly informs the season rankings (a loss to a strong opponent won't hurt them, a loss to a weak one will; a win over a strong opponent helps them more than a win over a weak one).</div>
+    ${opponentInputRow('doubles', db)}
+    ${datalistHtml}
+    <div style="font-size:10.5px; color:var(--ink-soft); margin-top:8px; line-height:1.4;">Opponent quality (1–10): rate how good the player they faced was — 5 or above is a quality/strong opponent, below 5 is a weaker one. This isn't shown anywhere else; it just quietly informs the season rankings (a loss to a strong opponent won't hurt them, a loss to a weak one will; a win over a strong opponent helps them more than a win over a weak one).${oppTeam ? ` "Played against" suggests names from ${esc(oppTeam.name)}'s roster, but you can type any name.` : ''}</div>
   `;
 }
 
@@ -1392,17 +1456,28 @@ async function setLunchItem(eventId, playerId, value){
 async function setMatchResult(eventId, playerId, kind, result){
   const stats = await loadStats(eventId);
   const cur = stats[playerId] || {};
-  const existing = cur[kind] || {played:false, result:null, powerRank:null};
+  const existing = cur[kind] || {played:false, result:null, powerRank:null, opponentName:''};
   if(result === null){
-    cur[kind] = {played:false, result:null, powerRank:null};
+    cur[kind] = {played:false, result:null, powerRank:null, opponentName:''};
   } else if(existing.played && existing.result === result){
-    cur[kind] = {played:false, result:null, powerRank:null};
+    cur[kind] = {played:false, result:null, powerRank:null, opponentName:''};
   } else {
-    cur[kind] = {played:true, result:result, powerRank: existing.powerRank || 5};
+    cur[kind] = {played:true, result:result, powerRank: existing.powerRank || 5, opponentName: existing.opponentName || ''};
   }
   stats[playerId] = cur;
   await saveStats(eventId, stats);
   render();
+}
+async function setOpponentName(eventId, playerId, kind, value){
+  const stats = await loadStats(eventId);
+  const cur = stats[playerId] || {};
+  const existing = cur[kind] || {played:false, result:null, powerRank:null, opponentName:''};
+  if(!existing.played) return;
+  existing.opponentName = value.trim();
+  cur[kind] = existing;
+  stats[playerId] = cur;
+  await saveStats(eventId, stats);
+  showToast('Opponent name saved');
 }
 async function setPowerRank(eventId, playerId, kind, value){
   const stats = await loadStats(eventId);
@@ -1457,28 +1532,27 @@ function toggleExpandPlayer(id){
   state.expandedPlayerId = (state.expandedPlayerId === id) ? null : id;
   render();
 }
+async function renderPlayerHistoryHtml(playerId){
+  const history = await getPlayerEventHistory(playerId);
+  if(history.length === 0){
+    return `<div style="font-size:12.5px; color:var(--ink-soft); padding:10px 2px 2px;">No recorded results yet.</div>`;
+  }
+  const resultPill = (label, entry) => !entry ? '' : `<span class="pill" style="background:${entry.result==='W' ? '#E1E8F5' : '#F5D9D6'}; color:${entry.result==='W' ? 'var(--forest)' : 'var(--red)'}; margin-left:6px;">${label} ${entry.result}${entry.opponentName ? ' · ' + esc(entry.opponentName) : ''}</span>`;
+  return history.map(h=>{
+    const d = fmtDate(h.event.date);
+    return `
+      <div style="display:flex; justify-content:space-between; align-items:center; padding:9px 2px; border-top:1px solid var(--line);">
+        <div>
+          <div style="font-size:13px; font-weight:800;">${esc(h.event.name)}</div>
+          <div style="font-size:10.5px; color:var(--ink-soft); font-weight:700;">${d.mon} ${d.day}</div>
+        </div>
+        <div>${resultPill('Singles', h.matchplay)}${resultPill('Doubles', h.doubles)}</div>
+      </div>`;
+  }).join('');
+}
 async function teamCardFor(p){
   const expanded = state.expandedPlayerId === p.id;
-  let historyHtml = '';
-  if(expanded){
-    const history = await getPlayerEventHistory(p.id);
-    if(history.length === 0){
-      historyHtml = `<div style="font-size:12.5px; color:var(--ink-soft); padding:10px 2px 2px;">No recorded results yet.</div>`;
-    } else {
-      const resultPill = (label, entry) => !entry ? '' : `<span class="pill" style="background:${entry.result==='W' ? '#E1E8F5' : '#F5D9D6'}; color:${entry.result==='W' ? 'var(--forest)' : 'var(--red)'}; margin-left:6px;">${label} ${entry.result}</span>`;
-      historyHtml = history.map(h=>{
-        const d = fmtDate(h.event.date);
-        return `
-          <div style="display:flex; justify-content:space-between; align-items:center; padding:9px 2px; border-top:1px solid var(--line);">
-            <div>
-              <div style="font-size:13px; font-weight:800;">${esc(h.event.name)}</div>
-              <div style="font-size:10.5px; color:var(--ink-soft); font-weight:700;">${d.mon} ${d.day}</div>
-            </div>
-            <div>${resultPill('Singles', h.matchplay)}${resultPill('Doubles', h.doubles)}</div>
-          </div>`;
-      }).join('');
-    }
-  }
+  const historyHtml = expanded ? await renderPlayerHistoryHtml(p.id) : '';
   return `
     <div class="team-row" style="flex-direction:column; align-items:stretch;">
       <div style="display:flex; align-items:flex-start; justify-content:space-between;">
@@ -1775,24 +1849,26 @@ async function renderMatchups(){
   // ---- Singles ----
   const usedOppIds = new Set(Object.values(ms.singles));
   const availableOpp = currentTeam.players.filter(p=>!usedOppIds.has(p.id));
-  const pairedSinglesHtml = Object.keys(ms.singles).map(tbId=>{
+  const availableTB = activeTB.filter(p=>ms.singles[p.id] === undefined);
+
+  const singlesTbIds = Object.keys(ms.singles);
+  const pairedSinglesHtml = [...singlesTbIds].reverse().map(tbId=>{ // newest pair on top
     const tb = activeTB.find(p=>p.id===tbId);
     const opp = currentTeam.players.find(p=>p.id===ms.singles[tbId]);
     if(!tb || !opp) return '';
     return `
-      <div class="matchup-pair-row">
-        <div class="vs">${esc(tb.name)} <span style="color:var(--ink-soft); font-weight:700;">vs</span> ${esc(opp.name)}</div>
+      <div class="matchup-paired-card">
+        <button class="matchup-chip paired" style="margin:0; flex:1;" ${state.adminMode ? `onclick="tapSinglesTB('${tbId}')"` : 'disabled'}>${esc(tb.name)}</button>
+        <div class="matchup-connector">vs</div>
+        <div class="matchup-chip opp-paired" style="margin:0; flex:1; cursor:default;">${esc(opp.name)}</div>
         ${state.adminMode ? `<button class="icon-btn" onclick="unpairSingles('${tbId}')">✕</button>` : ''}
       </div>`;
   }).join('');
 
-  const tbSinglesChips = activeTB.map(p=>{
+  const tbSinglesChips = availableTB.length ? availableTB.map(p=>{
     const isArmed = state.armedSinglesTB === p.id;
-    const pairedOppId = ms.singles[p.id];
-    const pairedOpp = pairedOppId ? currentTeam.players.find(o=>o.id===pairedOppId) : null;
-    const cls = isArmed ? 'armed' : pairedOpp ? 'paired' : '';
-    return `<button class="matchup-chip ${cls}" ${state.adminMode ? `onclick="tapSinglesTB('${p.id}')"` : 'disabled'}>${esc(p.name)}${pairedOpp ? `<span class="sub">vs ${esc(pairedOpp.name)}</span>` : isArmed ? `<span class="sub">Tap an opponent →</span>` : ''}</button>`;
-  }).join('');
+    return `<button class="matchup-chip ${isArmed?'armed':''}" ${state.adminMode ? `onclick="tapSinglesTB('${p.id}')"` : 'disabled'}>${esc(p.name)}${isArmed ? `<span class="sub">Tap an opponent →</span>` : ''}</button>`;
+  }).join('') : `<div style="font-size:12.5px; color:var(--ink-soft); text-align:center; padding:10px 0;">Everyone's matched up</div>`;
 
   const oppSinglesChips = availableOpp.length ? availableOpp.map(o=>`
     <button class="matchup-chip" ${state.adminMode ? `onclick="tapSinglesOpp('${o.id}')"` : 'disabled'}>${esc(o.name)}</button>
@@ -1800,24 +1876,24 @@ async function renderMatchups(){
 
   // ---- Doubles (Two Buff only) ----
   const pairedIds = new Set(ms.doubles.flat());
-  const doublesPairedHtml = ms.doubles.map((pair, i)=>{
+  const availableDoublesTB = activeTB.filter(p=>!pairedIds.has(p.id));
+  const doublesPairedHtml = ms.doubles.map((pair,i)=>({pair,i})).reverse().map(({pair,i})=>{ // newest pair on top
     const a = activeTB.find(p=>p.id===pair[0]);
     const b = activeTB.find(p=>p.id===pair[1]);
     if(!a || !b) return '';
     return `
-      <div class="matchup-pair-row">
-        <div class="vs">${esc(a.name)} <span style="color:var(--ink-soft); font-weight:700;">&amp;</span> ${esc(b.name)}</div>
+      <div class="matchup-paired-card">
+        <button class="matchup-chip paired" style="margin:0; flex:1;" ${state.adminMode ? `onclick="tapDoublesPlayer('${a.id}')"` : 'disabled'}>${esc(a.name)}</button>
+        <div class="matchup-connector">&amp;</div>
+        <button class="matchup-chip paired" style="margin:0; flex:1;" ${state.adminMode ? `onclick="tapDoublesPlayer('${b.id}')"` : 'disabled'}>${esc(b.name)}</button>
         ${state.adminMode ? `<button class="icon-btn" onclick="unpairDoubles(${i})">✕</button>` : ''}
       </div>`;
   }).join('');
 
-  const doublesChips = activeTB.map(p=>{
+  const doublesChips = availableDoublesTB.length ? availableDoublesTB.map(p=>{
     const isArmed = state.armedDoublesTB === p.id;
-    const pair = ms.doubles.find(pr=>pr.includes(p.id));
-    const partner = pair ? activeTB.find(x=>x.id === pair.find(id=>id!==p.id)) : null;
-    const cls = isArmed ? 'armed' : partner ? 'paired' : '';
-    return `<button class="matchup-chip ${cls}" ${state.adminMode ? `onclick="tapDoublesPlayer('${p.id}')"` : 'disabled'}>${esc(p.name)}${partner ? `<span class="sub">with ${esc(partner.name)}</span>` : isArmed ? `<span class="sub">Tap a partner →</span>` : ''}</button>`;
-  }).join('');
+    return `<button class="matchup-chip ${isArmed?'armed':''}" ${state.adminMode ? `onclick="tapDoublesPlayer('${p.id}')"` : 'disabled'}>${esc(p.name)}${isArmed ? `<span class="sub">Tap a partner →</span>` : ''}</button>`;
+  }).join('') : `<div style="font-size:12.5px; color:var(--ink-soft); text-align:center; padding:10px 0;">Everyone's grouped up</div>`;
 
   return `
     <div class="page-title">Mock Matchups</div>
@@ -2148,25 +2224,34 @@ async function renderStats(){
     ${teamEventsHtml ? teamEventsHtml : `<div class="card empty" style="padding:20px;"><p style="margin:0; font-size:13px;">No team results recorded yet${state.statsScope==='season' ? ' for ' + esc(currentSeason) : ''}.</p></div>`}
   `;
 
-  const rows = [...state.players].sort((a,b)=> record[b.id].powerScore - record[a.id].powerScore)
-  .map(p=>{
+  const sortedPlayers = [...state.players].sort((a,b)=> record[b.id].powerScore - record[a.id].powerScore);
+  const rowCards = await Promise.all(sortedPlayers.map(async p=>{
     const r = record[p.id];
     const hasMp = (r.mpW+r.mpL) > 0;
     const hasDb = (r.dbW+r.dbL) > 0;
     const eventsPlayed = r.eventsPlayed.size;
     const qualified = eventsPlayed >= FINALS_MIN_EVENTS;
+    const expanded = state.expandedPlayerId === p.id;
+    const historyHtml = expanded ? await renderPlayerHistoryHtml(p.id) : '';
     return `
-      <div class="stats-row" style="${qualified ? 'background:#FFF3E6; border-color:var(--orange);' : ''}">
-        <div>
-          <div class="pname">${esc(p.name)}</div>
-          <div style="font-size:10.5px; font-weight:700; color:${qualified ? 'var(--orange-dark)' : 'var(--ink-soft)'}; margin-top:2px;">
-            Events Played: ${eventsPlayed}${qualified ? ' ⭐' : ''}
+      <div class="player-stat-card" style="${qualified ? 'background:#FFF3E6; border-color:var(--orange);' : ''}" onclick="toggleExpandPlayer('${p.id}')">
+        <div class="row-grid">
+          <div>
+            <div style="display:flex; align-items:center; gap:6px;">
+              <span class="pname">${esc(p.name)}</span>
+              <span style="font-size:10px; color:var(--ink-soft);">${expanded ? '▲' : '▼'}</span>
+            </div>
+            <div style="font-size:10.5px; font-weight:700; color:${qualified ? 'var(--orange-dark)' : 'var(--ink-soft)'}; margin-top:2px;">
+              Events Played: ${eventsPlayed}${qualified ? ' ⭐' : ''}
+            </div>
           </div>
+          <div class="rec" style="color:${hasMp ? 'var(--forest-dark)':'var(--ink-soft)'};">${hasMp ? r.mpW+'-'+r.mpL : '—'}<span class="sub">Singles</span></div>
+          <div class="rec" style="color:${hasDb ? 'var(--forest-dark)':'var(--ink-soft)'};">${hasDb ? r.dbW+'-'+r.dbL : '—'}<span class="sub">Doubles</span></div>
         </div>
-        <div class="rec" style="color:${hasMp ? 'var(--forest-dark)':'var(--ink-soft)'};">${hasMp ? r.mpW+'-'+r.mpL : '—'}<span class="sub">Singles</span></div>
-        <div class="rec" style="color:${hasDb ? 'var(--forest-dark)':'var(--ink-soft)'};">${hasDb ? r.dbW+'-'+r.dbL : '—'}<span class="sub">Doubles</span></div>
+        ${expanded ? `<div onclick="event.stopPropagation()">${historyHtml}</div>` : ''}
       </div>`;
-  }).join('');
+  }));
+  const rows = rowCards.join('');
 
   return `
     <div class="page-title">Season Stats</div>
