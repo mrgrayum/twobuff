@@ -368,7 +368,7 @@ const _db = firebase.firestore();
 // realtime updates (only one-off reads/writes), so long-polling is a safe,
 // more reliable choice here — it re-establishes much faster after the app
 // has been idle or backgrounded.
-_db.settings({ experimentalForceLongPolling: true, merge: true });
+_db.settings({ experimentalForceLongPolling: true });
 // NOTE: Firestore's offline IndexedDB persistence was tried here for speed,
 // but it has known hangs on iOS Safari in standalone/home-screen ("Add to
 // Home Screen") mode. Removed for reliability — in-memory caching (in the
