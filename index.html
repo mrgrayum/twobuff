@@ -187,6 +187,7 @@
   .match-label{width:64px; font-size:12px; font-weight:700; color:var(--ink-soft);}
   .wl-btn{border-radius:10px; border:2px solid var(--line); background:#fff; padding:8px 4px; font-weight:800; font-size:12px; flex:1; cursor:pointer; color:var(--ink-soft);}
   .wl-btn.win-sel{background:var(--forest); border-color:var(--forest); color:#fff;}
+  .wl-btn.tie-sel{background:var(--gold); border-color:var(--gold); color:#3B2A05;}
   .wl-btn.loss-sel{background:var(--red); border-color:var(--red); color:#fff;}
   .wl-btn.none-sel{background:var(--chip-bg); border-color:var(--chip-bg); color:var(--ink-soft);}
 
@@ -338,7 +339,7 @@
     <button class="navbtn" data-view="home" onclick="setView('home')"><span class="ic">🏠</span>Home</button>
     <button class="navbtn" data-view="events" onclick="setView('events')"><span class="ic">📅</span>Events</button>
     <button class="navbtn" data-view="stats" onclick="setView('stats')"><span class="ic">🏆</span>Stats</button>
-    <button class="navbtn" data-view="matchups" onclick="setView('matchups')"><span class="ic">🎯</span>Mockup</button>
+    <button class="navbtn" data-view="matchups" onclick="setView('matchups')"><span class="ic">🎯</span>Matchups</button>
   </div>
 </div>
 
@@ -360,19 +361,11 @@ const FIREBASE_CONFIG = {
 
 firebase.initializeApp(FIREBASE_CONFIG);
 const _db = firebase.firestore();
-// Force long-polling instead of Firestore's default streaming connection.
-// The default tries to keep a persistent connection open and renegotiate it
-// when interrupted — but iOS aggressively kills background connections the
-// moment Safari/a home-screen app is backgrounded, and that renegotiation can
-// take upwards of a minute on some mobile networks. This app never needs
-// realtime updates (only one-off reads/writes), so long-polling is a safe,
-// more reliable choice here — it re-establishes much faster after the app
-// has been idle or backgrounded.
+// Force long-polling instead of Firestore's default streaming connection —
+// this app only does one-off reads/writes (no realtime listeners), and
+// long-polling reconnects far more reliably on mobile networks after the
+// app has been backgrounded (iOS kills the default streaming connection).
 _db.settings({ experimentalForceLongPolling: true });
-// NOTE: Firestore's offline IndexedDB persistence was tried here for speed,
-// but it has known hangs on iOS Safari in standalone/home-screen ("Add to
-// Home Screen") mode. Removed for reliability — in-memory caching (in the
-// app logic below) plus the fixed list() query (below) handle speed instead.
 const _KV_COLLECTION = 'kv_store';
 
 // Drop-in replacement for Claude's built-in window.storage, backed by Firestore.
@@ -401,9 +394,6 @@ window.storage = {
         .where(firebase.firestore.FieldPath.documentId(), '<', prefix + '\uf8ff');
     }
     const snap = await query.get();
-    // The query already downloaded every matching document's full content —
-    // return it directly (as `values`) so callers don't need a second round
-    // of individual .get() calls just to re-fetch data we already have.
     const values = {};
     snap.docs.forEach(d => { values[d.id] = d.data().value; });
     return { keys: snap.docs.map(d => d.id), values, prefix, shared: !!shared };
@@ -426,8 +416,11 @@ const state = {
   pastExpanded: {},       // season -> bool, whether the "past events" group is expanded
   statsScope: 'season',   // 'season' = current season only (default), 'all' = all-time
   expandedPlayerId: null, // Team tab: which player card is expanded to show their event history
-  armedSinglesTB: null,   // Matchups: Two Buff player currently selected, awaiting an opponent tap
-  armedDoublesTB: null,   // Matchups: Two Buff player currently selected, awaiting a doubles-partner tap
+  armedSinglesTB: null,    // Matchups: Two Buff player currently selected, awaiting an opponent tap
+  armedSinglesOpp: null,   // Matchups: opponent player currently selected, awaiting a Two Buff tap
+  armedDoublesTBPair: [],  // Matchups: up to 2 Two Buff players being grouped into a doubles pair
+  armedDoublesOppPair: [], // Matchups: up to 2 opponent players being grouped into a doubles pair
+  expandedMockupResultKey: null, // Matchups: which matchup's Won/Lost/quality section is expanded
   expandedOppTeamId: null,   // Teams page: which opponent team is expanded to show its roster
   expandedOppPlayerId: null, // Teams page: which opponent player is expanded to show notes + history
   homeNotesExpanded: false,  // Home: whether the full bulletin board list is expanded past the initial preview
@@ -573,10 +566,73 @@ async function saveOppTeams(teams){
 }
 async function loadMatchupState(){
   const raw = await storeGet('dg_matchup', true);
-  return raw ? JSON.parse(raw) : { teamId: null, singles: {}, doubles: [] };
+  const data = raw ? JSON.parse(raw) : null;
+  if(!data) return { currentTeamId: null, singlesByTeam: {}, doublesByTeam: {}, eventIdByTeam: {}, singlesByEvent: {}, doublesByEvent: {} };
+
+  // Doubles used to just be Two Buff pairs (no opponent link). That shape can't represent
+  // a real doubles-vs-doubles matchup, so old groupings are cleared rather than guessed at —
+  // they're quick to re-create under the new tap-two-on-each-side system.
+  const normalizeDoubles = (dbt) => {
+    const out = {};
+    Object.keys(dbt || {}).forEach(teamId=>{
+      const arr = dbt[teamId] || [];
+      const isNewShape = arr.every(m => m && typeof m === 'object' && Array.isArray(m.tb) && Array.isArray(m.opp));
+      out[teamId] = isNewShape ? arr : [];
+    });
+    return out;
+  };
+
+  if(data.singlesByTeam && data.doublesByTeam && data.eventIdByTeam){
+    return {
+      ...data,
+      doublesByTeam: normalizeDoubles(data.doublesByTeam), // defensive re-normalize
+      singlesByEvent: data.singlesByEvent || {},
+      doublesByEvent: normalizeDoubles(data.doublesByEvent || {})
+    };
+  }
+  if(data.singlesByTeam){
+    // Migrate from the shape with per-team singles but no event linking / old-style doubles.
+    return {
+      currentTeamId: data.currentTeamId || null,
+      singlesByTeam: data.singlesByTeam,
+      doublesByTeam: {},
+      eventIdByTeam: {},
+      singlesByEvent: {},
+      doublesByEvent: {}
+    };
+  }
+  // Migrate from the original flat shape (one shared singles+doubles slot for whichever team was selected)
+  return {
+    currentTeamId: data.teamId || null,
+    singlesByTeam: data.teamId ? { [data.teamId]: data.singles || {} } : {},
+    doublesByTeam: {},
+    eventIdByTeam: {},
+    singlesByEvent: {},
+    doublesByEvent: {}
+  };
 }
 async function saveMatchupState(ms){
   await storeSet('dg_matchup', JSON.stringify(ms), true);
+}
+// Trial pairings (made with no event selected) and event-linked pairings are kept
+// completely separate, so testing lineups never disturbs what's recorded for a real event.
+function getSinglesBucket(ms){
+  const eventId = ms.eventIdByTeam[ms.currentTeamId];
+  if(eventId){
+    if(!ms.singlesByEvent[eventId]) ms.singlesByEvent[eventId] = {};
+    return ms.singlesByEvent[eventId];
+  }
+  if(!ms.singlesByTeam[ms.currentTeamId]) ms.singlesByTeam[ms.currentTeamId] = {};
+  return ms.singlesByTeam[ms.currentTeamId];
+}
+function getDoublesBucket(ms){
+  const eventId = ms.eventIdByTeam[ms.currentTeamId];
+  if(eventId){
+    if(!ms.doublesByEvent[eventId]) ms.doublesByEvent[eventId] = [];
+    return ms.doublesByEvent[eventId];
+  }
+  if(!ms.doublesByTeam[ms.currentTeamId]) ms.doublesByTeam[ms.currentTeamId] = [];
+  return ms.doublesByTeam[ms.currentTeamId];
 }
 
 /* ============================= INIT ============================= */
@@ -695,14 +751,16 @@ async function submitAdminPin(){
 /* ---- Settings sheet (gear icon) ---- */
 function openSettingsModal(){
   const modal = document.getElementById('modalRoot');
-  const body = state.adminMode ? `
-      <div class="section-label" style="margin-top:0;">Manage</div>
+  const manageSection = `
+      <div class="section-label" style="margin-top:0;">Team &amp; Opponents</div>
       <div class="card">
+        <div style="font-size:12.5px; color:var(--ink-soft); line-height:1.5; margin-bottom:12px;">${state.adminMode ? 'View or edit either roster.' : 'View either roster. Admin Mode is needed to make changes.'}</div>
         <div class="btn-row">
           <button class="btn btn-outline" onclick="closeModal(); setView('team');">👥 Team Roster</button>
           <button class="btn btn-outline" onclick="closeModal(); setView('opponents');">🏟️ Opponent Teams</button>
         </div>
-      </div>
+      </div>`;
+  const adminSection = state.adminMode ? `
       <div class="section-label">Team Entry PIN</div>
       <div class="card">
         <div style="font-size:12.5px; color:var(--ink-soft); line-height:1.5; margin-bottom:12px;">This is the basic PIN everyone — players and admins alike — needs just to open the app. Changing it needs the super admin PIN.</div>
@@ -732,9 +790,10 @@ function openSettingsModal(){
     ` : `
       <div class="card empty">
         <span class="em">🔒</span>
-        <p>Turn on Admin Mode from the header to access PIN and backup settings.</p>
+        <p>Turn on Admin Mode from the header for PIN and backup settings.</p>
       </div>
     `;
+  const body = manageSection + adminSection;
   modal.innerHTML = `
     <div class="overlay" onclick="closeModalIfBackdrop(event)">
       <div class="sheet" onclick="event.stopPropagation()">
@@ -1068,7 +1127,9 @@ function rsvpCounts(rsvp){
     else if(status==='maybe') maybe++;
     else if(status==='declined') declined++;
     else none++;
-    if(r && r.lunch && r.lunch.trim()) lunchResp++;
+    // Lunch % is scoped to confirmed attendees only — a maybe/out RSVP shouldn't
+    // drag the percentage down just because they haven't (and won't) bring food.
+    if(status==='confirmed' && r && r.lunch && r.lunch.trim()) lunchResp++;
     if(p.gender === 'F'){
       femaleTotal++;
       if(status==='confirmed') femaleConfirmed++;
@@ -1466,9 +1527,8 @@ async function addToGoogleCalendar(eventId){
 async function renderEventDetail(eventId){
   const ev = state.events.find(e=>e.id===eventId);
   if(!ev) return `<div class="empty"><p>Event not found.</p></div>`;
-  const [rsvp, stats, teamResult, oppTeams] = await Promise.all([
+  const [rsvp, teamResult, oppTeams] = await Promise.all([
     loadRsvp(eventId),
-    state.adminMode ? loadStats(eventId) : Promise.resolve(null),
     computeTeamResult(eventId),
     ev.opponentTeamId ? loadOppTeams() : Promise.resolve([])
   ]);
@@ -1476,7 +1536,7 @@ async function renderEventDetail(eventId){
   const opponentDisplayName = oppTeamForEvent ? oppTeamForEvent.name : (ev.opponentName || '');
   const counts = rsvpCounts(rsvp);
   const roster = state.players.filter(p=>p.active !== false);
-  const lunchPct = counts.total ? Math.round((counts.lunchResp / counts.total) * 100) : 0;
+  const lunchPct = counts.confirmed ? Math.round((counts.lunchResp / counts.confirmed) * 100) : 0;
 
   let playerCards = '';
   for(const p of roster){
@@ -1499,7 +1559,6 @@ async function renderEventDetail(eventId){
           <input class="lunch-input" placeholder="🍽️ What are they bringing to the lunch spread?" value="${esc(r.lunch||'')}"
             onchange="setLunchItem('${eventId}','${p.id}', this.value)">
         ` : ''}
-        ${state.adminMode ? renderMatchRow(eventId, p.id, stats, oppTeamForEvent) : ''}
       </div>
     `;
   }
@@ -1529,7 +1588,7 @@ async function renderEventDetail(eventId){
 
     ${state.adminMode ? `
       <div class="card" style="background:var(--chip-bg); border:none; box-shadow:none;">
-        <div style="font-size:12.5px; color:var(--ink-soft); line-height:1.5;">The event score is calculated automatically from each player's Matchplay and Doubles results below (1 point per singles win, 2 per doubles win) — there's nothing to enter here directly. Scroll down to the roster to record results.</div>
+        <div style="font-size:12.5px; color:var(--ink-soft); line-height:1.5;">The event score is calculated automatically from each player's Matchplay and Doubles results (1 point per singles win, 2 per doubles win). Enter those results from the 🎯 Mockup Matchups page — set this event as an opponent team's linked event there, then tap Won/Lost right on each matchup.</div>
       </div>
     ` : ''}
 
@@ -1568,88 +1627,13 @@ function statusPill(status){
   return '<span class="pill pill-gray">⏳ No reply</span>';
 }
 
-function renderMatchRow(eventId, playerId, stats, oppTeam){
-  const s = (stats && stats[playerId]) || {};
-  const mp = s.matchplay || {played:false, result:null, powerRank:null, opponentPlayerId:null, opponentName:''};
-  const db = s.doubles || {played:false, result:null, powerRank:null, partnerId:null, partnerName:'', opp1Id:null, opp1Name:'', opp2Id:null, opp2Name:''};
-  const wlBtns = (kind, cur) => `
-    <button class="wl-btn ${cur.played && cur.result==='W' ? 'win-sel':''}" onclick="setMatchResult('${eventId}','${playerId}','${kind}','W')">Won</button>
-    <button class="wl-btn ${cur.played && cur.result==='L' ? 'loss-sel':''}" onclick="setMatchResult('${eventId}','${playerId}','${kind}','L')">Lost</button>
-    <button class="wl-btn ${!cur.played ? 'none-sel':''}" onclick="setMatchResult('${eventId}','${playerId}','${kind}',null)">N/A</button>
-  `;
-  const powerRankRow = (kind, cur) => {
-    if(!cur.played) return '';
-    const rank = cur.powerRank || 5;
-    const hint = rank>=8 ? 'Elite opponent' : rank>=5 ? 'Quality opponent' : rank>=3 ? 'Weaker opponent' : 'Much weaker opponent';
-    return `
-      <div style="display:flex; align-items:center; gap:10px; margin-top:6px; padding-left:74px;">
-        <input type="range" min="1" max="10" value="${rank}" style="flex:1;" oninput="this.nextElementSibling.nextElementSibling.textContent=this.value" onchange="setPowerRank('${eventId}','${playerId}','${kind}', this.value)">
-        <span style="font-size:11px; color:var(--ink-soft); font-weight:700; width:78px;">${hint}</span>
-        <span style="font-size:13px; font-weight:800; color:var(--forest-dark); width:16px; text-align:right;">${rank}</span>
-      </div>`;
-  };
-  const opponentInputRow = (kind, cur) => {
-    if(!cur.played) return '';
-    if(oppTeam && oppTeam.players.length){
-      // Real link: stores the opponent's actual player id, not just a typed name.
-      return `
-        <select class="lunch-input" style="margin-top:6px; margin-left:74px; width:calc(100% - 74px);"
-          onchange="setOpponentPlayer('${eventId}','${playerId}','${kind}', this.value, this.options[this.selectedIndex].text)">
-          <option value="">— Played against… —</option>
-          ${oppTeam.players.map(p=>`<option value="${p.id}" ${cur.opponentPlayerId===p.id ? 'selected':''}>${esc(p.name)}</option>`).join('')}
-        </select>`;
-    }
-    // No opponent team on this event — plain text, not linked to anything.
-    return `
-      <input class="lunch-input" style="margin-top:6px; margin-left:74px; width:calc(100% - 74px);" type="text"
-        placeholder="Played against (optional)" value="${esc(cur.opponentName || '')}"
-        onchange="setOpponentName('${eventId}','${playerId}','${kind}', this.value)">`;
-  };
-  const doublesOppSlot = (slot, cur) => {
-    const idField = slot + 'Id', nameField = slot + 'Name';
-    const label = slot === 'opp1' ? 'Opponent 1' : 'Opponent 2';
-    if(oppTeam && oppTeam.players.length){
-      return `
-        <select class="lunch-input" style="margin-top:0;" onchange="setDoublesOpponent('${eventId}','${playerId}','${slot}', this.value, this.options[this.selectedIndex].text)">
-          <option value="">— ${label} —</option>
-          ${oppTeam.players.map(p=>`<option value="${p.id}" ${cur[idField]===p.id ? 'selected':''}>${esc(p.name)}</option>`).join('')}
-        </select>`;
-    }
-    return `<input class="lunch-input" style="margin-top:0;" type="text" placeholder="${label} (optional)" value="${esc(cur[nameField] || '')}" onchange="setDoublesOpponentName('${eventId}','${playerId}','${slot}', this.value)">`;
-  };
-  const doublesExtras = (cur) => {
-    if(!cur.played) return '';
-    const partnerOptions = state.players.filter(p=>p.active !== false && p.id !== playerId);
-    return `
-      <div style="margin-top:6px; margin-left:74px; width:calc(100% - 74px); display:flex; flex-direction:column; gap:6px;">
-        <select class="lunch-input" style="margin-top:0;" onchange="setDoublesPartner('${eventId}','${playerId}', this.value, this.options[this.selectedIndex].text)">
-          <option value="">— Doubles partner (Two Buff) —</option>
-          ${partnerOptions.map(p=>`<option value="${p.id}" ${cur.partnerId===p.id ? 'selected':''}>${esc(p.name)}</option>`).join('')}
-        </select>
-        ${doublesOppSlot('opp1', cur)}
-        ${doublesOppSlot('opp2', cur)}
-      </div>`;
-  };
-  return `
-    <div class="divider"></div>
-    <div style="font-size:11px; font-weight:800; color:var(--ink-soft); text-transform:uppercase; letter-spacing:0.3px; margin-bottom:2px;">Admin · Match Results</div>
-    <div class="match-row"><div class="match-label">Singles</div>${wlBtns('matchplay', mp)}</div>
-    ${powerRankRow('matchplay', mp)}
-    ${opponentInputRow('matchplay', mp)}
-    <div class="match-row"><div class="match-label">Doubles</div>${wlBtns('doubles', db)}</div>
-    ${powerRankRow('doubles', db)}
-    ${doublesExtras(db)}
-    <div style="font-size:10.5px; color:var(--ink-soft); margin-top:8px; line-height:1.4;">Opponent quality (1–10): rate how good the pairing/opponent was — 5 or above is quality/strong, below 5 is weaker. This isn't shown anywhere else; it just quietly informs the season rankings.${oppTeam ? ` Opponent fields are linked to ${esc(oppTeam.name)}'s actual roster — renaming a player there updates everywhere their name shows.` : ' Add an opponent team to this event to link results to an actual roster instead of free text.'}</div>
-  `;
-}
-
 async function setRsvpStatus(eventId, playerId, status){
   const rsvp = await loadRsvp(eventId);
   const cur = rsvp[playerId] || {status:'none', lunch:''};
   cur.status = (cur.status === status) ? 'none' : status;
   rsvp[playerId] = cur;
-  await saveRsvp(eventId, rsvp);
   render();
+  saveRsvp(eventId, rsvp).catch(err=>console.error('RSVP save failed', err));
 }
 async function setLunchItem(eventId, playerId, value){
   const rsvp = await loadRsvp(eventId);
@@ -1661,89 +1645,54 @@ async function setLunchItem(eventId, playerId, value){
 }
 function blankResultEntry(kind){
   return kind === 'doubles'
-    ? {played:false, result:null, powerRank:null, partnerId:null, partnerName:'', opp1Id:null, opp1Name:'', opp2Id:null, opp2Name:''}
-    : {played:false, result:null, powerRank:null, opponentPlayerId:null, opponentName:''};
+    ? {played:false, result:null, powerRank:null, partnerId:null, partnerName:'', opp1Id:null, opp1Name:'', opp2Id:null, opp2Name:'', ourScore:null, oppScore:null}
+    : {played:false, result:null, powerRank:null, opponentPlayerId:null, opponentName:'', marginUp:null, holesRemaining:null};
 }
-async function setMatchResult(eventId, playerId, kind, result){
+function formatMatchplayMargin(entry){
+  if(entry.marginUp == null) return '';
+  const holesLeft = entry.holesRemaining || 0;
+  return holesLeft > 0 ? `${entry.marginUp} UP · ${holesLeft} to play` : `${entry.marginUp} UP · closed out`;
+}
+function formatDoublesScore(entry){
+  if(entry.ourScore == null || entry.oppScore == null) return '';
+  return `${entry.ourScore} - ${entry.oppScore}`;
+}
+async function setSinglesMargin(eventId, tbId, value){
   const stats = await loadStats(eventId);
-  const cur = stats[playerId] || {};
-  const blank = blankResultEntry(kind);
-  const existing = cur[kind] || blank;
-  if(result === null){
-    cur[kind] = blank;
-  } else if(existing.played && existing.result === result){
-    cur[kind] = blank;
-  } else if(kind === 'doubles'){
-    cur[kind] = {
-      played:true, result:result, powerRank: existing.powerRank || 5,
-      partnerId: existing.partnerId || null, partnerName: existing.partnerName || '',
-      opp1Id: existing.opp1Id || null, opp1Name: existing.opp1Name || '',
-      opp2Id: existing.opp2Id || null, opp2Name: existing.opp2Name || ''
-    };
-  } else {
-    cur[kind] = {played:true, result:result, powerRank: existing.powerRank || 5, opponentPlayerId: existing.opponentPlayerId || null, opponentName: existing.opponentName || ''};
-  }
-  stats[playerId] = cur;
-  await saveStats(eventId, stats);
+  const cur = stats[tbId] || {};
+  const existing = cur.matchplay || blankResultEntry('matchplay');
+  if(!existing.played) return;
+  const num = value === '' ? null : Math.max(0, Number(value));
+  existing.marginUp = (num===null || isNaN(num)) ? null : num;
+  cur.matchplay = existing;
+  stats[tbId] = cur;
   render();
+  saveStats(eventId, stats).catch(err=>console.error('Score save failed', err));
 }
-async function setDoublesPartner(eventId, playerId, partnerId, partnerName){
+async function setSinglesHolesRemaining(eventId, tbId, value){
   const stats = await loadStats(eventId);
-  const cur = stats[playerId] || {};
+  const cur = stats[tbId] || {};
+  const existing = cur.matchplay || blankResultEntry('matchplay');
+  if(!existing.played) return;
+  const num = value === '' ? null : Math.max(0, Number(value));
+  existing.holesRemaining = (num===null || isNaN(num)) ? null : num;
+  cur.matchplay = existing;
+  stats[tbId] = cur;
+  render();
+  saveStats(eventId, stats).catch(err=>console.error('Score save failed', err));
+}
+async function setDoublesScore(eventId, tbId, side, value){
+  const stats = await loadStats(eventId);
+  const cur = stats[tbId] || {};
   const existing = cur.doubles || blankResultEntry('doubles');
   if(!existing.played) return;
-  existing.partnerId = partnerId || null;
-  existing.partnerName = partnerId ? partnerName : '';
+  const num = value === '' ? null : Number(value);
+  if(side === 'our') existing.ourScore = (num===null || isNaN(num)) ? null : num;
+  else existing.oppScore = (num===null || isNaN(num)) ? null : num;
   cur.doubles = existing;
-  stats[playerId] = cur;
-  await saveStats(eventId, stats);
-  showToast('Partner saved');
-}
-async function setDoublesOpponent(eventId, playerId, slot, oppId, oppName){
-  const stats = await loadStats(eventId);
-  const cur = stats[playerId] || {};
-  const existing = cur.doubles || blankResultEntry('doubles');
-  if(!existing.played) return;
-  existing[slot + 'Id'] = oppId || null;
-  existing[slot + 'Name'] = oppId ? oppName : '';
-  cur.doubles = existing;
-  stats[playerId] = cur;
-  await saveStats(eventId, stats);
-  showToast('Opponent saved');
-}
-async function setDoublesOpponentName(eventId, playerId, slot, value){
-  const stats = await loadStats(eventId);
-  const cur = stats[playerId] || {};
-  const existing = cur.doubles || blankResultEntry('doubles');
-  if(!existing.played) return;
-  existing[slot + 'Name'] = value.trim();
-  cur.doubles = existing;
-  stats[playerId] = cur;
-  await saveStats(eventId, stats);
-  showToast('Opponent saved');
-}
-async function setOpponentPlayer(eventId, playerId, kind, oppPlayerId, oppPlayerName){
-  const stats = await loadStats(eventId);
-  const cur = stats[playerId] || {};
-  const existing = cur[kind] || {played:false, result:null, powerRank:null, opponentPlayerId:null, opponentName:''};
-  if(!existing.played) return;
-  existing.opponentPlayerId = oppPlayerId || null;
-  existing.opponentName = oppPlayerId ? oppPlayerName : '';
-  cur[kind] = existing;
-  stats[playerId] = cur;
-  await saveStats(eventId, stats);
-  showToast('Opponent saved');
-}
-async function setOpponentName(eventId, playerId, kind, value){
-  const stats = await loadStats(eventId);
-  const cur = stats[playerId] || {};
-  const existing = cur[kind] || {played:false, result:null, powerRank:null, opponentName:''};
-  if(!existing.played) return;
-  existing.opponentName = value.trim();
-  cur[kind] = existing;
-  stats[playerId] = cur;
-  await saveStats(eventId, stats);
-  showToast('Opponent name saved');
+  stats[tbId] = cur;
+  render();
+  saveStats(eventId, stats).catch(err=>console.error('Score save failed', err));
 }
 async function setPowerRank(eventId, playerId, kind, value){
   const stats = await loadStats(eventId);
@@ -1753,8 +1702,8 @@ async function setPowerRank(eventId, playerId, kind, value){
   existing.powerRank = Math.max(1, Math.min(10, Number(value) || 5));
   cur[kind] = existing;
   stats[playerId] = cur;
-  await saveStats(eventId, stats);
   render();
+  saveStats(eventId, stats).catch(err=>console.error('Power rank save failed', err));
 }
 
 /* ============================= TEAM ============================= */
@@ -1805,29 +1754,36 @@ function computeMatchDetailsFromData(stats){
   const doubles = [];
   const countedForDoubles = new Set();
   Object.keys(stats).forEach(pid=>{
+    if(pid === '__adjustments') return; // not a player entry — handled separately below
     const s = stats[pid];
     const ourPlayer = state.players.find(p=>p.id===pid);
     const ourName = ourPlayer ? ourPlayer.name : 'Former player';
     if(s.matchplay && s.matchplay.played){
-      singles.push({ ourName, result: s.matchplay.result, opponentName: s.matchplay.opponentName || 'Unknown opponent' });
+      singles.push({ ourName, result: s.matchplay.result, opponentName: s.matchplay.opponentName || 'Unknown opponent', marginUp: s.matchplay.marginUp, holesRemaining: s.matchplay.holesRemaining });
     }
     if(s.doubles && s.doubles.played && !countedForDoubles.has(pid)){
       countedForDoubles.add(pid);
       if(s.doubles.partnerId) countedForDoubles.add(s.doubles.partnerId);
       const ourSide = s.doubles.partnerName ? `${ourName} & ${s.doubles.partnerName}` : ourName;
       const oppSide = [s.doubles.opp1Name, s.doubles.opp2Name].filter(Boolean).join(' & ') || 'Unknown opponents';
-      doubles.push({ ourSide, result: s.doubles.result, opponentName: oppSide });
+      doubles.push({ ourSide, result: s.doubles.result, opponentName: oppSide, ourScore: s.doubles.ourScore, oppScore: s.doubles.oppScore });
     }
   });
-  const mpUsPts = singles.filter(s=>s.result==='W').length * 1;
-  const mpOppPts = singles.filter(s=>s.result==='L').length * 1;
-  const dbUsPts = doubles.filter(d=>d.result==='W').length * 2;
-  const dbOppPts = doubles.filter(d=>d.result==='L').length * 2;
-  const totalUsPts = mpUsPts + dbUsPts;
-  const totalOppPts = mpOppPts + dbOppPts;
-  const hasAnyResult = (singles.length + doubles.length) > 0;
+  // A win is worth the full point value; a tie splits it evenly between both teams.
+  const mpUsPts = singles.filter(s=>s.result==='W').length * 1 + singles.filter(s=>s.result==='T').length * 0.5;
+  const mpOppPts = singles.filter(s=>s.result==='L').length * 1 + singles.filter(s=>s.result==='T').length * 0.5;
+  const dbUsPts = doubles.filter(d=>d.result==='W').length * 2 + doubles.filter(d=>d.result==='T').length * 1;
+  const dbOppPts = doubles.filter(d=>d.result==='L').length * 2 + doubles.filter(d=>d.result==='T').length * 1;
+
+  const adjustments = Array.isArray(stats.__adjustments) ? stats.__adjustments : [];
+  const adjUsPts = adjustments.filter(a=>a.team==='us').reduce((sum,a)=>sum + a.points, 0);
+  const adjOppPts = adjustments.filter(a=>a.team==='opponent').reduce((sum,a)=>sum + a.points, 0);
+
+  const totalUsPts = mpUsPts + dbUsPts + adjUsPts;
+  const totalOppPts = mpOppPts + dbOppPts + adjOppPts;
+  const hasAnyResult = (singles.length + doubles.length + adjustments.length) > 0;
   const result = !hasAnyResult ? null : totalUsPts > totalOppPts ? 'W' : totalUsPts < totalOppPts ? 'L' : 'T';
-  return { singles, doubles, mpUsPts, mpOppPts, dbUsPts, dbOppPts, totalUsPts, totalOppPts, result };
+  return { singles, doubles, mpUsPts, mpOppPts, dbUsPts, dbOppPts, adjustments, adjUsPts, adjOppPts, totalUsPts, totalOppPts, result };
 }
 async function getEventMatchDetails(eventId){
   const stats = await loadStats(eventId);
@@ -1868,23 +1824,23 @@ async function renderEventMatchBreakdown(eventId){
 
   const { singles, doubles, mpUsPts, mpOppPts, dbUsPts, dbOppPts, totalUsPts, totalOppPts } = await getEventMatchDetails(eventId);
 
-  const matchRow = (label, result, oppLabel) => {
-    const color = result==='W' ? 'var(--forest)' : 'var(--red)';
-    const bg = result==='W' ? '#E1E8F5' : '#F5D9D6';
+  const matchRow = (label, result, oppLabel, scoreText) => {
+    const color = result==='W' ? 'var(--forest)' : result==='T' ? '#8A6112' : 'var(--red)';
+    const bg = result==='W' ? '#E1E8F5' : result==='T' ? '#FBEFD8' : '#F5D9D6';
     return `
       <div style="padding:7px 0; border-top:1px solid var(--line);">
         <div style="display:flex; justify-content:space-between; align-items:center; gap:6px;">
-          <div style="font-size:11.5px; font-weight:700; line-height:1.3;">${esc(label)}<br><span style="color:var(--ink-soft); font-weight:700;">vs ${esc(oppLabel)}</span></div>
+          <div style="font-size:11.5px; font-weight:700; line-height:1.3;">${esc(label)}<br><span style="color:var(--ink-soft); font-weight:700;">vs ${esc(oppLabel)}</span>${scoreText ? `<br><span style="color:var(--ink-soft); font-weight:700;">${esc(scoreText)}</span>` : ''}</div>
           <span class="pill" style="background:${bg}; color:${color}; flex-shrink:0;">${result}</span>
         </div>
       </div>`;
   };
 
   const singlesHtml = singles.length
-    ? singles.map(s=>matchRow(s.ourName, s.result, s.opponentName)).join('')
+    ? singles.map(s=>matchRow(s.ourName, s.result, s.opponentName, formatMatchplayMargin(s))).join('')
     : `<div style="font-size:11.5px; color:var(--ink-soft); padding:6px 0;">No results recorded.</div>`;
   const doublesHtml = doubles.length
-    ? doubles.map(d=>matchRow(d.ourSide, d.result, d.opponentName)).join('')
+    ? doubles.map(d=>matchRow(d.ourSide, d.result, d.opponentName, formatDoublesScore(d))).join('')
     : `<div style="font-size:11.5px; color:var(--ink-soft); padding:6px 0;">No results recorded.</div>`;
 
   return `
@@ -1914,6 +1870,7 @@ async function getOpponentPlayerHistory(oppPlayerId){
     if(!ev) return; // event deleted
     const data = allData[eventId];
     Object.keys(data).forEach(ourPlayerId=>{
+      if(ourPlayerId === '__adjustments') return; // not a player entry
       const s = data[ourPlayerId];
       const ourPlayer = state.players.find(p=>p.id===ourPlayerId);
       const ourPlayerName = ourPlayer ? ourPlayer.name : 'Former player';
@@ -2000,8 +1957,23 @@ async function teamCardFor(p){
           </div>
         ` : ''}
       </div>
-      ${expanded ? `<div>${historyHtml}</div>` : ''}
+      ${expanded ? `<div>${renderPlayerProfileSummary(p)}${historyHtml}</div>` : ''}
     </div>`;
+}
+function genderBadgeHtml(p){
+  if(!p.gender) return '';
+  return `<span class="gender-badge ${p.gender==='F' ? 'g-f':'g-m'}">${p.gender}</span>`;
+}
+function renderPlayerProfileSummary(p){
+  const bits = [];
+  if(p.skillRank) bits.push(`⭐ Skill ${p.skillRank}/10`);
+  if(p.pdgaRating) bits.push(`PDGA ${p.pdgaRating}`);
+  if(p.throwHand) bits.push(p.throwHand === 'forehand' ? 'Forehand' : 'Backhand');
+  if(p.handedness) bits.push(p.handedness === 'right' ? 'Righty' : 'Lefty');
+  if(p.age) bits.push(`Age ${p.age}`);
+  const summaryLine = bits.length ? `<div style="display:flex; flex-wrap:wrap; gap:6px; padding:8px 2px 2px;">${bits.map(b=>`<span class="pill pill-gray">${esc(b)}</span>`).join('')}</div>` : '';
+  const notesLine = p.notes ? `<div style="font-size:12.5px; color:var(--ink); white-space:pre-wrap; padding:6px 2px 2px; line-height:1.5;">📝 ${esc(p.notes)}</div>` : '';
+  return summaryLine + notesLine;
 }
 async function renderTeam(){
   const sorted = [...state.players].sort((a,b)=>a.name.localeCompare(b.name));
@@ -2019,6 +1991,63 @@ async function renderTeam(){
     ${state.adminMode ? `<div class="fab-row"><button class="btn btn-orange btn-sm" onclick="openPlayerModal()">+ Add Player</button></div>` : ''}
     ${rows}
   `;
+}
+function selectSeg(el){
+  const row = el.parentElement;
+  row.querySelectorAll('.seg-btn').forEach(b=>b.classList.remove('seg-sel'));
+  el.classList.add('seg-sel');
+}
+function renderPlayerBaselineFields(prefix, p){
+  const rank = (p && p.skillRank) ? p.skillRank : 5;
+  return `
+    <div class="field">
+      <label>Skill Rank (1–10)</label>
+      <div style="display:flex; align-items:center; gap:10px;">
+        <input type="range" id="${prefix}_skillRank" min="1" max="10" value="${rank}" style="flex:1;" oninput="document.getElementById('${prefix}_skillRankVal').textContent=this.value">
+        <span id="${prefix}_skillRankVal" style="font-size:15px; font-weight:800; color:var(--forest-dark); width:20px; text-align:right;">${rank}</span>
+      </div>
+      <div style="font-size:11px; color:var(--ink-soft); margin-top:4px;">A general sense of their ability — useful before season stats build up. Leave alone for a neutral 5.</div>
+    </div>
+    <div class="field">
+      <label>PDGA Rating (600–1100, optional)</label>
+      <input id="${prefix}_pdga" type="number" min="600" max="1100" placeholder="e.g. 873" value="${(p && p.pdgaRating) ? p.pdgaRating : ''}">
+    </div>
+    <div class="field">
+      <label>Dominant Throwing Style (optional)</label>
+      <div class="seg-row" id="${prefix}_throwHandRow">
+        <div class="seg-btn ${p && p.throwHand==='forehand' ? 'seg-sel':''}" data-v="forehand" onclick="selectSeg(this)">Forehand</div>
+        <div class="seg-btn ${p && p.throwHand==='backhand' ? 'seg-sel':''}" data-v="backhand" onclick="selectSeg(this)">Backhand</div>
+      </div>
+    </div>
+    <div class="field">
+      <label>Dominant Hand (optional)</label>
+      <div class="seg-row" id="${prefix}_handRow">
+        <div class="seg-btn ${p && p.handedness==='right' ? 'seg-sel':''}" data-v="right" onclick="selectSeg(this)">Right</div>
+        <div class="seg-btn ${p && p.handedness==='left' ? 'seg-sel':''}" data-v="left" onclick="selectSeg(this)">Left</div>
+      </div>
+    </div>
+    <div class="field">
+      <label>Age (optional)</label>
+      <input id="${prefix}_age" type="number" min="0" max="120" placeholder="Optional" value="${(p && p.age) ? p.age : ''}">
+    </div>
+    <div class="field">
+      <label>Notes (optional)</label>
+      <textarea id="${prefix}_notes" rows="4" placeholder="Playing style, tendencies, anything worth remembering..." style="width:100%; padding:12px; border-radius:12px; border:2px solid var(--line); font-size:14px; font-family:inherit; resize:vertical;">${(p && p.notes) ? esc(p.notes) : ''}</textarea>
+    </div>`;
+}
+function readPlayerBaselineFields(prefix){
+  const skillRankEl = document.getElementById(prefix + '_skillRank');
+  const skillRank = skillRankEl ? Number(skillRankEl.value) : 5;
+  const pdgaVal = document.getElementById(prefix + '_pdga').value.trim();
+  const pdgaRating = pdgaVal ? Math.max(600, Math.min(1100, Number(pdgaVal))) : null;
+  const throwBtn = document.querySelector('#' + prefix + '_throwHandRow .seg-sel');
+  const throwHand = throwBtn ? throwBtn.dataset.v : null;
+  const handBtn = document.querySelector('#' + prefix + '_handRow .seg-sel');
+  const handedness = handBtn ? handBtn.dataset.v : null;
+  const ageVal = document.getElementById(prefix + '_age').value.trim();
+  const age = ageVal ? Number(ageVal) : null;
+  const notes = document.getElementById(prefix + '_notes').value.trim();
+  return { skillRank, pdgaRating, throwHand, handedness, age, notes };
 }
 function openPlayerModal(existingId){
   const p = existingId ? state.players.find(pl=>pl.id===existingId) : null;
@@ -2038,6 +2067,9 @@ function openPlayerModal(existingId){
             <div class="seg-btn ${(p && p.gender==='F') ? 'seg-sel':''}" data-g="F" onclick="selectGender(this)">F · Female</div>
           </div>
         </div>
+        <div class="divider"></div>
+        ${renderPlayerBaselineFields('pl', p)}
+        <div class="divider"></div>
         <div class="field">
           <label>Phone</label>
           <input id="pl_phone" type="tel" placeholder="(555) 123-4567" value="${p ? esc(p.phone||'') : ''}">
@@ -2066,6 +2098,7 @@ async function savePlayerFromModal(existingId){
   const gender = genderBtn ? genderBtn.dataset.g : 'M';
   const phone = document.getElementById('pl_phone').value.trim();
   const email = document.getElementById('pl_email').value.trim();
+  const baseline = readPlayerBaselineFields('pl');
   if(!name){ showToast('Enter a name'); return; }
   if(existingId){
     const p = state.players.find(pl=>pl.id===existingId);
@@ -2073,8 +2106,9 @@ async function savePlayerFromModal(existingId){
     p.gender = gender;
     p.phone = phone;
     p.email = email;
+    Object.assign(p, baseline);
   } else {
-    state.players.push({id: uid('pl'), name, active:true, gender, phone, email});
+    state.players.push({id: uid('pl'), name, active:true, gender, phone, email, ...baseline});
   }
   await savePlayers();
   closeModal();
@@ -2154,8 +2188,8 @@ async function performDeletePlayer(id){
 async function togglePlayerActive(id){
   const p = state.players.find(pl=>pl.id===id);
   p.active = p.active===false ? true : false;
-  await savePlayers();
   render();
+  savePlayers().catch(err=>console.error('Player status save failed', err));
 }
 
 /* ============================= STATS ============================= */
@@ -2215,6 +2249,15 @@ async function performDeleteNote(id){
 }
 
 /* ============================= MOCK MATCHUPS ============================= */
+function compactPlayerInfoLine(p){
+  const bits = [];
+  if(p.skillRank) bits.push(`Skill ${p.skillRank}`);
+  if(p.pdgaRating) bits.push(`PDGA ${p.pdgaRating}`);
+  if(p.throwHand) bits.push(p.throwHand === 'forehand' ? 'FH' : 'BH');
+  if(p.handedness) bits.push(p.handedness === 'right' ? 'R' : 'L');
+  if(p.age) bits.push(`${p.age}y`);
+  return bits.join(' · ');
+}
 async function renderMatchups(){
   const [teams, ms] = await Promise.all([
     loadOppTeams(),
@@ -2222,17 +2265,17 @@ async function renderMatchups(){
   ]);
   state.matchupStateCache = ms; // reused by tap handlers so every tap doesn't re-fetch over the network
   const activeTB = state.players.filter(p=>p.active !== false);
-  const currentTeam = teams.find(t=>t.id===ms.teamId) || null;
+  const currentTeam = teams.find(t=>t.id===ms.currentTeamId) || null;
 
   const teamPills = `
     <div class="season-tabs">
-      ${teams.map(t=>`<button class="matchup-team-pill ${t.id===ms.teamId?'active':''}" ${state.adminMode ? `onclick="selectMatchupTeam('${t.id}')"` : ''}>${esc(t.name)}</button>`).join('')}
+      ${teams.map(t=>`<button class="matchup-team-pill ${t.id===ms.currentTeamId?'active':''}" ${state.adminMode ? `onclick="selectMatchupTeam('${t.id}')"` : ''}>${esc(t.name)}</button>`).join('')}
     </div>`;
 
   if(!currentTeam){
     return `
-      <div class="page-title">Mock Matchups</div>
-      <div class="page-sub">Plan out how singles and doubles might line up before an event. Only admins can change the mock matchup — everyone else can view.</div>
+      <div class="page-title">Matchups &amp; Mockup</div>
+      <div class="page-sub">Select a team to run a mockup and try out matchup strategies. Tap a specific event linked to that opponent to perform the actual matchups and record real results. Only admins can make changes — everyone else can view.</div>
       ${teams.length ? teamPills : ''}
       <div class="card empty">
         <span class="em">🎯</span>
@@ -2241,65 +2284,237 @@ async function renderMatchups(){
     `;
   }
 
-  // ---- Singles ----
-  const usedOppIds = new Set(Object.values(ms.singles));
-  const availableOpp = currentTeam.players.filter(p=>!usedOppIds.has(p.id));
-  const availableTB = activeTB.filter(p=>ms.singles[p.id] === undefined);
+  // ---- Event linking: which real event (if any) results get recorded against ----
+  const linkedEvents = state.events.filter(e=>e.opponentTeamId === currentTeam.id).sort((a,b)=>b.date.localeCompare(a.date));
+  const selectedEventId = ms.eventIdByTeam[currentTeam.id] || null;
+  const selectedEvent = selectedEventId ? state.events.find(e=>e.id===selectedEventId) : null;
+  const eventStats = selectedEventId ? await loadStats(selectedEventId) : null;
 
-  const singlesTbIds = Object.keys(ms.singles);
-  const pairedSinglesHtml = [...singlesTbIds].reverse().map(tbId=>{ // newest pair on top
-    const tb = activeTB.find(p=>p.id===tbId);
-    const opp = currentTeam.players.find(p=>p.id===ms.singles[tbId]);
-    if(!tb || !opp) return '';
+  const eventPillsHtml = linkedEvents.length ? `
+    <div class="season-tabs">
+      ${linkedEvents.map(e=>{
+        const d = fmtDate(e.date);
+        return `<button class="matchup-team-pill ${e.id===selectedEventId?'active':''}" ${state.adminMode ? `onclick="selectMockupEvent('${currentTeam.id}','${e.id}')"` : ''}>${esc(e.name)} · ${d.mon} ${d.day}</button>`;
+      }).join('')}
+    </div>
+  ` : `<div style="font-size:11.5px; color:var(--ink-soft); margin:8px 0 4px;">No events are linked to ${esc(currentTeam.name)} yet — set this team as an event's opponent (Events tab) to record real results here.</div>`;
+
+  const resultBannerHtml = selectedEvent ? `
+    <div class="card" style="background:#DCEFE3; border:none; padding:10px 14px; margin-bottom:4px;">
+      <div style="font-size:12.5px; font-weight:800; color:var(--forest);">📋 Recording results for: ${esc(selectedEvent.name)}</div>
+    </div>
+  ` : `
+    <div class="card" style="background:var(--chip-bg); border:none; padding:10px 14px; margin-bottom:4px;">
+      <div style="font-size:12.5px; color:var(--ink-soft);">Trial mode — select an event above to start recording win/loss results here. Until then this is just a planning tool.</div>
+    </div>
+  `;
+
+  // ---- Singles (each opponent team keeps its own independent set of pairings) ----
+  const singles = getSinglesBucket(ms);
+  const usedOppIds = new Set(Object.values(singles));
+  const availableOpp = currentTeam.players.filter(p=>!usedOppIds.has(p.id));
+  const availableTB = activeTB.filter(p=>singles[p.id] === undefined);
+
+  const singlesConnector = (tbId, oppId, key) => {
+    let statusEmoji = '';
+    if(eventStats){
+      const entry = (eventStats[tbId] && eventStats[tbId].matchplay) || {};
+      if(entry.played) statusEmoji = entry.result==='W' ? ' ✅' : entry.result==='T' ? ' 🤝' : ' ❌';
+    }
+    if(state.adminMode && selectedEventId){
+      const expanded = state.expandedMockupResultKey === key;
+      return `<button class="matchup-connector" style="background:none; border:none; padding:0; font:inherit; text-transform:uppercase; cursor:pointer;" onclick="toggleMockupResult('${key}')">vs${statusEmoji} ${expanded ? '▲' : '▼'}</button>`;
+    }
+    return `<div class="matchup-connector">vs${statusEmoji}</div>`;
+  };
+  const singlesResultHtml = (tbId, oppId, key) => {
+    if(!selectedEventId || !state.adminMode || state.expandedMockupResultKey !== key) return '';
+    const entry = (eventStats[tbId] && eventStats[tbId].matchplay) || {played:false, result:null, powerRank:null, marginUp:null, holesRemaining:null};
+    const rank = entry.powerRank || 5;
     return `
-      <div class="matchup-paired-card">
-        <button class="matchup-chip paired" style="margin:0; flex:1;" ${state.adminMode ? `onclick="tapSinglesTB('${tbId}')"` : 'disabled'}>${esc(tb.name)}</button>
-        <div class="matchup-connector">vs</div>
-        <div class="matchup-chip opp-paired" style="margin:0; flex:1; cursor:default;">${esc(opp.name)}</div>
-        ${state.adminMode ? `<button class="icon-btn" onclick="unpairSingles('${tbId}')">✕</button>` : ''}
+      <div style="width:100%; margin-top:8px; padding-top:8px; border-top:1px dashed var(--line);">
+        <div style="display:flex; gap:8px;">
+          <button class="wl-btn ${entry.played && entry.result==='W' ? 'win-sel':''}" style="flex:1;" onclick="recordSinglesResult('${selectedEventId}','${tbId}','${oppId}','W')">Won</button>
+          <button class="wl-btn ${entry.played && entry.result==='T' ? 'tie-sel':''}" style="flex:1;" onclick="recordSinglesResult('${selectedEventId}','${tbId}','${oppId}','T')">Tie</button>
+          <button class="wl-btn ${entry.played && entry.result==='L' ? 'loss-sel':''}" style="flex:1;" onclick="recordSinglesResult('${selectedEventId}','${tbId}','${oppId}','L')">Lost</button>
+        </div>
+        ${entry.played && entry.result !== 'T' ? `
+          <div style="display:flex; gap:8px; margin-top:8px;">
+            <div style="flex:1;">
+              <label style="display:block; font-size:10px; font-weight:800; color:var(--ink-soft); text-transform:uppercase; margin-bottom:4px;">Margin (holes up)</label>
+              <input class="lunch-input" style="margin-top:0;" type="number" min="1" placeholder="e.g. 3" value="${entry.marginUp!=null ? entry.marginUp : ''}" onchange="setSinglesMargin('${selectedEventId}','${tbId}', this.value)">
+            </div>
+            <div style="flex:1;">
+              <label style="display:block; font-size:10px; font-weight:800; color:var(--ink-soft); text-transform:uppercase; margin-bottom:4px;">Holes Remaining</label>
+              <input class="lunch-input" style="margin-top:0;" type="number" min="0" placeholder="0 if none left" value="${entry.holesRemaining!=null ? entry.holesRemaining : ''}" onchange="setSinglesHolesRemaining('${selectedEventId}','${tbId}', this.value)">
+            </div>
+          </div>
+          <div style="display:flex; align-items:center; gap:8px; margin-top:8px;">
+            <input type="range" min="1" max="10" value="${rank}" style="flex:1;" oninput="this.nextElementSibling.textContent=this.value" onchange="setPowerRank('${selectedEventId}','${tbId}','matchplay', this.value)">
+            <span style="font-size:12px; font-weight:800; color:var(--forest-dark); width:16px; text-align:right;">${rank}</span>
+          </div>
+          <div style="font-size:10px; color:var(--ink-soft); margin-top:2px;">Opponent quality — 5+ strong, below 5 weaker</div>
+        ` : ''}
+        ${entry.played && entry.result === 'T' ? `<div style="font-size:10px; color:var(--ink-soft); margin-top:6px;">A tie splits the point — 0.5 to each team.</div>` : ''}
+      </div>`;
+  };
+
+  const singlesTbIds = Object.keys(singles);
+  const pairedSinglesHtml = [...singlesTbIds].map(tbId=>{ // first matchup made stays on top; new ones build downward
+    const tb = activeTB.find(p=>p.id===tbId);
+    const opp = currentTeam.players.find(p=>p.id===singles[tbId]);
+    if(!tb || !opp) return '';
+    const tbInfo = compactPlayerInfoLine(tb);
+    const oppInfo = compactPlayerInfoLine(opp);
+    const resultKey = `singles-${tbId}`;
+    return `
+      <div style="margin-bottom:9px;">
+        <div class="matchup-paired-card" style="margin-bottom:0;">
+          <button class="matchup-chip paired" style="margin:0; flex:1;" ${state.adminMode ? `onclick="tapSinglesTB('${tbId}')"` : 'disabled'}>${esc(tb.name)} ${genderBadgeHtml(tb)}${tbInfo ? `<span class="sub">${esc(tbInfo)}</span>` : ''}</button>
+          ${singlesConnector(tbId, opp.id, resultKey)}
+          <button class="matchup-chip opp-paired" style="margin:0; flex:1;" ${state.adminMode ? `onclick="tapSinglesOpp('${opp.id}')"` : 'disabled'}>${esc(opp.name)} ${genderBadgeHtml(opp)}${oppInfo ? `<span class="sub">${esc(oppInfo)}</span>` : ''}</button>
+          ${state.adminMode ? `<button class="icon-btn" onclick="unpairSingles('${tbId}')">✕</button>` : ''}
+        </div>
+        ${singlesResultHtml(tbId, opp.id, resultKey)}
       </div>`;
   }).join('');
 
   const tbSinglesChips = availableTB.length ? availableTB.map(p=>{
     const isArmed = state.armedSinglesTB === p.id;
-    return `<button class="matchup-chip ${isArmed?'armed':''}" ${state.adminMode ? `onclick="tapSinglesTB('${p.id}')"` : 'disabled'}>${esc(p.name)}${isArmed ? `<span class="sub">Tap an opponent →</span>` : ''}</button>`;
+    const info = compactPlayerInfoLine(p);
+    return `<button class="matchup-chip ${isArmed?'armed':''}" ${state.adminMode ? `onclick="tapSinglesTB('${p.id}')"` : 'disabled'}>${esc(p.name)} ${genderBadgeHtml(p)}${info ? `<span class="sub">${esc(info)}</span>` : ''}${isArmed ? `<span class="sub">Tap an opponent →</span>` : ''}</button>`;
   }).join('') : `<div style="font-size:12.5px; color:var(--ink-soft); text-align:center; padding:10px 0;">Everyone's matched up</div>`;
 
-  const oppSinglesChips = availableOpp.length ? availableOpp.map(o=>`
-    <button class="matchup-chip" ${state.adminMode ? `onclick="tapSinglesOpp('${o.id}')"` : 'disabled'}>${esc(o.name)}</button>
-  `).join('') : `<div style="font-size:12.5px; color:var(--ink-soft); text-align:center; padding:10px 0;">${currentTeam.players.length ? 'All matched up' : 'No players on this roster yet'}</div>`;
+  const oppSinglesChips = availableOpp.length ? availableOpp.map(o=>{
+    const isArmed = state.armedSinglesOpp === o.id;
+    const info = compactPlayerInfoLine(o);
+    return `<button class="matchup-chip ${isArmed?'armed':''}" ${state.adminMode ? `onclick="tapSinglesOpp('${o.id}')"` : 'disabled'}>${esc(o.name)} ${genderBadgeHtml(o)}${info ? `<span class="sub">${esc(info)}</span>` : ''}${isArmed ? `<span class="sub">← Tap a Two Buff player</span>` : ''}</button>`;
+  }).join('') : `<div style="font-size:12.5px; color:var(--ink-soft); text-align:center; padding:10px 0;">${currentTeam.players.length ? 'All matched up' : 'No players on this roster yet'}</div>`;
 
-  // ---- Doubles (Two Buff only) ----
-  const pairedIds = new Set(ms.doubles.flat());
-  const availableDoublesTB = activeTB.filter(p=>!pairedIds.has(p.id));
-  const doublesPairedHtml = ms.doubles.map((pair,i)=>({pair,i})).reverse().map(({pair,i})=>{ // newest pair on top
-    const a = activeTB.find(p=>p.id===pair[0]);
-    const b = activeTB.find(p=>p.id===pair[1]);
-    if(!a || !b) return '';
+  // ---- Doubles: now a real doubles-vs-doubles matchup (tap two on each side) ----
+  const doubles = getDoublesBucket(ms);
+  const pairedTBIds = new Set(doubles.flatMap(m=>m.tb));
+  const pairedOppIds = new Set(doubles.flatMap(m=>m.opp));
+  const availableDoublesTB = activeTB.filter(p=>!pairedTBIds.has(p.id));
+  const availableDoublesOpp = currentTeam.players.filter(p=>!pairedOppIds.has(p.id));
+
+  const doublesConnector = (m, key) => {
+    let statusEmoji = '';
+    if(eventStats){
+      const entry = (eventStats[m.tb[0]] && eventStats[m.tb[0]].doubles) || {};
+      if(entry.played) statusEmoji = entry.result==='W' ? ' ✅' : entry.result==='T' ? ' 🤝' : ' ❌';
+    }
+    if(state.adminMode && selectedEventId){
+      const expanded = state.expandedMockupResultKey === key;
+      return `<button class="matchup-connector" style="background:none; border:none; padding:0; font:inherit; text-transform:uppercase; cursor:pointer;" onclick="toggleMockupResult('${key}')">vs${statusEmoji} ${expanded ? '▲' : '▼'}</button>`;
+    }
+    return `<div class="matchup-connector">vs${statusEmoji}</div>`;
+  };
+  const doublesResultHtml = (m, key) => {
+    if(!selectedEventId || !state.adminMode || state.expandedMockupResultKey !== key) return '';
+    const primaryTbId = m.tb[0];
+    const entry = (eventStats[primaryTbId] && eventStats[primaryTbId].doubles) || {played:false, result:null, powerRank:null, ourScore:null, oppScore:null};
+    const rank = entry.powerRank || 5;
     return `
-      <div class="matchup-paired-card">
-        <button class="matchup-chip paired" style="margin:0; flex:1;" ${state.adminMode ? `onclick="tapDoublesPlayer('${a.id}')"` : 'disabled'}>${esc(a.name)}</button>
-        <div class="matchup-connector">&amp;</div>
-        <button class="matchup-chip paired" style="margin:0; flex:1;" ${state.adminMode ? `onclick="tapDoublesPlayer('${b.id}')"` : 'disabled'}>${esc(b.name)}</button>
-        ${state.adminMode ? `<button class="icon-btn" onclick="unpairDoubles(${i})">✕</button>` : ''}
+      <div style="width:100%; margin-top:8px; padding-top:8px; border-top:1px dashed var(--line);">
+        <div style="display:flex; gap:8px;">
+          <button class="wl-btn ${entry.played && entry.result==='W' ? 'win-sel':''}" style="flex:1;" onclick="recordDoublesResult('${selectedEventId}','${m.tb[0]}','${m.tb[1]}','${m.opp[0]}','${m.opp[1]}','W')">Won</button>
+          <button class="wl-btn ${entry.played && entry.result==='T' ? 'tie-sel':''}" style="flex:1;" onclick="recordDoublesResult('${selectedEventId}','${m.tb[0]}','${m.tb[1]}','${m.opp[0]}','${m.opp[1]}','T')">Tie</button>
+          <button class="wl-btn ${entry.played && entry.result==='L' ? 'loss-sel':''}" style="flex:1;" onclick="recordDoublesResult('${selectedEventId}','${m.tb[0]}','${m.tb[1]}','${m.opp[0]}','${m.opp[1]}','L')">Lost</button>
+        </div>
+        ${entry.played ? `
+          <div style="display:flex; gap:8px; margin-top:8px;">
+            <div style="flex:1;">
+              <label style="display:block; font-size:10px; font-weight:800; color:var(--ink-soft); text-transform:uppercase; margin-bottom:4px;">Our Score</label>
+              <input class="lunch-input" style="margin-top:0;" type="number" placeholder="e.g. 54" value="${entry.ourScore!=null ? entry.ourScore : ''}" onchange="setDoublesScore('${selectedEventId}','${primaryTbId}','our', this.value)">
+            </div>
+            <div style="flex:1;">
+              <label style="display:block; font-size:10px; font-weight:800; color:var(--ink-soft); text-transform:uppercase; margin-bottom:4px;">Opponent Score</label>
+              <input class="lunch-input" style="margin-top:0;" type="number" placeholder="e.g. 57" value="${entry.oppScore!=null ? entry.oppScore : ''}" onchange="setDoublesScore('${selectedEventId}','${primaryTbId}','opp', this.value)">
+            </div>
+          </div>
+        ` : ''}
+        ${entry.played && entry.result !== 'T' ? `
+          <div style="display:flex; align-items:center; gap:8px; margin-top:8px;">
+            <input type="range" min="1" max="10" value="${rank}" style="flex:1;" oninput="this.nextElementSibling.textContent=this.value" onchange="setPowerRank('${selectedEventId}','${primaryTbId}','doubles', this.value)">
+            <span style="font-size:12px; font-weight:800; color:var(--forest-dark); width:16px; text-align:right;">${rank}</span>
+          </div>
+          <div style="font-size:10px; color:var(--ink-soft); margin-top:2px;">Opponent pair quality — 5+ strong, below 5 weaker</div>
+        ` : ''}
+        ${entry.played && entry.result === 'T' ? `<div style="font-size:10px; color:var(--ink-soft); margin-top:6px;">A tie splits the points — 1 to each team.</div>` : ''}
+      </div>`;
+  };
+
+  const doublesPairedHtml = doubles.map((m,i)=>{ // first matchup made stays on top; new ones build downward
+    const a = activeTB.find(p=>p.id===m.tb[0]);
+    const b = activeTB.find(p=>p.id===m.tb[1]);
+    const c = currentTeam.players.find(p=>p.id===m.opp[0]);
+    const d = currentTeam.players.find(p=>p.id===m.opp[1]);
+    if(!a || !b || !c || !d) return '';
+    const resultKey = `doubles-${i}`;
+    return `
+      <div style="margin-bottom:9px;">
+        <div class="matchup-paired-card" style="margin-bottom:0;">
+          <div style="display:flex; flex-direction:column; gap:4px; flex:1;">
+            <div class="matchup-chip paired" style="margin:0; cursor:default;">${esc(a.name)} ${genderBadgeHtml(a)}</div>
+            <div class="matchup-chip paired" style="margin:0; cursor:default;">${esc(b.name)} ${genderBadgeHtml(b)}</div>
+          </div>
+          ${doublesConnector(m, resultKey)}
+          <div style="display:flex; flex-direction:column; gap:4px; flex:1;">
+            <div class="matchup-chip opp-paired" style="margin:0; cursor:default;">${esc(c.name)} ${genderBadgeHtml(c)}</div>
+            <div class="matchup-chip opp-paired" style="margin:0; cursor:default;">${esc(d.name)} ${genderBadgeHtml(d)}</div>
+          </div>
+          ${state.adminMode ? `<button class="icon-btn" onclick="unpairDoublesMatchup(${i})">✕</button>` : ''}
+        </div>
+        ${doublesResultHtml(m, resultKey)}
       </div>`;
   }).join('');
 
-  const doublesChips = availableDoublesTB.length ? availableDoublesTB.map(p=>{
-    const isArmed = state.armedDoublesTB === p.id;
-    return `<button class="matchup-chip ${isArmed?'armed':''}" ${state.adminMode ? `onclick="tapDoublesPlayer('${p.id}')"` : 'disabled'}>${esc(p.name)}${isArmed ? `<span class="sub">Tap a partner →</span>` : ''}</button>`;
+  const doublesTBChips = availableDoublesTB.length ? availableDoublesTB.map(p=>{
+    const isArmed = state.armedDoublesTBPair.includes(p.id);
+    const info = compactPlayerInfoLine(p);
+    return `<button class="matchup-chip ${isArmed?'armed':''}" ${state.adminMode ? `onclick="tapDoublesTBMember('${p.id}')"` : 'disabled'}>${esc(p.name)} ${genderBadgeHtml(p)}${info ? `<span class="sub">${esc(info)}</span>` : ''}</button>`;
   }).join('') : `<div style="font-size:12.5px; color:var(--ink-soft); text-align:center; padding:10px 0;">Everyone's grouped up</div>`;
 
+  const doublesOppChips = availableDoublesOpp.length ? availableDoublesOpp.map(o=>{
+    const isArmed = state.armedDoublesOppPair.includes(o.id);
+    const info = compactPlayerInfoLine(o);
+    return `<button class="matchup-chip ${isArmed?'armed':''}" ${state.adminMode ? `onclick="tapDoublesOppMember('${o.id}')"` : 'disabled'}>${esc(o.name)} ${genderBadgeHtml(o)}${info ? `<span class="sub">${esc(info)}</span>` : ''}</button>`;
+  }).join('') : `<div style="font-size:12.5px; color:var(--ink-soft); text-align:center; padding:10px 0;">${currentTeam.players.length ? 'All grouped up' : 'No players on this roster yet'}</div>`;
+
+  const eventDetails = eventStats ? computeMatchDetailsFromData(eventStats) : null;
+  const singlesScoreHtml = eventDetails ? renderScoreboard('Two Buff', eventDetails.mpUsPts, eventDetails.mpOppPts, currentTeam.name, false) : '';
+  const doublesScoreHtml = eventDetails ? renderScoreboard('Two Buff', eventDetails.dbUsPts, eventDetails.dbOppPts, currentTeam.name, false) : '';
+  const finalScoreHtml = eventDetails ? renderScoreboard('Two Buff', eventDetails.totalUsPts, eventDetails.totalOppPts, currentTeam.name, true) : '';
+
+  const adjustmentsHtml = eventDetails ? `
+    <div class="stats-section-header">⚖️ Special / Penalty Points</div>
+    <div style="font-size:11.5px; color:var(--ink-soft); margin-bottom:8px;">Extra points that don't come from a specific matchup — penalties, bonuses, tiebreak rulings, etc. Counted only in the final total below, not in Singles or Doubles.</div>
+    ${eventDetails.adjustments.length ? eventDetails.adjustments.map(a=>`
+      <div class="matchup-pair-row">
+        <div>
+          <div style="font-size:13px; font-weight:800; color:${a.team==='us' ? 'var(--forest)' : 'var(--red)'};">${a.points>=0?'+':''}${a.points} pts — ${a.team==='us' ? 'Two Buff' : esc(currentTeam.name)}</div>
+          ${a.note ? `<div style="font-size:11.5px; color:var(--ink-soft); margin-top:2px;">${esc(a.note)}</div>` : ''}
+        </div>
+        ${state.adminMode ? `<button class="icon-btn" onclick="removePointsAdjustment('${selectedEventId}','${a.id}')">✕</button>` : ''}
+      </div>
+    `).join('') : `<div style="font-size:12.5px; color:var(--ink-soft); padding:4px 0 10px;">No adjustments recorded.</div>`}
+    ${state.adminMode ? `<button class="btn btn-outline btn-sm" onclick="openAddPointsAdjustmentModal('${selectedEventId}')">+ Add Points Adjustment</button>` : ''}
+  ` : '';
+
   return `
-    <div class="page-title">Mock Matchups</div>
-    <div class="page-sub">Plan out how singles and doubles might line up before an event. Only admins can change the mock matchup — everyone else can view.</div>
+    <div class="page-title">Matchups &amp; Mockup</div>
+    <div class="page-sub">Select a team to run a mockup and try out matchup strategies. Tap a specific event linked to that opponent to perform the actual matchups and record real results. Only admins can make changes — everyone else can view.</div>
     ${teamPills}
+    ${eventPillsHtml}
+    ${resultBannerHtml}
     ${state.adminMode ? `
-    <div class="btn-row" style="margin:10px 0 4px;">
+    <div class="btn-row" style="margin:6px 0 4px;">
       <button class="btn btn-ghost btn-sm" onclick="resetMatchup()">↺ Reset Board</button>
     </div>` : ''}
 
     <div class="stats-section-header">🥏 Singles</div>
+    <div style="font-size:11.5px; color:var(--ink-soft); margin-bottom:4px;">Tap a player from either side first — the next tap from the other side completes the pairing.</div>
     ${pairedSinglesHtml}
     <div class="matchup-cols">
       <div>
@@ -2311,87 +2526,294 @@ async function renderMatchups(){
         ${oppSinglesChips}
       </div>
     </div>
+    ${singlesScoreHtml}
 
-    <div class="stats-section-header">👥 Doubles (Two Buff pairings)</div>
+    <div class="stats-section-header">👥 Doubles</div>
+    <div style="font-size:11.5px; color:var(--ink-soft); margin-bottom:4px;">Tap two players on each side to form a doubles matchup — order doesn't matter, and pairings are saved per opponent team.</div>
     ${doublesPairedHtml}
-    <div class="matchup-col-label">Tap two Two Buff players to group them as a doubles team</div>
-    ${doublesChips}
-    <div class="card" style="background:var(--chip-bg); border:none; box-shadow:none; margin-top:6px;">
-      <div style="font-size:12px; color:var(--ink-soft); line-height:1.5;">We don't know the opponent's doubles pairings ahead of time, so this section only groups our own players. Tap a player again to undo their pairing and re-pair them.</div>
+    <div class="matchup-cols">
+      <div>
+        <div class="matchup-col-label">Two Buff${state.armedDoublesTBPair.length ? ` (${state.armedDoublesTBPair.length}/2)` : ''}</div>
+        ${doublesTBChips}
+      </div>
+      <div>
+        <div class="matchup-col-label">${esc(currentTeam.name)}${state.armedDoublesOppPair.length ? ` (${state.armedDoublesOppPair.length}/2)` : ''}</div>
+        ${doublesOppChips}
+      </div>
     </div>
+    ${doublesScoreHtml}
+
+    ${adjustmentsHtml}
+
+    ${eventDetails ? `
+      <div class="stats-section-header">🏁 Final Event Score</div>
+      ${finalScoreHtml}
+    ` : ''}
   `;
 }
 
 async function selectMatchupTeam(teamId){
-  const current = state.matchupStateCache;
-  const newTeamId = (current && current.teamId === teamId) ? null : teamId; // tap the selected pill again to deselect
-  const ms = { teamId: newTeamId, singles: {}, doubles: [] };
+  const ms = state.matchupStateCache || await loadMatchupState();
+  ms.currentTeamId = (ms.currentTeamId === teamId) ? null : teamId; // tap the selected pill again to deselect
+  if(!ms.singlesByTeam[teamId]) ms.singlesByTeam[teamId] = {}; // ensure a slot exists, doesn't touch other teams' data
+  if(!ms.doublesByTeam[teamId]) ms.doublesByTeam[teamId] = [];
   state.armedSinglesTB = null;
-  state.armedDoublesTB = null;
+  state.armedSinglesOpp = null;
+  state.armedDoublesTBPair = [];
+  state.armedDoublesOppPair = [];
   state.matchupStateCache = ms;
-  await saveMatchupState(ms);
+  render(); // instant — the cache already reflects the change
+  saveMatchupState(ms).catch(err=>console.error('Matchup save failed', err));
+}
+function toggleMockupResult(key){
+  state.expandedMockupResultKey = (state.expandedMockupResultKey === key) ? null : key;
   render();
 }
-async function resetMatchup(){
+async function selectMockupEvent(teamId, eventId){
   const ms = state.matchupStateCache || await loadMatchupState();
-  ms.singles = {};
-  ms.doubles = [];
-  state.armedSinglesTB = null;
-  state.armedDoublesTB = null;
+  ms.eventIdByTeam[teamId] = (ms.eventIdByTeam[teamId] === eventId) ? null : eventId; // tap again to go back to trial mode
   state.matchupStateCache = ms;
-  await saveMatchupState(ms);
+  render();
+  saveMatchupState(ms).catch(err=>console.error('Matchup save failed', err));
+}
+async function resetMatchup(){
+  // Only clears whichever pairing arrangement is currently on screen — trial pairings and
+  // event-linked pairings live in separate buckets, so this never touches the other one.
+  // Any results already recorded against the selected event are real season data and are
+  // left completely untouched.
+  const ms = state.matchupStateCache || await loadMatchupState();
+  if(ms.currentTeamId){
+    const eventId = ms.eventIdByTeam[ms.currentTeamId];
+    if(eventId){
+      ms.singlesByEvent[eventId] = {};
+      ms.doublesByEvent[eventId] = [];
+    } else {
+      ms.singlesByTeam[ms.currentTeamId] = {};
+      ms.doublesByTeam[ms.currentTeamId] = [];
+    }
+  }
+  state.armedSinglesTB = null;
+  state.armedSinglesOpp = null;
+  state.armedDoublesTBPair = [];
+  state.armedDoublesOppPair = [];
+  state.matchupStateCache = ms;
   showToast('Matchup board reset');
   render();
+  saveMatchupState(ms).catch(err=>console.error('Matchup save failed', err));
 }
 async function tapSinglesTB(tbId){
   const ms = state.matchupStateCache || await loadMatchupState();
+  state.matchupStateCache = ms;
+  const singles = getSinglesBucket(ms);
+  const eventId = ms.eventIdByTeam[ms.currentTeamId];
   if(state.armedSinglesTB === tbId){ state.armedSinglesTB = null; render(); return; }
-  if(ms.singles[tbId] !== undefined){
-    delete ms.singles[tbId];
-    await saveMatchupState(ms);
+  if(state.armedSinglesOpp !== null){
+    // An opponent is already armed — complete the pairing in this direction.
+    if(singles[tbId] !== undefined){
+      delete singles[tbId];
+      if(eventId) clearSinglesResultIfExists(eventId, tbId); // that old pairing's result no longer applies
+    }
+    singles[tbId] = state.armedSinglesOpp;
+    state.armedSinglesOpp = null;
+    render();
+    saveMatchupState(ms).catch(err=>console.error('Matchup save failed', err));
+    return;
+  }
+  if(singles[tbId] !== undefined){
+    delete singles[tbId]; // free their current opponent so the pairing can be redone
+    saveMatchupState(ms).catch(err=>console.error('Matchup save failed', err));
+    if(eventId) clearSinglesResultIfExists(eventId, tbId);
   }
   state.armedSinglesTB = tbId;
   render();
 }
 async function tapSinglesOpp(oppId){
-  if(!state.armedSinglesTB){ showToast('Select a Two Buff player first'); return; }
   const ms = state.matchupStateCache || await loadMatchupState();
-  ms.singles[state.armedSinglesTB] = oppId;
-  state.armedSinglesTB = null;
-  await saveMatchupState(ms);
+  state.matchupStateCache = ms;
+  const singles = getSinglesBucket(ms);
+  const eventId = ms.eventIdByTeam[ms.currentTeamId];
+  if(state.armedSinglesOpp === oppId){ state.armedSinglesOpp = null; render(); return; }
+  if(state.armedSinglesTB !== null){
+    // A Two Buff player is already armed — complete the pairing in this direction.
+    if(singles[state.armedSinglesTB] !== undefined){
+      delete singles[state.armedSinglesTB];
+      if(eventId) clearSinglesResultIfExists(eventId, state.armedSinglesTB);
+    }
+    singles[state.armedSinglesTB] = oppId;
+    state.armedSinglesTB = null;
+    render();
+    saveMatchupState(ms).catch(err=>console.error('Matchup save failed', err));
+    return;
+  }
+  const existingTbId = Object.keys(singles).find(tid => singles[tid] === oppId);
+  if(existingTbId){
+    delete singles[existingTbId]; // free their current Two Buff opponent so the pairing can be redone
+    saveMatchupState(ms).catch(err=>console.error('Matchup save failed', err));
+    if(eventId) clearSinglesResultIfExists(eventId, existingTbId);
+  }
+  state.armedSinglesOpp = oppId;
   render();
 }
 async function unpairSingles(tbId){
   const ms = state.matchupStateCache || await loadMatchupState();
-  delete ms.singles[tbId];
-  await saveMatchupState(ms);
+  state.matchupStateCache = ms;
+  const singles = getSinglesBucket(ms);
+  const eventId = ms.eventIdByTeam[ms.currentTeamId];
+  delete singles[tbId];
   render();
+  saveMatchupState(ms).catch(err=>console.error('Matchup save failed', err));
+  if(eventId) clearSinglesResultIfExists(eventId, tbId);
 }
-async function tapDoublesPlayer(playerId){
-  const ms = state.matchupStateCache || await loadMatchupState();
-  if(state.armedDoublesTB === playerId){ state.armedDoublesTB = null; render(); return; }
-  // free this player from any existing pair first
-  const existingIdx = ms.doubles.findIndex(pr=>pr.includes(playerId));
-  if(existingIdx !== -1) ms.doubles.splice(existingIdx, 1);
-  if(state.armedDoublesTB === null){
-    await saveMatchupState(ms);
-    state.armedDoublesTB = playerId;
-    render();
-  } else {
-    const a = state.armedDoublesTB;
-    const aIdx = ms.doubles.findIndex(pr=>pr.includes(a));
-    if(aIdx !== -1) ms.doubles.splice(aIdx, 1);
-    ms.doubles.push([a, playerId]);
-    state.armedDoublesTB = null;
-    await saveMatchupState(ms);
-    render();
+function finalizeDoublesMatchupIfReady(ms){
+  if(state.armedDoublesTBPair.length === 2 && state.armedDoublesOppPair.length === 2){
+    const doubles = getDoublesBucket(ms);
+    doubles.push({ tb: [...state.armedDoublesTBPair], opp: [...state.armedDoublesOppPair] });
+    state.armedDoublesTBPair = [];
+    state.armedDoublesOppPair = [];
+    saveMatchupState(ms).catch(err=>console.error('Matchup save failed', err));
   }
 }
-async function unpairDoubles(index){
+async function tapDoublesTBMember(playerId){
   const ms = state.matchupStateCache || await loadMatchupState();
-  ms.doubles.splice(index, 1);
-  await saveMatchupState(ms);
+  state.matchupStateCache = ms;
+  const idx = state.armedDoublesTBPair.indexOf(playerId);
+  if(idx !== -1){ state.armedDoublesTBPair.splice(idx, 1); render(); return; } // tap again to deselect
+  if(state.armedDoublesTBPair.length >= 2){ showToast('Deselect one first'); return; }
+  state.armedDoublesTBPair.push(playerId);
+  finalizeDoublesMatchupIfReady(ms);
   render();
+}
+async function tapDoublesOppMember(oppId){
+  const ms = state.matchupStateCache || await loadMatchupState();
+  state.matchupStateCache = ms;
+  const idx = state.armedDoublesOppPair.indexOf(oppId);
+  if(idx !== -1){ state.armedDoublesOppPair.splice(idx, 1); render(); return; } // tap again to deselect
+  if(state.armedDoublesOppPair.length >= 2){ showToast('Deselect one first'); return; }
+  state.armedDoublesOppPair.push(oppId);
+  finalizeDoublesMatchupIfReady(ms);
+  render();
+}
+async function unpairDoublesMatchup(index){
+  const ms = state.matchupStateCache || await loadMatchupState();
+  state.matchupStateCache = ms;
+  const doubles = getDoublesBucket(ms);
+  const eventId = ms.eventIdByTeam[ms.currentTeamId];
+  const removed = doubles[index];
+  doubles.splice(index, 1);
+  render();
+  saveMatchupState(ms).catch(err=>console.error('Matchup save failed', err));
+  if(eventId && removed) clearDoublesResultIfExists(eventId, removed.tb[0]);
+}
+async function clearSinglesResultIfExists(eventId, tbId){
+  const stats = await loadStats(eventId);
+  const cur = stats[tbId];
+  if(cur && cur.matchplay && cur.matchplay.played){
+    cur.matchplay = blankResultEntry('matchplay');
+    render();
+    saveStats(eventId, stats).catch(err=>console.error('Result clear failed', err));
+  }
+}
+async function clearDoublesResultIfExists(eventId, tbId){
+  const stats = await loadStats(eventId);
+  const cur = stats[tbId];
+  if(cur && cur.doubles && cur.doubles.played){
+    cur.doubles = blankResultEntry('doubles');
+    render();
+    saveStats(eventId, stats).catch(err=>console.error('Result clear failed', err));
+  }
+}
+async function recordSinglesResult(eventId, tbId, oppId, result){
+  const teams = await loadOppTeams();
+  const team = teams.find(t=>t.id === (state.matchupStateCache && state.matchupStateCache.currentTeamId));
+  const opp = team && team.players.find(p=>p.id===oppId);
+  const oppName = opp ? opp.name : '';
+  const stats = await loadStats(eventId);
+  const cur = stats[tbId] || {};
+  const existing = cur.matchplay || blankResultEntry('matchplay');
+  if(existing.played && existing.result === result){
+    cur.matchplay = blankResultEntry('matchplay'); // tap again to clear
+  } else {
+    cur.matchplay = {played:true, result, powerRank: existing.powerRank || 5, opponentPlayerId: oppId, opponentName: oppName, marginUp: existing.marginUp ?? null, holesRemaining: existing.holesRemaining ?? null};
+  }
+  stats[tbId] = cur;
+  render();
+  saveStats(eventId, stats).catch(err=>console.error('Result save failed', err));
+}
+async function recordDoublesResult(eventId, tbId1, tbId2, oppId1, oppId2, result){
+  const teams = await loadOppTeams();
+  const team = teams.find(t=>t.id === (state.matchupStateCache && state.matchupStateCache.currentTeamId));
+  const partner = state.players.find(p=>p.id===tbId2);
+  const opp1 = team && team.players.find(p=>p.id===oppId1);
+  const opp2 = team && team.players.find(p=>p.id===oppId2);
+  const stats = await loadStats(eventId);
+  const cur = stats[tbId1] || {};
+  const existing = cur.doubles || blankResultEntry('doubles');
+  if(existing.played && existing.result === result){
+    cur.doubles = blankResultEntry('doubles'); // tap again to clear
+  } else {
+    cur.doubles = {
+      played:true, result,
+      powerRank: existing.powerRank || 5,
+      partnerId: tbId2, partnerName: partner ? partner.name : '',
+      opp1Id: oppId1, opp1Name: opp1 ? opp1.name : '',
+      opp2Id: oppId2, opp2Name: opp2 ? opp2.name : '',
+      ourScore: existing.ourScore ?? null, oppScore: existing.oppScore ?? null
+    };
+  }
+  stats[tbId1] = cur;
+  render();
+  saveStats(eventId, stats).catch(err=>console.error('Result save failed', err));
+}
+
+/* ---- Special / penalty points adjustments (admin only, per event) ---- */
+function openAddPointsAdjustmentModal(eventId){
+  const modal = document.getElementById('modalRoot');
+  modal.innerHTML = `
+    <div class="overlay" onclick="closeModalIfBackdrop(event)">
+      <div class="sheet" onclick="event.stopPropagation()">
+        <h3>Add Points Adjustment</h3>
+        <div class="field">
+          <label>Points</label>
+          <input id="adj_points" type="number" step="0.5" placeholder="e.g. 1 or -1">
+        </div>
+        <div class="field">
+          <label>Applies To</label>
+          <div class="seg-row" id="adj_teamRow">
+            <div class="seg-btn seg-sel" data-v="us" onclick="selectSeg(this)">Two Buff</div>
+            <div class="seg-btn" data-v="opponent" onclick="selectSeg(this)">Opponent</div>
+          </div>
+        </div>
+        <div class="field">
+          <label>Note (why?)</label>
+          <textarea id="adj_note" rows="3" placeholder="e.g. Late start penalty, sportsmanship bonus..." style="width:100%; padding:12px; border-radius:12px; border:2px solid var(--line); font-size:14px; font-family:inherit; resize:vertical;"></textarea>
+        </div>
+        <div class="btn-row">
+          <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+          <button class="btn btn-primary" onclick="saveAddPointsAdjustment('${eventId}')">Add</button>
+        </div>
+      </div>
+    </div>`;
+}
+async function saveAddPointsAdjustment(eventId){
+  const pointsVal = document.getElementById('adj_points').value.trim();
+  const points = Number(pointsVal);
+  if(!pointsVal || isNaN(points)){ showToast('Enter a valid number of points'); return; }
+  const teamBtn = document.querySelector('#adj_teamRow .seg-sel');
+  const team = teamBtn ? teamBtn.dataset.v : 'us';
+  const note = document.getElementById('adj_note').value.trim();
+  const stats = await loadStats(eventId);
+  if(!Array.isArray(stats.__adjustments)) stats.__adjustments = [];
+  stats.__adjustments.push({ id: uid('adj'), points, team, note });
+  closeModal();
+  render();
+  saveStats(eventId, stats).catch(err=>console.error('Adjustment save failed', err));
+}
+async function removePointsAdjustment(eventId, adjId){
+  const stats = await loadStats(eventId);
+  if(!Array.isArray(stats.__adjustments)) return;
+  stats.__adjustments = stats.__adjustments.filter(a=>a.id!==adjId);
+  render();
+  saveStats(eventId, stats).catch(err=>console.error('Adjustment save failed', err));
 }
 
 /* ---- Opponent team management (admin only) ---- */
@@ -2472,17 +2894,19 @@ async function oppPlayerRowFor(team, p){
         }).join('');
     detailHtml = `
       <div style="padding:10px 2px 2px;">
-        <div style="font-size:10.5px; font-weight:800; color:var(--ink-soft); text-transform:uppercase; letter-spacing:0.3px; margin-bottom:4px;">Notes</div>
-        <div style="font-size:13px; color:${p.notes ? 'var(--ink)' : 'var(--ink-soft)'}; white-space:pre-wrap; margin-bottom:8px;">${p.notes ? esc(p.notes) : 'No notes yet.'}</div>
-        ${state.adminMode ? `<button class="btn btn-ghost btn-sm" onclick="openOppPlayerNotesModal('${team.id}','${p.id}')">✏️ Edit Notes</button>` : ''}
+        ${renderPlayerProfileSummary(p)}
+        ${p.notes ? '' : '<div style="font-size:12.5px; color:var(--ink-soft); padding:8px 2px 2px;">No notes yet.</div>'}
+        ${state.adminMode ? `<button class="btn btn-ghost btn-sm" style="margin-top:10px;" onclick="event.stopPropagation(); openOppPlayerEditModal('${team.id}','${p.id}')">✏️ Edit Player</button>` : ''}
         <div style="font-size:10.5px; font-weight:800; color:var(--ink-soft); text-transform:uppercase; letter-spacing:0.3px; margin:12px 0 2px;">Head-to-Head vs Two Buff</div>
         ${historyHtml}
       </div>`;
   }
   return `
-    <div style="border-top:1px solid var(--line); padding:9px 2px; cursor:pointer;" onclick="toggleExpandOppPlayer('${p.id}')">
+    <div style="${expanded
+        ? 'background:var(--chip-bg); border:1px solid var(--line); border-radius:14px; padding:12px; margin:8px 0; cursor:pointer;'
+        : 'border-top:1px solid var(--line); padding:9px 2px; cursor:pointer;'}" onclick="toggleExpandOppPlayer('${p.id}')">
       <div style="display:flex; justify-content:space-between; align-items:center;">
-        <span style="font-size:13.5px; font-weight:700;">${esc(p.name)}${p.notes ? ' 📝' : ''}</span>
+        <span style="font-size:13.5px; font-weight:700; display:inline-flex; align-items:center; gap:6px;">${esc(p.name)}${genderBadgeHtml(p)}${p.notes ? ' 📝' : ''}</span>
         <span style="font-size:11px; color:var(--ink-soft);">${expanded ? '▲' : '▼'}</span>
       </div>
       ${detailHtml}
@@ -2497,7 +2921,7 @@ function toggleExpandOppPlayer(id){
   state.expandedOppPlayerId = (state.expandedOppPlayerId === id) ? null : id;
   render();
 }
-function openOppPlayerNotesModal(teamId, playerId){
+function openOppPlayerEditModal(teamId, playerId){
   loadOppTeams().then(teams=>{
     const team = teams.find(t=>t.id===teamId);
     const player = team && team.players.find(p=>p.id===playerId);
@@ -2506,28 +2930,42 @@ function openOppPlayerNotesModal(teamId, playerId){
     modal.innerHTML = `
       <div class="overlay" onclick="closeModalIfBackdrop(event)">
         <div class="sheet" onclick="event.stopPropagation()">
-          <h3>Notes — ${esc(player.name)}</h3>
+          <h3>Edit Player</h3>
           <div class="field">
-            <label>Notes</label>
-            <textarea id="opp_player_notes" rows="6" placeholder="Playing style, tendencies, anything worth remembering..." style="width:100%; padding:12px; border-radius:12px; border:2px solid var(--line); font-size:14px; font-family:inherit; resize:vertical;">${esc(player.notes || '')}</textarea>
+            <label>Name</label>
+            <input id="opp_edit_name" type="text" placeholder="Player name" value="${esc(player.name)}">
           </div>
+          <div class="field">
+            <label>Gender (optional)</label>
+            <div class="seg-row" id="opp_edit_genderRow">
+              <div class="seg-btn ${player.gender==='M' ? 'seg-sel':''}" data-v="M" onclick="selectSeg(this)">M · Male</div>
+              <div class="seg-btn ${player.gender==='F' ? 'seg-sel':''}" data-v="F" onclick="selectSeg(this)">F · Female</div>
+            </div>
+          </div>
+          <div class="divider"></div>
+          ${renderPlayerBaselineFields('opp_edit', player)}
           <div class="btn-row">
             <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
-            <button class="btn btn-primary" onclick="saveOppPlayerNotes('${teamId}','${playerId}')">Save Notes</button>
+            <button class="btn btn-primary" onclick="saveOppPlayerProfile('${teamId}','${playerId}')">Save</button>
           </div>
         </div>
       </div>`;
   });
 }
-async function saveOppPlayerNotes(teamId, playerId){
+async function saveOppPlayerProfile(teamId, playerId){
   const teams = await loadOppTeams();
   const team = teams.find(t=>t.id===teamId);
   const player = team && team.players.find(p=>p.id===playerId);
   if(!player) return;
-  player.notes = document.getElementById('opp_player_notes').value.trim();
+  const name = document.getElementById('opp_edit_name').value.trim();
+  if(!name){ showToast('Enter a name'); return; }
+  const genderBtn = document.querySelector('#opp_edit_genderRow .seg-sel');
+  player.name = name;
+  player.gender = genderBtn ? genderBtn.dataset.v : null;
+  Object.assign(player, readPlayerBaselineFields('opp_edit'));
   await saveOppTeams(teams);
   closeModal();
-  showToast('Notes saved');
+  showToast('Player updated');
   render();
 }
 
@@ -2546,6 +2984,7 @@ function openTeamEditModal(teamId){
           <div class="field">
             <label>Roster — one player per line</label>
             <textarea id="opp_team_roster" rows="8" placeholder="Jane Smith&#10;John Doe&#10;..." style="width:100%; padding:12px; border-radius:12px; border:2px solid var(--line); font-size:14px; font-family:inherit; resize:vertical;">${t ? t.players.map(p=>esc(p.name)).join('\n') : ''}</textarea>
+            <div style="font-size:11px; color:var(--ink-soft); margin-top:6px;">Quick-add by name here. After saving, tap any player on the Opponents page to add their skill rank, PDGA rating, throwing hand, age, or notes.</div>
           </div>
           <div class="btn-row">
             ${t ? `<button class="btn btn-danger" onclick="openDeleteTeamConfirm('${t.id}')">Delete</button>` : `<button class="btn btn-ghost" onclick="closeModal()">Cancel</button>`}
@@ -2563,7 +3002,7 @@ async function saveTeamFromModal(existingId){
   const existingTeam = existingId ? teams.find(t=>t.id===existingId) : null;
   const players = lines.map(lineName=>{
     const existingPlayer = existingTeam && existingTeam.players.find(p=>p.name===lineName);
-    return existingPlayer || { id: uid('opp'), name: lineName, notes: '' };
+    return existingPlayer || { id: uid('opp'), name: lineName, notes: '', gender: null, skillRank: null, pdgaRating: null, throwHand: null, handedness: null, age: null };
   });
   if(existingTeam){
     existingTeam.name = name;
@@ -2599,9 +3038,11 @@ async function performDeleteTeam(teamId){
   const filtered = teams.filter(t=>t.id!==teamId);
   await saveOppTeams(filtered);
   const ms = await loadMatchupState();
-  if(ms.teamId === teamId){
-    await saveMatchupState({ teamId: null, singles: {}, doubles: [] });
-  }
+  delete ms.singlesByTeam[teamId]; // that team's pairings no longer make sense once the roster is gone
+  delete ms.doublesByTeam[teamId];
+  if(ms.currentTeamId === teamId) ms.currentTeamId = null;
+  state.matchupStateCache = null; // force a fresh fetch next time Matchups is opened
+  await saveMatchupState(ms);
   closeModal();
   showToast('Team removed');
   render();
@@ -2633,6 +3074,7 @@ async function renderStats(){
 
         // Player-level aggregation (win/loss records, power score)
         Object.keys(data).forEach(pid=>{
+          if(pid === '__adjustments') return; // not a player entry
           if(!record[pid]) record[pid] = {mpW:0,mpL:0,dbW:0,dbL:0, eventsPlayed:new Set(), powerScore:0};
           const s = data[pid];
           const playedThisEvent = !!((s.matchplay && s.matchplay.played) || (s.doubles && s.doubles.played));
@@ -2645,9 +3087,9 @@ async function renderStats(){
             const rank = entry.powerRank || 5; // opponent quality, 1-10; defaults to a neutral 5 if never set
             if(entry.result==='W'){
               record[pid].powerScore += weight * ((rank >= 5) ? rank : 0); // beating a weak opponent doesn't boost you
-            } else {
+            } else if(entry.result==='L'){
               record[pid].powerScore += weight * ((rank < 5) ? -(5 - rank) : 0); // losing to a quality opponent doesn't hurt you
-            }
+            } // a tie is neutral — doesn't affect power score either way
           });
           if(s.matchplay && s.matchplay.played){
             if(s.matchplay.result==='W') record[pid].mpW++;
@@ -2741,7 +3183,7 @@ async function renderStats(){
           <div class="rec" style="color:${hasMp ? 'var(--forest-dark)':'var(--ink-soft)'};">${hasMp ? r.mpW+'-'+r.mpL : '—'}<span class="sub">Singles</span></div>
           <div class="rec" style="color:${hasDb ? 'var(--forest-dark)':'var(--ink-soft)'};">${hasDb ? r.dbW+'-'+r.dbL : '—'}<span class="sub">Doubles</span></div>
         </div>
-        ${expanded ? `<div onclick="event.stopPropagation()">${historyHtml}</div>` : ''}
+        ${expanded ? `<div onclick="event.stopPropagation()">${renderPlayerProfileSummary(p)}${historyHtml}</div>` : ''}
       </div>`;
   }));
   const rows = rowCards.join('');
