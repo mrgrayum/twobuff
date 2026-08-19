@@ -4125,7 +4125,6 @@ async function renderStats(){
         <div class="stat-box"><div class="num" style="color:var(--forest);">${tW}-${tL}-${tT}</div><div class="lbl">Win-Loss-Tie</div></div>
         <div class="stat-box"><div class="num" style="color:var(--orange-dark);">${pointPct!=null ? pointPct.toFixed(1)+'%' : '—'}</div><div class="lbl">Point %</div></div>
       </div>
-      <div style="font-size:11px; color:var(--ink-soft); margin-top:10px; line-height:1.5;">Point % is our team's total points scored across ${state.statsScope==='season' ? esc(currentSeason) : 'all seasons'}, divided by the total points scored by both teams combined — useful for breaking ties in the standings.</div>
       <button class="btn btn-outline btn-sm" style="width:100%; margin-top:10px;" onclick="shareTeamRecordCard()">⬇️ Share Image</button>
     </div>
     ${teamEventsHtml ? teamEventsHtml : `<div class="card empty" style="padding:20px;"><p style="margin:0; font-size:13px;">No team results recorded yet${state.statsScope==='season' ? ' for ' + esc(currentSeason) : ''}.</p></div>`}
@@ -4162,7 +4161,6 @@ async function renderStats(){
 
   return `
     <div class="page-title">Season Stats</div>
-    <div class="page-sub">Singles matchplay &amp; doubles stroke play, tracked per event.</div>
     <div class="season-tabs">
       <button class="season-tab ${state.statsScope==='season'?'active':''}" onclick="setStatsScope('season')">${esc(currentSeason)} · Current</button>
       <button class="season-tab ${state.statsScope==='all'?'active':''}" onclick="setStatsScope('all')">All-Time</button>
