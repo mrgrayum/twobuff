@@ -1645,7 +1645,7 @@ async function setLunchItem(eventId, playerId, value){
 }
 function blankResultEntry(kind){
   return kind === 'doubles'
-    ? {played:false, result:null, powerRank:null, partnerId:null, partnerName:'', opp1Id:null, opp1Name:'', opp2Id:null, opp2Name:'', ourScore:null, oppScore:null}
+    ? {played:false, result:null, powerRank:null, partnerId:null, partnerName:'', opp1Id:null, opp1Name:'', opp2Id:null, opp2Name:'', ourScore:null, oppScore:null, playoffHoles:null}
     : {played:false, result:null, powerRank:null, opponentPlayerId:null, opponentName:'', marginUp:null, holesRemaining:null};
 }
 function formatMatchplayMargin(entry){
@@ -1655,7 +1655,8 @@ function formatMatchplayMargin(entry){
 }
 function formatDoublesScore(entry){
   if(entry.ourScore == null || entry.oppScore == null) return '';
-  return `${entry.ourScore} - ${entry.oppScore}`;
+  const base = `${entry.ourScore} - ${entry.oppScore}`;
+  return entry.playoffHoles ? `${base} (${entry.playoffHoles}h playoff)` : base;
 }
 async function setSinglesMargin(eventId, tbId, value){
   const stats = await loadStats(eventId);
@@ -1693,6 +1694,18 @@ async function setDoublesScore(eventId, tbId, side, value){
   stats[tbId] = cur;
   render();
   saveStats(eventId, stats).catch(err=>console.error('Score save failed', err));
+}
+async function setDoublesPlayoffHoles(eventId, tbId, value){
+  const stats = await loadStats(eventId);
+  const cur = stats[tbId] || {};
+  const existing = cur.doubles || blankResultEntry('doubles');
+  if(!existing.played) return;
+  const num = value === '' ? null : Math.max(1, Number(value));
+  existing.playoffHoles = (num===null || isNaN(num)) ? null : num;
+  cur.doubles = existing;
+  stats[tbId] = cur;
+  render();
+  saveStats(eventId, stats).catch(err=>console.error('Playoff holes save failed', err));
 }
 async function setPowerRank(eventId, playerId, kind, value){
   const stats = await loadStats(eventId);
@@ -1766,7 +1779,7 @@ function computeMatchDetailsFromData(stats){
       if(s.doubles.partnerId) countedForDoubles.add(s.doubles.partnerId);
       const ourSide = s.doubles.partnerName ? `${ourName} & ${s.doubles.partnerName}` : ourName;
       const oppSide = [s.doubles.opp1Name, s.doubles.opp2Name].filter(Boolean).join(' & ') || 'Unknown opponents';
-      doubles.push({ ourSide, result: s.doubles.result, opponentName: oppSide, ourScore: s.doubles.ourScore, oppScore: s.doubles.oppScore });
+      doubles.push({ ourSide, result: s.doubles.result, opponentName: oppSide, ourScore: s.doubles.ourScore, oppScore: s.doubles.oppScore, playoffHoles: s.doubles.playoffHoles });
     }
   });
   // A win is worth the full point value; a tie splits it evenly between both teams.
@@ -2487,6 +2500,8 @@ async function renderPlayerHistoryHtml(playerId){
       const bits = [];
       if(entry.partnerName) bits.push('w/ ' + esc(entry.partnerName));
       if(opps) bits.push('vs ' + esc(opps));
+      const scoreText = formatDoublesScore(entry);
+      if(scoreText) bits.push(esc(scoreText));
       detail = bits.length ? ' · ' + bits.join(' ') : '';
     } else {
       detail = entry.opponentName ? ' · ' + esc(entry.opponentName) : '';
@@ -3015,6 +3030,12 @@ async function renderMatchups(){
             </div>
           </div>
         ` : ''}
+        ${entry.played && entry.result !== 'T' && entry.ourScore != null && entry.oppScore != null && entry.ourScore === entry.oppScore ? `
+          <div style="margin-top:8px;">
+            <label style="display:block; font-size:10px; font-weight:800; color:var(--ink-soft); text-transform:uppercase; margin-bottom:4px;">Playoff Holes</label>
+            <input class="lunch-input" style="margin-top:0;" type="number" min="1" placeholder="Scores tied — how many holes was the playoff?" value="${entry.playoffHoles!=null ? entry.playoffHoles : ''}" onchange="setDoublesPlayoffHoles('${selectedEventId}','${primaryTbId}', this.value)">
+          </div>
+        ` : ''}
         ${entry.played && entry.result !== 'T' ? `
           <div style="display:flex; align-items:center; gap:8px; margin-top:8px;">
             <input type="range" min="1" max="10" value="${rank}" style="flex:1;" oninput="this.nextElementSibling.textContent=this.value" onchange="setPowerRank('${selectedEventId}','${primaryTbId}','doubles', this.value)">
@@ -3338,7 +3359,7 @@ async function recordDoublesResult(eventId, tbId1, tbId2, oppId1, oppId2, result
       partnerId: tbId2, partnerName: partner ? partner.name : '',
       opp1Id: oppId1, opp1Name: opp1 ? opp1.name : '',
       opp2Id: oppId2, opp2Name: opp2 ? opp2.name : '',
-      ourScore: existing.ourScore ?? null, oppScore: existing.oppScore ?? null
+      ourScore: existing.ourScore ?? null, oppScore: existing.oppScore ?? null, playoffHoles: existing.playoffHoles ?? null
     };
   }
   stats[tbId1] = cur;
