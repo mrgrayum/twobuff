@@ -1648,6 +1648,9 @@ function blankResultEntry(kind){
     ? {played:false, result:null, powerRank:null, partnerId:null, partnerName:'', opp1Id:null, opp1Name:'', opp2Id:null, opp2Name:'', ourScore:null, oppScore:null, playoffHoles:null}
     : {played:false, result:null, powerRank:null, opponentPlayerId:null, opponentName:'', marginUp:null, holesRemaining:null};
 }
+function formatMatchupTitle(ev, opponentLabel){
+  return ev.isHome ? `${opponentLabel} @ Two Buff` : `Two Buff @ ${opponentLabel}`;
+}
 function formatMatchplayMargin(entry){
   if(entry.marginUp == null) return '';
   const holesLeft = entry.holesRemaining || 0;
@@ -2014,7 +2017,7 @@ async function shareEventCard(eventId){
   ctx.textAlign = 'left';
   ctx.fillStyle = '#FFFFFF';
   ctx.font = `800 24px ${FONT}`;
-  ctx.fillText(ctxTruncateText(ctx, `Two Buff vs ${opponentLabel}`, contentW), marginX, 54);
+  ctx.fillText(ctxTruncateText(ctx, formatMatchupTitle(ev, opponentLabel), contentW), marginX, 54);
   ctx.fillStyle = '#FFCB57';
   ctx.fillRect(marginX, 65, 42, 4);
   ctx.fillStyle = '#B8C4D9';
@@ -2490,6 +2493,7 @@ async function renderPlayerHistoryHtml(playerId){
   if(history.length === 0){
     return `<div style="font-size:12.5px; color:var(--ink-soft); padding:10px 2px 2px;">No recorded results yet.</div>`;
   }
+  const oppTeamsForHistory = await loadOppTeams();
   const resultPill = (label, entry) => {
     if(!entry) return '';
     const color = entry.result==='W' ? 'var(--forest)' : entry.result==='T' ? '#8A6112' : 'var(--red)';
@@ -2510,10 +2514,18 @@ async function renderPlayerHistoryHtml(playerId){
   };
   return history.map(h=>{
     const d = fmtDate(h.event.date);
+    let oppLabel = 'Opponent';
+    if(h.event.opponentTeamId){
+      const t = oppTeamsForHistory.find(x=>x.id===h.event.opponentTeamId);
+      if(t) oppLabel = t.name;
+    } else if(h.event.opponentName){
+      oppLabel = h.event.opponentName;
+    }
+    const matchupTitle = formatMatchupTitle(h.event, oppLabel);
     return `
       <div style="display:flex; justify-content:space-between; align-items:center; padding:9px 2px; border-top:1px solid var(--line);">
         <div>
-          <div style="font-size:13px; font-weight:800;">${esc(h.event.name)}</div>
+          <div style="font-size:13px; font-weight:800;">${esc(matchupTitle)}</div>
           <div style="font-size:10.5px; color:var(--ink-soft); font-weight:700;">${d.mon} ${d.day}</div>
         </div>
         <div>${resultPill('Singles', h.matchplay)}${resultPill('Doubles', h.doubles)}</div>
@@ -3744,7 +3756,7 @@ async function renderStats(){
         <div class="row-grid" style="grid-template-columns: 1.6fr 0.8fr 0.9fr;">
           <div>
             <div style="display:flex; align-items:center; gap:6px;">
-              <span class="pname" style="font-size:13.5px;">Two Buff vs ${esc(oppLabelForCard)}</span>
+              <span class="pname" style="font-size:13.5px;">${esc(formatMatchupTitle(te.event, oppLabelForCard))}</span>
               <span style="font-size:10px; color:var(--ink-soft);">${expanded ? '▲' : '▼'}</span>
             </div>
             <div style="font-size:10.5px; color:var(--ink-soft); font-weight:700;">${d.mon} ${d.day}</div>
