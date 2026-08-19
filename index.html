@@ -1901,7 +1901,7 @@ async function shareEventCard(eventId){
   } else if(ev.opponentName){
     opponentLabel = ev.opponentName;
   }
-  const { singles, doubles, mpUsPts, mpOppPts, dbUsPts, dbOppPts, totalUsPts, totalOppPts, result } = await getEventMatchDetails(eventId);
+  const { singles, doubles, mpUsPts, mpOppPts, dbUsPts, dbOppPts, totalUsPts, totalOppPts, result, adjustments } = await getEventMatchDetails(eventId);
   showToast('Generating image…');
   const logoEl = document.querySelector('.brand-mark img');
   const logoImg = await loadImageAsync(logoEl ? logoEl.src : null);
@@ -1926,7 +1926,10 @@ async function shareEventCard(eventId){
   const doublesLayout = sectionLayout(doubles.length);
   const singlesSectionH = sectionHeaderH + colHeaderH + singlesLayout.rowsPerCol*singlesLayout.rh + subtotalH + gapAfterSection;
   const doublesSectionH = sectionHeaderH + colHeaderH + doublesLayout.rowsPerCol*doublesLayout.rh + subtotalH;
-  const totalH = headerH + scoreH + singlesSectionH + doublesSectionH + bottomPad;
+  const adjRowH = 40, adjRowHNoNote = 24;
+  const adjustmentsRowsH = adjustments.reduce((sum,a)=> sum + (a.note ? adjRowH : adjRowHNoNote), 0);
+  const adjustmentsSectionH = adjustments.length ? (gapAfterSection + sectionHeaderH + adjustmentsRowsH) : 0;
+  const totalH = headerH + scoreH + singlesSectionH + doublesSectionH + adjustmentsSectionH + bottomPad;
   // Splits rows into numCols groups as evenly as possible (sizes never differ by
   // more than 1), instead of filling earlier columns first and leaving the last
   // one nearly empty.
@@ -2128,6 +2131,12 @@ async function shareEventCard(eventId){
       ctx.fillStyle = '#2B2620';
       ctx.fillText(ourText, ourRightEdge, rowTop + 4);
     }
+    if(r.hotRoundSide === 'us'){
+      const ourBlockLeftEdge = ourRightEdge - (isOurWin ? ourW + 10 : ourW);
+      ctx.font = `800 11px ${FONT}`;
+      ctx.fillStyle = '#C68A1E';
+      ctx.fillText('★', ourBlockLeftEdge - 3, rowTop + 4);
+    }
 
     ctx.textAlign = 'center';
     ctx.font = `700 ${fontSize}px ${FONT}`;
@@ -2146,6 +2155,13 @@ async function shareEventCard(eventId){
     } else {
       ctx.fillStyle = '#2B2620';
       ctx.fillText(oppText, oppLeftEdge, rowTop + 4);
+    }
+    if(r.hotRoundSide === 'opp'){
+      const oppBlockRightEdge = oppLeftEdge + (isOppWin ? oppW + 10 : oppW);
+      ctx.textAlign = 'left';
+      ctx.font = `800 11px ${FONT}`;
+      ctx.fillStyle = '#C68A1E';
+      ctx.fillText('★', oppBlockRightEdge + 3, rowTop + 4);
     }
     ctx.textAlign = 'left';
   };
@@ -2236,6 +2252,12 @@ async function shareEventCard(eventId){
           ctx.fillStyle = '#2B2620';
           ctx.fillText(ourFit.text, ourRightEdge, midY + 5);
         }
+        if(r.hotRoundSide === 'us'){
+          const ourBlockLeftEdge = ourRightEdge - (isOurWin ? ourFit.w + 16 : ourFit.w);
+          ctx.font = `800 16px ${FONT}`;
+          ctx.fillStyle = '#C68A1E';
+          ctx.fillText('★', ourBlockLeftEdge - 4, midY + 5);
+        }
 
         ctx.textAlign = 'center';
         ctx.font = `700 12px ${FONT}`;
@@ -2254,6 +2276,13 @@ async function shareEventCard(eventId){
         } else {
           ctx.fillStyle = '#2B2620';
           ctx.fillText(oppFit.text, oppLeftEdge, midY + 5);
+        }
+        if(r.hotRoundSide === 'opp'){
+          const oppBlockRightEdge = oppLeftEdge + (isOppWin ? oppFit.w + 16 : oppFit.w);
+          ctx.textAlign = 'left';
+          ctx.font = `800 16px ${FONT}`;
+          ctx.fillStyle = '#C68A1E';
+          ctx.fillText('★', oppBlockRightEdge + 4, midY + 5);
         }
         ctx.textAlign = 'left';
 
@@ -2311,12 +2340,58 @@ async function shareEventCard(eventId){
   const singlesRowsData = singles.map(s=>({
     ourLabel: s.ourName, oppLabel: s.opponentName, scoreLabel: formatMatchplayMargin(s), result: s.result
   }));
-  const doublesRowsData = doubles.map(d=>({
-    ourLabel: d.ourSide, oppLabel: d.opponentName, scoreLabel: formatDoublesScore(d), result: d.result
+
+  // The "hot round" is whichever single team score (ours or theirs, across every
+  // doubles matchup) was the lowest — stroke play, so lower is better.
+  let hotRoundIndex = -1, hotRoundSide = null, hotRoundValue = Infinity;
+  doubles.forEach((d, idx) => {
+    if(d.ourScore != null && d.ourScore < hotRoundValue){ hotRoundValue = d.ourScore; hotRoundIndex = idx; hotRoundSide = 'us'; }
+    if(d.oppScore != null && d.oppScore < hotRoundValue){ hotRoundValue = d.oppScore; hotRoundIndex = idx; hotRoundSide = 'opp'; }
+  });
+  const doublesRowsData = doubles.map((d,idx)=>({
+    ourLabel: d.ourSide, oppLabel: d.opponentName, scoreLabel: formatDoublesScore(d), result: d.result,
+    hotRoundSide: idx === hotRoundIndex ? hotRoundSide : null
   }));
+
   drawSection('Matchplay', '1 pt / win', '#FFCB57', singlesRowsData, mpUsPts, mpOppPts, 14.5);
   y += gapAfterSection;
-  drawSection('Doubles', '2 pts / win', '#7FB3E0', doublesRowsData, dbUsPts, dbOppPts, 13.5);
+  drawSection('Doubles', hotRoundIndex >= 0 ? '2 pts / win  ·  ★ hot round' : '2 pts / win', '#7FB3E0', doublesRowsData, dbUsPts, dbOppPts, 13.5);
+
+  // ---- Special / penalty points, if any were recorded for this event ----
+  if(adjustments.length){
+    y += gapAfterSection;
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#B49DDF';
+    ctxRoundRect(ctx, marginX, y+11, 10, 10, 3);
+    ctx.fill();
+    ctx.fillStyle = '#12294D';
+    ctx.font = `800 14px ${FONT}`;
+    ctx.fillText('SPECIAL POINTS', marginX+18, y+21);
+    y += sectionHeaderH;
+
+    adjustments.forEach(a=>{
+      ctx.strokeStyle = '#E4DFD3';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(marginX, y);
+      ctx.lineTo(W-marginX, y);
+      ctx.stroke();
+
+      const teamName = a.team === 'us' ? 'Two Buff' : opponentLabel;
+      const ptsText = `${a.points >= 0 ? '+' : ''}${a.points}`;
+      ctx.font = `800 13px ${FONT}`;
+      ctx.fillStyle = '#12294D';
+      ctx.fillText(ctxTruncateText(ctx, `${ptsText} pts — ${teamName}`, contentW), marginX, y+20);
+      if(a.note){
+        ctx.font = `600 11px ${FONT}`;
+        ctx.fillStyle = '#8C8478';
+        ctx.fillText(ctxTruncateText(ctx, a.note, contentW), marginX, y+36);
+        y += adjRowH;
+      } else {
+        y += adjRowHNoNote;
+      }
+    });
+  }
 
   // ---- 9. Round the card's corners and export ----
   const rounded = document.createElement('canvas');
