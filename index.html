@@ -1913,11 +1913,19 @@ async function shareEventCard(eventId){
   const contentW = W - marginX*2;
   const FONT = '-apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif';
 
-  const rowH = 48, sectionHeaderH = 32, headerH = 112, scoreH = 132, subtotalH = 38, gapAfterSection = 20, bottomPad = 24;
-  const singlesRowsN = Math.max(singles.length, 1);
-  const doublesRowsN = Math.max(doubles.length, 1);
-  const singlesSectionH = sectionHeaderH + singlesRowsN*rowH + subtotalH + gapAfterSection;
-  const doublesSectionH = sectionHeaderH + doublesRowsN*rowH + subtotalH;
+  const rowH = 48, compactRowH = 38, sectionHeaderH = 32, headerH = 112, scoreH = 100, subtotalH = 38, gapAfterSection = 20, bottomPad = 24;
+  // Beyond a handful of matches, one tall column of rows would make the image far
+  // too tall to share well. Past 8 rows we switch to a compact style split across
+  // 2 or 3 side-by-side columns instead, capping height growth for big events.
+  const sectionLayout = (rowCount) => {
+    if(rowCount <= 8) return { numCols: 1, rowsPerCol: Math.max(rowCount, 1), rh: rowH, compact: false };
+    const numCols = rowCount <= 18 ? 2 : 3;
+    return { numCols, rowsPerCol: Math.ceil(rowCount / numCols), rh: compactRowH, compact: true };
+  };
+  const singlesLayout = sectionLayout(singles.length);
+  const doublesLayout = sectionLayout(doubles.length);
+  const singlesSectionH = sectionHeaderH + singlesLayout.rowsPerCol*singlesLayout.rh + subtotalH + gapAfterSection;
+  const doublesSectionH = sectionHeaderH + doublesLayout.rowsPerCol*doublesLayout.rh + subtotalH;
   const totalH = headerH + scoreH + singlesSectionH + doublesSectionH + bottomPad;
 
   // ---- 3. Create the canvas ----
@@ -1967,19 +1975,6 @@ async function shareEventCard(eventId){
   ctx.fillStyle = '#FFFFFF';
   ctx.fillRect(0, y, W, scoreH);
 
-  const resultColor = result==='W' ? '#1E7A46' : result==='T' ? '#8A6112' : result==='L' ? '#B3352E' : '#8C8478';
-  const resultBg = result==='W' ? '#DCEFE3' : result==='T' ? '#FBEFD8' : result==='L' ? '#F8DEDB' : '#EEEAE0';
-  const resultLabel = result==='W' ? 'WIN' : result==='T' ? 'TIE' : result==='L' ? 'LOSS' : 'NO RESULT YET';
-
-  ctx.textAlign = 'center';
-  ctx.font = `800 12px ${FONT}`;
-  const badgeW = ctx.measureText(resultLabel).width + 28;
-  ctx.fillStyle = resultBg;
-  ctxRoundRect(ctx, CENTER_X - badgeW/2, y+18, badgeW, 24, 12);
-  ctx.fill();
-  ctx.fillStyle = resultColor;
-  ctx.fillText(resultLabel, CENTER_X, y+34);
-
   const midGap = 26; // empty gap between the two columns, centered exactly on CENTER_X
   const boxPad = 30;
   const labelFont = `800 13px ${FONT}`;
@@ -2012,7 +2007,7 @@ async function shareEventCard(eventId){
     columnHalfW = Math.max(leftNumW, leftLabelW, rightNumW, rightLabelW) / 2;
   }
 
-  const boxH = 66, boxX = CENTER_X - boxW/2, boxY = y + 50;
+  const boxH = 66, boxX = CENTER_X - boxW/2, boxY = y + 20;
   ctx.save();
   ctx.shadowColor = 'rgba(18,41,77,0.18)';
   ctx.shadowBlur = 16;
@@ -2064,6 +2059,77 @@ async function shareEventCard(eventId){
     return { fontSize, text, w };
   };
 
+  // Compact 2-line row used once a section has more than 8 matches and splits into
+  // side-by-side columns: "Our vs Opp" on one line (winner's name gets the same
+  // green highlight as the spacious layout — never red, regardless of which team
+  // won), the score summary in small type on the line below.
+  const drawCompactRow = (colX, rowTop, colW, r) => {
+    const isOurWin = r.result === 'W';
+    const isOppWin = r.result === 'L';
+    const isTie = r.result === 'T';
+    const centerLabel = r.scoreLabel || (isTie ? 'TIE' : '—');
+    const sepText = ' vs ';
+
+    let fontSize = 11.5;
+    const minFontSize = 9;
+    let ourText = r.ourLabel, oppText = r.oppLabel, ourW, oppW, sepW, totalW;
+    do {
+      ctx.font = `800 ${fontSize}px ${FONT}`;
+      ourText = r.ourLabel; oppText = r.oppLabel;
+      ourW = ctx.measureText(ourText).width;
+      oppW = ctx.measureText(oppText).width;
+      ctx.font = `600 ${fontSize}px ${FONT}`;
+      sepW = ctx.measureText(sepText).width;
+      totalW = ourW + sepW + oppW;
+      if(totalW <= colW || fontSize <= minFontSize) break;
+      fontSize -= 0.5;
+    } while(true);
+    if(totalW > colW){
+      const avail = Math.max((colW - sepW) / 2, 24);
+      ctx.font = `800 ${fontSize}px ${FONT}`;
+      ourText = ctxTruncateText(ctx, ourText, avail);
+      oppText = ctxTruncateText(ctx, oppText, avail);
+      ourW = ctx.measureText(ourText).width;
+      oppW = ctx.measureText(oppText).width;
+    }
+
+    ctx.textAlign = 'left';
+    let cx = colX;
+    ctx.font = `800 ${fontSize}px ${FONT}`;
+    if(isOurWin){
+      ctx.fillStyle = '#DCEFE3';
+      ctxRoundRect(ctx, cx - 4, rowTop - 2, ourW + 8, 17, 5);
+      ctx.fill();
+      ctx.fillStyle = '#1E7A46';
+    } else {
+      ctx.fillStyle = '#2B2620';
+    }
+    ctx.fillText(ourText, cx, rowTop + 11);
+    cx += ourW + (isOurWin ? 4 : 0);
+
+    ctx.font = `600 ${fontSize}px ${FONT}`;
+    ctx.fillStyle = '#B0A99C';
+    ctx.fillText(sepText, cx, rowTop + 11);
+    cx += sepW + (isOppWin ? 4 : 0);
+
+    ctx.font = `800 ${fontSize}px ${FONT}`;
+    if(isOppWin){
+      ctx.fillStyle = '#DCEFE3';
+      ctxRoundRect(ctx, cx - 4, rowTop - 2, oppW + 8, 17, 5);
+      ctx.fill();
+      ctx.fillStyle = '#1E7A46';
+    } else {
+      ctx.fillStyle = '#2B2620';
+    }
+    ctx.fillText(oppText, cx, rowTop + 11);
+
+    ctx.textAlign = 'center';
+    ctx.font = `600 10px ${FONT}`;
+    ctx.fillStyle = isTie ? '#8A6112' : '#8C8478';
+    ctx.fillText(ctxTruncateText(ctx, centerLabel, colW), colX + colW/2, rowTop + 26);
+    ctx.textAlign = 'left';
+  };
+
   // ---- 8. Section drawer: title/subtitle row, then each match, then a subtotal.
   // The score summary is the anchor for each row — drawn fixed at CENTER_X, exactly
   // like the marquee above — and both player names are fitted and positioned as
@@ -2090,7 +2156,7 @@ async function shareEventCard(eventId){
       ctx.fillText('No results recorded.', CENTER_X, y+28);
       ctx.textAlign = 'left';
       y += rowH;
-    } else {
+    } else if(!sectionLayout(rows.length).compact){
       const gap = 14;
       const halfContentW = contentW / 2;
       rows.forEach(r=>{
@@ -2141,10 +2207,10 @@ async function shareEventCard(eventId){
         ctx.font = `800 ${oppFit.fontSize}px ${FONT}`;
         if(isOppWin){
           const slotW = oppFit.w + 16;
-          ctx.fillStyle = '#F8DEDB';
+          ctx.fillStyle = '#DCEFE3';
           ctxRoundRect(ctx, oppLeftEdge, midY - 15, slotW, 28, 8);
           ctx.fill();
-          ctx.fillStyle = '#B3352E';
+          ctx.fillStyle = '#1E7A46';
           ctx.fillText(oppFit.text, oppLeftEdge + 8, midY + 5);
         } else {
           ctx.fillStyle = '#2B2620';
@@ -2154,6 +2220,29 @@ async function shareEventCard(eventId){
 
         y += rowH;
       });
+    } else {
+      // Compact multi-column table — used once a section has more than 8 matches,
+      // so a large event (up to ~26 singles) still produces a shareable-sized image
+      // instead of one extremely tall column.
+      const layout = sectionLayout(rows.length);
+      const colGap = 20;
+      const colW = (contentW - colGap*(layout.numCols-1)) / layout.numCols;
+      const sectionTopY = y;
+      for(let col=0; col<layout.numCols; col++){
+        const colX = marginX + col*(colW+colGap);
+        const colRows = rows.slice(col*layout.rowsPerCol, (col+1)*layout.rowsPerCol);
+        colRows.forEach((r,i)=>{
+          const rowTop = sectionTopY + i*layout.rh;
+          ctx.strokeStyle = '#E4DFD3';
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(colX, rowTop - 6);
+          ctx.lineTo(colX + colW, rowTop - 6);
+          ctx.stroke();
+          drawCompactRow(colX, rowTop, colW, r);
+        });
+      }
+      y += layout.rowsPerCol * layout.rh;
     }
 
     ctx.save();
