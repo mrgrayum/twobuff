@@ -1913,7 +1913,7 @@ async function shareEventCard(eventId){
   const contentW = W - marginX*2;
   const FONT = '-apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif';
 
-  const rowH = 48, compactRowH = 38, sectionHeaderH = 32, headerH = 112, scoreH = 100, subtotalH = 38, gapAfterSection = 20, bottomPad = 24;
+  const rowH = 48, compactRowH = 30, colHeaderH = 22, sectionHeaderH = 32, headerH = 112, scoreH = 100, subtotalH = 38, gapAfterSection = 20, bottomPad = 24;
   // Beyond a handful of matches, one tall column of rows would make the image far
   // too tall to share well. Past 8 rows we switch to a compact style split across
   // 2 or 3 side-by-side columns instead, capping height growth for big events.
@@ -1924,8 +1924,8 @@ async function shareEventCard(eventId){
   };
   const singlesLayout = sectionLayout(singles.length);
   const doublesLayout = sectionLayout(doubles.length);
-  const singlesSectionH = sectionHeaderH + singlesLayout.rowsPerCol*singlesLayout.rh + subtotalH + gapAfterSection;
-  const doublesSectionH = sectionHeaderH + doublesLayout.rowsPerCol*doublesLayout.rh + subtotalH;
+  const singlesSectionH = sectionHeaderH + colHeaderH + singlesLayout.rowsPerCol*singlesLayout.rh + subtotalH + gapAfterSection;
+  const doublesSectionH = sectionHeaderH + colHeaderH + doublesLayout.rowsPerCol*doublesLayout.rh + subtotalH;
   const totalH = headerH + scoreH + singlesSectionH + doublesSectionH + bottomPad;
 
   // ---- 3. Create the canvas ----
@@ -2059,81 +2059,84 @@ async function shareEventCard(eventId){
     return { fontSize, text, w };
   };
 
-  // Compact 2-line row used once a section has more than 8 matches and splits into
-  // side-by-side columns: "Our vs Opp" on one line (winner's name gets the same
-  // green highlight as the spacious layout — never red, regardless of which team
-  // won), the score summary in small type on the line below.
-  const drawCompactRow = (colX, rowTop, colW, r) => {
+  // Compact table row used once a section has more than 8 matches and splits into
+  // side-by-side columns. The score sits between the two names on one line — same
+  // "anchor the score, names flow outward from it" technique as everywhere else —
+  // just centered on this column's own center instead of the whole card's.
+  const drawCompactRow = (colX, rowTop, colW, r, startFontSize) => {
     const isOurWin = r.result === 'W';
     const isOppWin = r.result === 'L';
     const isTie = r.result === 'T';
     const centerLabel = r.scoreLabel || (isTie ? 'TIE' : '—');
-    const sepText = ' vs ';
+    const colCenterX = colX + colW/2;
+    const gap = 8;
 
-    let fontSize = 11.5;
-    const minFontSize = 9;
-    let ourText = r.ourLabel, oppText = r.oppLabel, ourW, oppW, sepW, totalW;
-    do {
-      ctx.font = `800 ${fontSize}px ${FONT}`;
-      ourText = r.ourLabel; oppText = r.oppLabel;
-      ourW = ctx.measureText(ourText).width;
-      oppW = ctx.measureText(oppText).width;
-      ctx.font = `600 ${fontSize}px ${FONT}`;
-      sepW = ctx.measureText(sepText).width;
-      totalW = ourW + sepW + oppW;
-      if(totalW <= colW || fontSize <= minFontSize) break;
-      fontSize -= 0.5;
-    } while(true);
-    if(totalW > colW){
-      const avail = Math.max((colW - sepW) / 2, 24);
-      ctx.font = `800 ${fontSize}px ${FONT}`;
-      ourText = ctxTruncateText(ctx, ourText, avail);
-      oppText = ctxTruncateText(ctx, oppText, avail);
-      ourW = ctx.measureText(ourText).width;
-      oppW = ctx.measureText(oppText).width;
-    }
+    ctx.font = `700 10px ${FONT}`;
+    const centerW = Math.min(ctx.measureText(centerLabel).width, colW * 0.4);
+    const sideAvailW = (colW - centerW)/2 - gap;
 
-    ctx.textAlign = 'left';
-    let cx = colX;
-    ctx.font = `800 ${fontSize}px ${FONT}`;
+    const ourFit = fitNameToWidth(r.ourLabel, sideAvailW, isOurWin, startFontSize);
+    const oppFit = fitNameToWidth(r.oppLabel, sideAvailW, isOppWin, startFontSize);
+    const ourRightEdge = colCenterX - centerW/2 - gap;
+    const oppLeftEdge = colCenterX + centerW/2 + gap;
+
+    ctx.textAlign = 'right';
+    ctx.font = `800 ${ourFit.fontSize}px ${FONT}`;
     if(isOurWin){
+      const slotW = ourFit.w + 10;
       ctx.fillStyle = '#DCEFE3';
-      ctxRoundRect(ctx, cx - 4, rowTop - 2, ourW + 8, 17, 5);
+      ctxRoundRect(ctx, ourRightEdge - slotW, rowTop - 11, slotW, 20, 6);
       ctx.fill();
       ctx.fillStyle = '#1E7A46';
+      ctx.fillText(ourFit.text, ourRightEdge - 5, rowTop + 4);
     } else {
       ctx.fillStyle = '#2B2620';
+      ctx.fillText(ourFit.text, ourRightEdge, rowTop + 4);
     }
-    ctx.fillText(ourText, cx, rowTop + 11);
-    cx += ourW + (isOurWin ? 4 : 0);
-
-    ctx.font = `600 ${fontSize}px ${FONT}`;
-    ctx.fillStyle = '#B0A99C';
-    ctx.fillText(sepText, cx, rowTop + 11);
-    cx += sepW + (isOppWin ? 4 : 0);
-
-    ctx.font = `800 ${fontSize}px ${FONT}`;
-    if(isOppWin){
-      ctx.fillStyle = '#DCEFE3';
-      ctxRoundRect(ctx, cx - 4, rowTop - 2, oppW + 8, 17, 5);
-      ctx.fill();
-      ctx.fillStyle = '#1E7A46';
-    } else {
-      ctx.fillStyle = '#2B2620';
-    }
-    ctx.fillText(oppText, cx, rowTop + 11);
 
     ctx.textAlign = 'center';
-    ctx.font = `600 10px ${FONT}`;
+    ctx.font = `700 10px ${FONT}`;
     ctx.fillStyle = isTie ? '#8A6112' : '#8C8478';
-    ctx.fillText(ctxTruncateText(ctx, centerLabel, colW), colX + colW/2, rowTop + 26);
+    ctx.fillText(centerLabel, colCenterX, rowTop + 4);
+
+    ctx.textAlign = 'left';
+    ctx.font = `800 ${oppFit.fontSize}px ${FONT}`;
+    if(isOppWin){
+      const slotW = oppFit.w + 10;
+      ctx.fillStyle = '#DCEFE3';
+      ctxRoundRect(ctx, oppLeftEdge, rowTop - 11, slotW, 20, 6);
+      ctx.fill();
+      ctx.fillStyle = '#1E7A46';
+      ctx.fillText(oppFit.text, oppLeftEdge + 5, rowTop + 4);
+    } else {
+      ctx.fillStyle = '#2B2620';
+      ctx.fillText(oppFit.text, oppLeftEdge, rowTop + 4);
+    }
     ctx.textAlign = 'left';
   };
 
-  // ---- 8. Section drawer: title/subtitle row, then each match, then a subtotal.
-  // The score summary is the anchor for each row — drawn fixed at CENTER_X, exactly
-  // like the marquee above — and both player names are fitted and positioned as
-  // mirror images flowing outward from it, not the other way around. ----
+  // Column header — "TWO BUFF" / opponent name — drawn above a block of rows so
+  // it's unambiguous which side is which, repeated for every side-by-side column.
+  const drawColumnHeader = (x, w) => {
+    ctx.font = `800 10px ${FONT}`;
+    ctx.fillStyle = '#8C8478';
+    ctx.textAlign = 'left';
+    ctx.fillText('TWO BUFF', x, y + colHeaderH - 8);
+    ctx.textAlign = 'right';
+    ctx.fillText(ctxTruncateText(ctx, opponentLabel.toUpperCase(), w*0.55), x + w, y + colHeaderH - 8);
+    ctx.textAlign = 'left';
+    ctx.strokeStyle = '#D8D2C4';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x, y + colHeaderH);
+    ctx.lineTo(x + w, y + colHeaderH);
+    ctx.stroke();
+  };
+
+  // ---- 8. Section drawer: title/subtitle row, column headers, then each match,
+  // then a subtotal. The score summary is the anchor for each row — drawn fixed
+  // at its column's center, exactly like the marquee above — and both player
+  // names are fitted and positioned as mirror images flowing outward from it. ----
   const drawSection = (title, subtitle, accent, rows, usPts, oppPts, startFontSize) => {
     ctx.textAlign = 'left';
     ctx.fillStyle = accent;
@@ -2157,6 +2160,8 @@ async function shareEventCard(eventId){
       ctx.textAlign = 'left';
       y += rowH;
     } else if(!sectionLayout(rows.length).compact){
+      drawColumnHeader(marginX, contentW);
+      y += colHeaderH;
       const gap = 14;
       const halfContentW = contentW / 2;
       rows.forEach(r=>{
@@ -2227,19 +2232,26 @@ async function shareEventCard(eventId){
       const layout = sectionLayout(rows.length);
       const colGap = 20;
       const colW = (contentW - colGap*(layout.numCols-1)) / layout.numCols;
+      for(let col=0; col<layout.numCols; col++){
+        const colX = marginX + col*(colW+colGap);
+        drawColumnHeader(colX, colW);
+      }
+      y += colHeaderH;
       const sectionTopY = y;
       for(let col=0; col<layout.numCols; col++){
         const colX = marginX + col*(colW+colGap);
         const colRows = rows.slice(col*layout.rowsPerCol, (col+1)*layout.rowsPerCol);
         colRows.forEach((r,i)=>{
-          const rowTop = sectionTopY + i*layout.rh;
-          ctx.strokeStyle = '#E4DFD3';
-          ctx.lineWidth = 1;
-          ctx.beginPath();
-          ctx.moveTo(colX, rowTop - 6);
-          ctx.lineTo(colX + colW, rowTop - 6);
-          ctx.stroke();
-          drawCompactRow(colX, rowTop, colW, r);
+          const rowTop = sectionTopY + i*layout.rh + layout.rh/2;
+          if(i > 0){
+            ctx.strokeStyle = '#E4DFD3';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(colX, sectionTopY + i*layout.rh - 3);
+            ctx.lineTo(colX + colW, sectionTopY + i*layout.rh - 3);
+            ctx.stroke();
+          }
+          drawCompactRow(colX, rowTop, colW, r, startFontSize > 12 ? 12 : startFontSize);
         });
       }
       y += layout.rowsPerCol * layout.rh;
