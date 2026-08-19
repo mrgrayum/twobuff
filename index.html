@@ -2492,8 +2492,8 @@ async function renderPlayerHistoryHtml(playerId){
   }
   const resultPill = (label, entry) => {
     if(!entry) return '';
-    const color = entry.result==='W' ? 'var(--forest)' : 'var(--red)';
-    const bg = entry.result==='W' ? '#E1E8F5' : '#F5D9D6';
+    const color = entry.result==='W' ? 'var(--forest)' : entry.result==='T' ? '#8A6112' : 'var(--red)';
+    const bg = entry.result==='W' ? '#E1E8F5' : entry.result==='T' ? '#FBEFD8' : '#F5D9D6';
     let detail = '';
     if(label === 'Doubles'){
       const opps = [entry.opp1Name, entry.opp2Name].filter(Boolean).join(' & ');
