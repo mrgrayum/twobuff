@@ -3659,8 +3659,8 @@ async function renderStats(){
   const seasonByEvent = {};
   state.events.forEach(e=>{ seasonByEvent[e.id] = effectiveSeason(e); });
 
-  const record = {}; // playerId -> {mpW,mpL,dbW,dbL, eventsPlayed:Set, powerScore}
-  state.players.forEach(p=>{ record[p.id] = {mpW:0,mpL:0,dbW:0,dbL:0, eventsPlayed:new Set(), powerScore:0}; });
+  const record = {}; // playerId -> {mpW,mpL,mpT,dbW,dbL,dbT, eventsPlayed:Set, powerScore}
+  state.players.forEach(p=>{ record[p.id] = {mpW:0,mpL:0,mpT:0,dbW:0,dbL:0,dbT:0, eventsPlayed:new Set(), powerScore:0}; });
 
   // ---- Team Result aggregation state (filled in by the parallel block below) ----
   const teamEvents = []; // {event, result, ourScore, oppScore}
@@ -3677,7 +3677,7 @@ async function renderStats(){
         // Player-level aggregation (win/loss records, power score)
         Object.keys(data).forEach(pid=>{
           if(pid === '__adjustments') return; // not a player entry
-          if(!record[pid]) record[pid] = {mpW:0,mpL:0,dbW:0,dbL:0, eventsPlayed:new Set(), powerScore:0};
+          if(!record[pid]) record[pid] = {mpW:0,mpL:0,mpT:0,dbW:0,dbL:0,dbT:0, eventsPlayed:new Set(), powerScore:0};
           const s = data[pid];
           const playedThisEvent = !!((s.matchplay && s.matchplay.played) || (s.doubles && s.doubles.played));
           if(playedThisEvent) record[pid].eventsPlayed.add(eventId);
@@ -3696,10 +3696,12 @@ async function renderStats(){
           if(s.matchplay && s.matchplay.played){
             if(s.matchplay.result==='W') record[pid].mpW++;
             else if(s.matchplay.result==='L') record[pid].mpL++;
+            else if(s.matchplay.result==='T') record[pid].mpT++;
           }
           if(s.doubles && s.doubles.played){
             if(s.doubles.result==='W') record[pid].dbW++;
             else if(s.doubles.result==='L') record[pid].dbL++;
+            else if(s.doubles.result==='T') record[pid].dbT++;
           }
         });
 
@@ -3772,8 +3774,8 @@ async function renderStats(){
   const sortedPlayers = [...state.players].sort((a,b)=> record[b.id].powerScore - record[a.id].powerScore);
   const rowCards = await Promise.all(sortedPlayers.map(async p=>{
     const r = record[p.id];
-    const hasMp = (r.mpW+r.mpL) > 0;
-    const hasDb = (r.dbW+r.dbL) > 0;
+    const hasMp = (r.mpW+r.mpL+r.mpT) > 0;
+    const hasDb = (r.dbW+r.dbL+r.dbT) > 0;
     const eventsPlayed = r.eventsPlayed.size;
     const qualified = eventsPlayed >= FINALS_MIN_EVENTS;
     const expanded = state.expandedPlayerId === p.id;
@@ -3790,8 +3792,8 @@ async function renderStats(){
               Events Played: ${eventsPlayed}${qualified ? ' ⭐' : ''}
             </div>
           </div>
-          <div class="rec" style="color:${hasMp ? 'var(--forest-dark)':'var(--ink-soft)'};">${hasMp ? r.mpW+'-'+r.mpL : '—'}<span class="sub">Singles</span></div>
-          <div class="rec" style="color:${hasDb ? 'var(--forest-dark)':'var(--ink-soft)'};">${hasDb ? r.dbW+'-'+r.dbL : '—'}<span class="sub">Doubles</span></div>
+          <div class="rec" style="color:${hasMp ? 'var(--forest-dark)':'var(--ink-soft)'};">${hasMp ? r.mpW+'-'+r.mpL+'-'+r.mpT : '—'}<span class="sub">Singles</span></div>
+          <div class="rec" style="color:${hasDb ? 'var(--forest-dark)':'var(--ink-soft)'};">${hasDb ? r.dbW+'-'+r.dbL+'-'+r.dbT : '—'}<span class="sub">Doubles</span></div>
         </div>
         ${expanded ? `<div onclick="event.stopPropagation()">${renderPlayerProfileSummary(p)}${historyHtml}</div>` : ''}
       </div>`;
