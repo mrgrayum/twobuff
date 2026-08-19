@@ -1890,6 +1890,7 @@ function loadImageAsync(src){
   });
 }
 async function shareEventCard(eventId){
+  // ---- 1. Gather every piece of data the card needs, up front ----
   const ev = state.events.find(e=>e.id===eventId);
   if(!ev){ showToast('Event not found'); return; }
   let opponentLabel = 'Opponent';
@@ -1902,12 +1903,16 @@ async function shareEventCard(eventId){
   }
   const { singles, doubles, mpUsPts, mpOppPts, dbUsPts, dbOppPts, totalUsPts, totalOppPts, result } = await getEventMatchDetails(eventId);
   showToast('Generating image…');
-
   const logoEl = document.querySelector('.brand-mark img');
   const logoImg = await loadImageAsync(logoEl ? logoEl.src : null);
 
+  // ---- 2. Core geometry. CENTER_X is the single source of truth for centering —
+  // every centered element anchors to this value, nothing else. ----
   const W = 760, scale = 2, marginX = 60, cardRadius = 20;
+  const CENTER_X = W / 2;
   const contentW = W - marginX*2;
+  const FONT = '-apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif';
+
   const rowH = 48, sectionHeaderH = 32, headerH = 112, scoreH = 132, subtotalH = 38, gapAfterSection = 20, bottomPad = 24;
   const singlesRowsN = Math.max(singles.length, 1);
   const doublesRowsN = Math.max(doubles.length, 1);
@@ -1915,23 +1920,23 @@ async function shareEventCard(eventId){
   const doublesSectionH = sectionHeaderH + doublesRowsN*rowH + subtotalH;
   const totalH = headerH + scoreH + singlesSectionH + doublesSectionH + bottomPad;
 
+  // ---- 3. Create the canvas ----
   const draw = document.createElement('canvas');
   draw.width = W*scale;
   draw.height = totalH*scale;
   const ctx = draw.getContext('2d');
   ctx.scale(scale, scale);
-  const FONT = '-apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif';
 
-  // Card background
+  // ---- 4. Background ----
   ctx.fillStyle = '#F4F1EA';
-  ctx.fillRect(0,0,W,totalH);
+  ctx.fillRect(0, 0, W, totalH);
 
-  // ---- Header: gradient band with faded logo watermark ----
-  const headerGrad = ctx.createLinearGradient(0,0,W,headerH);
+  // ---- 5. Header: gradient band, logo watermark, title, date ----
+  const headerGrad = ctx.createLinearGradient(0, 0, W, headerH);
   headerGrad.addColorStop(0, '#0F2240');
   headerGrad.addColorStop(1, '#1B3A66');
   ctx.fillStyle = headerGrad;
-  ctx.fillRect(0,0,W,headerH);
+  ctx.fillRect(0, 0, W, headerH);
 
   if(logoImg){
     ctx.save();
@@ -1941,6 +1946,7 @@ async function shareEventCard(eventId){
     ctx.restore();
   }
 
+  ctx.textAlign = 'left';
   ctx.fillStyle = '#FFFFFF';
   ctx.font = `800 24px ${FONT}`;
   ctx.fillText(ctxTruncateText(ctx, `Two Buff vs ${opponentLabel}`, contentW), marginX, 54);
@@ -1952,7 +1958,12 @@ async function shareEventCard(eventId){
 
   let y = headerH;
 
-  // ---- Final score section ----
+  // ---- 6. Score marquee. This is the anchor for the whole card, so it's built
+  // first and centered using text-align anchoring rather than measured offsets —
+  // the left score's RIGHT edge sits exactly at CENTER_X-gap, the right score's
+  // LEFT edge sits exactly at CENTER_X+gap. The gap between them is the true
+  // center of the card, guaranteed by the browser's own text layout, not by math
+  // that could drift if a number or name changes width. ----
   ctx.fillStyle = '#FFFFFF';
   ctx.fillRect(0, y, W, scoreH);
 
@@ -1964,42 +1975,40 @@ async function shareEventCard(eventId){
   ctx.font = `800 12px ${FONT}`;
   const badgeW = ctx.measureText(resultLabel).width + 28;
   ctx.fillStyle = resultBg;
-  ctxRoundRect(ctx, W/2 - badgeW/2, y+18, badgeW, 24, 12);
+  ctxRoundRect(ctx, CENTER_X - badgeW/2, y+18, badgeW, 24, 12);
   ctx.fill();
   ctx.fillStyle = resultColor;
-  ctx.fillText(resultLabel, W/2, y+34);
+  ctx.fillText(resultLabel, CENTER_X, y+34);
 
-  // Scoreboard box — each team gets its own label-above-score column, mirrored around the
-  // card's true centerline (W/2). No dash joining the numbers — the gap between the two
-  // columns IS the center, so it stays balanced no matter how many digits either score has.
-  const leftScoreStr = `${totalUsPts}`;
-  const rightScoreStr = `${totalOppPts}`;
-  ctx.font = `800 30px ${FONT}`;
-  let leftNumW = ctx.measureText(leftScoreStr).width;
-  let rightNumW = ctx.measureText(rightScoreStr).width;
-  ctx.font = `800 13px ${FONT}`;
+  const scoreGap = 22; // half the visual gap between the two scores — CENTER_X sits exactly in the middle of it
+  const boxPad = 30;
+  const labelFont = `800 13px ${FONT}`;
+  const numberFont = `800 30px ${FONT}`;
+
   const leftLabelFull = 'TWO BUFF';
   const rightLabelFull = opponentLabel.toUpperCase();
+  const leftScoreStr = `${totalUsPts}`;
+  const rightScoreStr = `${totalOppPts}`;
+
+  // Measure at full size first, purely to size the background box — positions below don't depend on these measurements.
+  ctx.font = numberFont;
+  const leftNumW = ctx.measureText(leftScoreStr).width;
+  const rightNumW = ctx.measureText(rightScoreStr).width;
+  ctx.font = labelFont;
   let leftLabel = leftLabelFull, rightLabel = rightLabelFull;
   let leftLabelW = ctx.measureText(leftLabelFull).width;
   let rightLabelW = ctx.measureText(rightLabelFull).width;
 
-  const halfGap = 26, boxPad = 30;
-  let leftBlockW = Math.max(leftNumW, leftLabelW);
-  let rightBlockW = Math.max(rightNumW, rightLabelW);
-  let boxW = leftBlockW + rightBlockW + halfGap*2 + boxPad*2;
+  let maxBlockW = Math.max(leftNumW, leftLabelW, rightNumW, rightLabelW);
+  let boxW = (scoreGap + maxBlockW + boxPad) * 2;
   if(boxW > contentW){
     boxW = contentW;
-    const maxEachLabel = Math.max((boxW - boxPad*2 - halfGap*2 - leftNumW - rightNumW) / 2, 40);
-    leftLabel = ctxTruncateText(ctx, leftLabelFull, maxEachLabel);
-    rightLabel = ctxTruncateText(ctx, rightLabelFull, maxEachLabel);
-    leftLabelW = ctx.measureText(leftLabel).width;
-    rightLabelW = ctx.measureText(rightLabel).width;
-    leftBlockW = Math.max(leftNumW, leftLabelW);
-    rightBlockW = Math.max(rightNumW, rightLabelW);
+    const maxLabelW = Math.max((boxW/2) - scoreGap - boxPad, 40);
+    leftLabel = ctxTruncateText(ctx, leftLabelFull, maxLabelW);
+    rightLabel = ctxTruncateText(ctx, rightLabelFull, maxLabelW);
   }
 
-  const boxH = 66, boxX = W/2 - boxW/2, boxY = y + 50;
+  const boxH = 66, boxX = CENTER_X - boxW/2, boxY = y + 50;
   ctx.save();
   ctx.shadowColor = 'rgba(18,41,77,0.18)';
   ctx.shadowBlur = 16;
@@ -2009,26 +2018,29 @@ async function shareEventCard(eventId){
   ctx.fill();
   ctx.restore();
 
-  const leftCenterX = W/2 - halfGap - leftBlockW/2;
-  const rightCenterX = W/2 + halfGap + rightBlockW/2;
-
-  ctx.textAlign = 'center';
-  ctx.font = `800 13px ${FONT}`;
+  ctx.textAlign = 'right';
+  ctx.font = labelFont;
   ctx.fillStyle = '#9FB2CE';
-  ctx.fillText(leftLabel, leftCenterX, boxY + 24);
-  ctx.fillText(rightLabel, rightCenterX, boxY + 24);
-
-  ctx.font = `800 30px ${FONT}`;
+  ctx.fillText(leftLabel, CENTER_X - scoreGap, boxY + 24);
+  ctx.font = numberFont;
   ctx.fillStyle = '#FFC94A';
-  ctx.fillText(leftScoreStr, leftCenterX, boxY + 55);
-  ctx.fillText(rightScoreStr, rightCenterX, boxY + 55);
-  ctx.textAlign = 'left';
+  ctx.fillText(leftScoreStr, CENTER_X - scoreGap, boxY + 55);
 
+  ctx.textAlign = 'left';
+  ctx.font = labelFont;
+  ctx.fillStyle = '#9FB2CE';
+  ctx.fillText(rightLabel, CENTER_X + scoreGap, boxY + 24);
+  ctx.font = numberFont;
+  ctx.fillStyle = '#FFC94A';
+  ctx.fillText(rightScoreStr, CENTER_X + scoreGap, boxY + 55);
+
+  ctx.textAlign = 'left';
   y += scoreH;
 
-  // Given a target width, finds the largest font size (down to a floor) at which
-  // "our name — score — opponent name" fits; only truncates as a last resort, so
-  // long names (especially doubles pairs like "A & B") shrink instead of clipping.
+  // ---- 7. Match rows: for a given target width, find the largest font size (down
+  // to a floor) that lets "our name — score — opponent name" fit as one line;
+  // only truncates a name as a last resort. Doubles gets a smaller starting size
+  // since "A & B" pairs are inherently longer than a single name. ----
   const fitRow = (ourLabel, oppLabel, centerLabel, availableW, isOurWin, isOppWin, startSize) => {
     let fontSize = startSize;
     const minFontSize = 10;
@@ -2046,7 +2058,6 @@ async function shareEventCard(eventId){
       fontSize -= 0.5;
     } while(fontSize > minFontSize);
     if(totalW > availableW){
-      // Even at the smallest readable size it doesn't fit — truncate the longer name.
       ctx.font = `800 ${fontSize}px ${FONT}`;
       const overflow = totalW - availableW + 6;
       if(ourW >= oppW){
@@ -2060,9 +2071,11 @@ async function shareEventCard(eventId){
     return { fontSize, ourText, oppText, ourW, oppW, centerW, gap };
   };
 
-  // ---- Section drawer: each row is a compact, centered group (name — score — name)
-  // instead of stretched fixed columns, so short names don't leave a lot of dead space ----
+  // ---- 8. Section drawer: title/subtitle row, then each match as a compact,
+  // centered group (its bounding box centered on CENTER_X — same anchor as the
+  // score above), then a subtotal scoreboard. ----
   const drawSection = (title, subtitle, accent, rows, usPts, oppPts, startFontSize) => {
+    ctx.textAlign = 'left';
     ctx.fillStyle = accent;
     ctxRoundRect(ctx, marginX, y+11, 10, 10, 3);
     ctx.fill();
@@ -2080,7 +2093,7 @@ async function shareEventCard(eventId){
       ctx.fillStyle = '#8C8478';
       ctx.font = `600 13px ${FONT}`;
       ctx.textAlign = 'center';
-      ctx.fillText('No results recorded.', W/2, y+28);
+      ctx.fillText('No results recorded.', CENTER_X, y+28);
       ctx.textAlign = 'left';
       y += rowH;
     } else {
@@ -2103,13 +2116,13 @@ async function shareEventCard(eventId){
         const ourSlot = ourW + (isOurWin ? 16 : 0);
         const oppSlot = oppW + (isOppWin ? 16 : 0);
         const groupW = ourSlot + gap + centerW + gap + oppSlot;
-        let cursorX = marginX + (contentW - groupW)/2; // group's bounding box, incl. pill padding, is centered exactly on the card
+        let cursorX = CENTER_X - groupW/2;
 
         ctx.textAlign = 'left';
         ctx.font = `800 ${fontSize}px ${FONT}`;
         if(isOurWin){
           ctx.fillStyle = '#DCEFE3';
-          ctxRoundRect(ctx, cursorX, midY - 15, ourSlot, 28, 8); // pill IS the slot — no boundary mismatch
+          ctxRoundRect(ctx, cursorX, midY - 15, ourSlot, 28, 8);
           ctx.fill();
           ctx.fillStyle = '#1E7A46';
           ctx.fillText(ourText, cursorX + 8, midY + 5);
@@ -2151,7 +2164,7 @@ async function shareEventCard(eventId){
     ctx.font = `800 13px ${FONT}`;
     ctx.fillStyle = '#12294D';
     ctx.textAlign = 'center';
-    ctx.fillText(ctxTruncateText(ctx, `Two Buff  ${usPts} – ${oppPts}  ${opponentLabel}`, contentW - 20), W/2, y+27);
+    ctx.fillText(ctxTruncateText(ctx, `Two Buff  ${usPts} – ${oppPts}  ${opponentLabel}`, contentW - 20), CENTER_X, y+27);
     ctx.textAlign = 'left';
     y += subtotalH;
   };
@@ -2166,7 +2179,7 @@ async function shareEventCard(eventId){
   y += gapAfterSection;
   drawSection('Doubles', '2 pts / win', '#7FB3E0', doublesRowsData, dbUsPts, dbOppPts, 13.5);
 
-  // ---- Round the whole card's corners ----
+  // ---- 9. Round the card's corners and export ----
   const rounded = document.createElement('canvas');
   rounded.width = draw.width;
   rounded.height = draw.height;
