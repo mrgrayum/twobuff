@@ -1880,6 +1880,15 @@ function ctxTruncateText(ctx, text, maxWidth){
   }
   return t + '…';
 }
+function loadImageAsync(src){
+  return new Promise(resolve=>{
+    if(!src){ resolve(null); return; }
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => resolve(null);
+    img.src = src;
+  });
+}
 async function shareEventCard(eventId){
   const ev = state.events.find(e=>e.id===eventId);
   if(!ev){ showToast('Event not found'); return; }
@@ -1894,73 +1903,121 @@ async function shareEventCard(eventId){
   const { singles, doubles, mpUsPts, mpOppPts, dbUsPts, dbOppPts, totalUsPts, totalOppPts, result } = await getEventMatchDetails(eventId);
   showToast('Generating image…');
 
-  const W = 900, scale = 2, marginX = 44;
+  const logoEl = document.querySelector('.brand-mark img');
+  const logoImg = await loadImageAsync(logoEl ? logoEl.src : null);
+
+  const W = 900, scale = 2, marginX = 44, cardRadius = 22;
   const contentW = W - marginX*2;
-  const rowH = 46, sectionHeaderH = 30, headerH = 132, scoreH = 100, footerH = 46, gapBetweenSections = 18;
+  const rowH = 54, sectionHeaderH = 34, headerH = 118, scoreH = 140, subtotalH = 40, gapAfterSection = 22, bottomPad = 26;
   const singlesRowsN = Math.max(singles.length, 1);
   const doublesRowsN = Math.max(doubles.length, 1);
-  const singlesSectionH = sectionHeaderH + singlesRowsN*rowH + 34 + gapBetweenSections + 6;
-  const doublesSectionH = sectionHeaderH + doublesRowsN*rowH + 34 + gapBetweenSections + 6;
-  const totalH = headerH + scoreH + singlesSectionH + doublesSectionH + footerH;
+  const singlesSectionH = sectionHeaderH + singlesRowsN*rowH + subtotalH + gapAfterSection;
+  const doublesSectionH = sectionHeaderH + doublesRowsN*rowH + subtotalH;
+  const totalH = headerH + scoreH + singlesSectionH + doublesSectionH + bottomPad;
 
-  const canvas = document.createElement('canvas');
-  canvas.width = W*scale;
-  canvas.height = totalH*scale;
-  const ctx = canvas.getContext('2d');
+  const draw = document.createElement('canvas');
+  draw.width = W*scale;
+  draw.height = totalH*scale;
+  const ctx = draw.getContext('2d');
   ctx.scale(scale, scale);
   const FONT = '-apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif';
 
+  // Card background
   ctx.fillStyle = '#F4F1EA';
   ctx.fillRect(0,0,W,totalH);
 
-  // Header band
-  ctx.fillStyle = '#12294D';
+  // ---- Header: gradient band with faded logo watermark ----
+  const headerGrad = ctx.createLinearGradient(0,0,W,headerH);
+  headerGrad.addColorStop(0, '#0F2240');
+  headerGrad.addColorStop(1, '#1B3A66');
+  ctx.fillStyle = headerGrad;
   ctx.fillRect(0,0,W,headerH);
-  ctx.fillStyle = '#B8C4D9';
-  ctx.font = `700 12px ${FONT}`;
-  ctx.fillText('TWO BUFF TEAM HUB', marginX, 34);
+
+  if(logoImg){
+    ctx.save();
+    ctx.globalAlpha = 0.16;
+    const logoSize = 230;
+    ctx.drawImage(logoImg, W - logoSize*0.62, -logoSize*0.28, logoSize, logoSize);
+    ctx.restore();
+  }
+
   ctx.fillStyle = '#FFFFFF';
-  ctx.font = `800 26px ${FONT}`;
-  ctx.fillText(ctxTruncateText(ctx, ev.name, contentW), marginX, 70);
+  ctx.font = `800 28px ${FONT}`;
+  ctx.fillText(ctxTruncateText(ctx, `Two Buff vs ${opponentLabel}`, contentW), marginX, 58);
+  ctx.fillStyle = '#FFCB57';
+  ctx.fillRect(marginX, 70, 46, 4);
   ctx.fillStyle = '#B8C4D9';
-  ctx.font = `600 14px ${FONT}`;
-  ctx.fillText(ctxTruncateText(ctx, `${fmtDateLong(ev.date)}  ·  vs ${opponentLabel}`, contentW), marginX, 96);
+  ctx.font = `600 15px ${FONT}`;
+  ctx.fillText(fmtDateLong(ev.date), marginX, 96);
 
   let y = headerH;
 
-  // Final score band
+  // ---- Final score section ----
   ctx.fillStyle = '#FFFFFF';
   ctx.fillRect(0, y, W, scoreH);
-  const resultColor = result==='W' ? '#12294D' : result==='T' ? '#8A6112' : result==='L' ? '#8C2F2A' : '#8C8478';
+
+  const resultColor = result==='W' ? '#1E7A46' : result==='T' ? '#8A6112' : result==='L' ? '#B3352E' : '#8C8478';
+  const resultBg = result==='W' ? '#DCEFE3' : result==='T' ? '#FBEFD8' : result==='L' ? '#F8DEDB' : '#EEEAE0';
   const resultLabel = result==='W' ? 'WIN' : result==='T' ? 'TIE' : result==='L' ? 'LOSS' : 'NO RESULT YET';
+
   ctx.textAlign = 'center';
+  ctx.font = `800 12px ${FONT}`;
+  const badgeW = ctx.measureText(resultLabel).width + 28;
+  ctx.fillStyle = resultBg;
+  ctxRoundRect(ctx, W/2 - badgeW/2, y+20, badgeW, 24, 12);
+  ctx.fill();
   ctx.fillStyle = resultColor;
-  ctx.font = `800 13px ${FONT}`;
-  ctx.fillText(resultLabel, W/2, y+24);
-  ctx.font = `800 40px "Courier New", monospace`;
+  ctx.fillText(resultLabel, W/2, y+36);
+
+  // Scoreboard box with soft shadow
+  const boxW = 300, boxH = 62, boxX = W/2 - boxW/2, boxY = y + 56;
+  ctx.save();
+  ctx.shadowColor = 'rgba(18,41,77,0.18)';
+  ctx.shadowBlur = 18;
+  ctx.shadowOffsetY = 6;
   ctx.fillStyle = '#12294D';
-  ctx.fillText(`${totalUsPts} – ${totalOppPts}`, W/2, y+66);
-  ctx.font = `700 13px ${FONT}`;
-  ctx.fillStyle = '#6B6558';
-  ctx.fillText(`TWO BUFF        ${opponentLabel.toUpperCase()}`, W/2, y+86);
+  ctxRoundRect(ctx, boxX, boxY, boxW, boxH, 14);
+  ctx.fill();
+  ctx.restore();
+
+  ctx.font = `800 15px ${FONT}`;
+  ctx.fillStyle = '#9FB2CE';
+  ctx.fillText('TWO BUFF', boxX + boxW*0.26, boxY + 24);
+  ctx.fillText(ctxTruncateText(ctx, opponentLabel.toUpperCase(), boxW*0.4), boxX + boxW*0.74, boxY + 24);
+
+  ctx.font = `800 30px "Courier New", monospace`;
+  ctx.fillStyle = '#FFC94A';
+  ctx.fillText(`${totalUsPts}  –  ${totalOppPts}`, boxX + boxW/2, boxY + 50);
   ctx.textAlign = 'left';
+
   y += scoreH;
 
-  const drawSection = (title, subtitle, rows, usPts, oppPts) => {
+  // ---- Section drawer: linear Our Player — Score — Opponent rows, winner highlighted ----
+  const leftColX = marginX;
+  const leftColW = contentW * 0.36;
+  const rightColX = W - marginX;
+  const rightColW = contentW * 0.36;
+
+  const drawSection = (title, subtitle, accent, rows, usPts, oppPts) => {
+    ctx.fillStyle = accent;
+    ctxRoundRect(ctx, marginX, y+11, 10, 10, 3);
+    ctx.fill();
     ctx.fillStyle = '#12294D';
-    ctx.font = `800 13px ${FONT}`;
-    ctx.fillText(title.toUpperCase(), marginX, y+20);
+    ctx.font = `800 14px ${FONT}`;
+    ctx.fillText(title.toUpperCase(), marginX + 18, y+21);
     ctx.fillStyle = '#8C8478';
     ctx.font = `700 12px ${FONT}`;
     ctx.textAlign = 'right';
-    ctx.fillText(subtitle, W-marginX, y+20);
+    ctx.fillText(subtitle, W-marginX, y+21);
     ctx.textAlign = 'left';
     y += sectionHeaderH;
 
     if(rows.length === 0){
       ctx.fillStyle = '#8C8478';
       ctx.font = `600 13px ${FONT}`;
-      ctx.fillText('No results recorded.', marginX, y+28);
+      ctx.textAlign = 'center';
+      ctx.fillText('No results recorded.', W/2, y+30);
+      ctx.textAlign = 'left';
       y += rowH;
     } else {
       rows.forEach(r=>{
@@ -1971,67 +2028,93 @@ async function shareEventCard(eventId){
         ctx.lineTo(W-marginX, y);
         ctx.stroke();
 
-        const pillColors = { W: ['#E1E8F5','#12294D'], T: ['#FBEFD8','#8A6112'], L: ['#F5D9D6','#8C2F2A'] };
-        const [bg, fg] = pillColors[r.result] || ['#EEE','#333'];
-        ctx.font = `800 12px ${FONT}`;
-        const pillW = ctx.measureText(r.result).width + 20;
-        const pillH = 22;
-        const pillX = W - marginX - pillW;
-        const pillY = y + (rowH - pillH)/2;
-        ctx.fillStyle = bg;
-        ctxRoundRect(ctx, pillX, pillY, pillW, pillH, 6);
-        ctx.fill();
-        ctx.fillStyle = fg;
+        const midY = y + rowH/2;
+        const isOurWin = r.result === 'W';
+        const isOppWin = r.result === 'L';
+        const isTie = r.result === 'T';
+
+        // Our player (left)
+        ctx.font = `800 15px ${FONT}`;
+        const ourText = ctxTruncateText(ctx, r.ourLabel, leftColW - 14);
+        ctx.textAlign = 'left';
+        if(isOurWin){
+          const tw = ctx.measureText(ourText).width;
+          ctx.fillStyle = '#DCEFE3';
+          ctxRoundRect(ctx, leftColX - 8, midY - 16, tw + 16, 28, 8);
+          ctx.fill();
+          ctx.fillStyle = '#1E7A46';
+        } else {
+          ctx.fillStyle = '#2B2620';
+        }
+        ctx.fillText(ourText, leftColX, midY + 5);
+
+        // Score / detail (center)
+        const centerLabel = r.scoreLabel || (isTie ? 'TIE' : '—');
         ctx.textAlign = 'center';
-        ctx.fillText(r.result, pillX + pillW/2, pillY + 15);
+        ctx.font = `700 12.5px ${FONT}`;
+        ctx.fillStyle = isTie ? '#8A6112' : '#8C8478';
+        ctx.fillText(centerLabel, W/2, midY + 4);
+
+        // Opponent player (right)
+        ctx.font = `800 15px ${FONT}`;
+        const oppText = ctxTruncateText(ctx, r.oppLabel, rightColW - 14);
+        ctx.textAlign = 'right';
+        if(isOppWin){
+          const tw = ctx.measureText(oppText).width;
+          ctx.fillStyle = '#F8DEDB';
+          ctxRoundRect(ctx, rightColX - tw - 16, midY - 16, tw + 16, 28, 8);
+          ctx.fill();
+          ctx.fillStyle = '#B3352E';
+        } else {
+          ctx.fillStyle = '#2B2620';
+        }
+        ctx.fillText(oppText, rightColX, midY + 5);
         ctx.textAlign = 'left';
 
-        const textMaxW = contentW - pillW - 20;
-        ctx.fillStyle = '#2B2620';
-        ctx.font = `700 14px ${FONT}`;
-        ctx.fillText(ctxTruncateText(ctx, r.nameLabel, textMaxW), marginX, y + 19);
-        ctx.fillStyle = '#8C8478';
-        ctx.font = `600 12px ${FONT}`;
-        ctx.fillText(ctxTruncateText(ctx, r.subLabel, textMaxW), marginX, y + 36);
         y += rowH;
       });
     }
 
-    ctx.fillStyle = '#F0ECE1';
-    ctxRoundRect(ctx, marginX, y+6, contentW, 34, 8);
+    ctx.save();
+    ctx.shadowColor = 'rgba(43,38,32,0.08)';
+    ctx.shadowBlur = 8;
+    ctx.shadowOffsetY = 2;
+    ctx.fillStyle = '#FFFFFF';
+    ctxRoundRect(ctx, marginX, y+8, contentW, 32, 10);
     ctx.fill();
-    ctx.font = `800 15px "Courier New", monospace`;
+    ctx.restore();
+    ctx.font = `800 14px "Courier New", monospace`;
     ctx.fillStyle = '#12294D';
     ctx.textAlign = 'center';
     ctx.fillText(`Two Buff  ${usPts} – ${oppPts}  ${opponentLabel}`, W/2, y+29);
     ctx.textAlign = 'left';
-    y += 34 + gapBetweenSections + 6;
+    y += subtotalH;
   };
 
   const singlesRowsData = singles.map(s=>({
-    nameLabel: s.ourName,
-    subLabel: `vs ${s.opponentName}${formatMatchplayMargin(s) ? ' · ' + formatMatchplayMargin(s) : ''}`,
-    result: s.result
+    ourLabel: s.ourName, oppLabel: s.opponentName, scoreLabel: formatMatchplayMargin(s), result: s.result
   }));
   const doublesRowsData = doubles.map(d=>({
-    nameLabel: d.ourSide,
-    subLabel: `vs ${d.opponentName}${formatDoublesScore(d) ? ' · ' + formatDoublesScore(d) : ''}`,
-    result: d.result
+    ourLabel: d.ourSide, oppLabel: d.opponentName, scoreLabel: formatDoublesScore(d), result: d.result
   }));
-  drawSection('Matchplay', '1 pt / win', singlesRowsData, mpUsPts, mpOppPts);
-  drawSection('Doubles', '2 pts / win', doublesRowsData, dbUsPts, dbOppPts);
+  drawSection('Matchplay', '1 pt / win', '#FFCB57', singlesRowsData, mpUsPts, mpOppPts);
+  y += gapAfterSection;
+  drawSection('Doubles', '2 pts / win', '#7FB3E0', doublesRowsData, dbUsPts, dbOppPts);
 
-  ctx.fillStyle = '#B0A99C';
-  ctx.font = `600 11px ${FONT}`;
-  ctx.textAlign = 'center';
-  ctx.fillText('Generated from Two Buff Team Hub', W/2, totalH - 16);
-  ctx.textAlign = 'left';
+  // ---- Round the whole card's corners ----
+  const rounded = document.createElement('canvas');
+  rounded.width = draw.width;
+  rounded.height = draw.height;
+  const rctx = rounded.getContext('2d');
+  ctxRoundRect(rctx, 0, 0, draw.width, draw.height, cardRadius*scale);
+  rctx.clip();
+  rctx.drawImage(draw, 0, 0);
 
-  canvas.toBlob(blob=>{
+  rounded.toBlob(blob=>{
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    const safeName = ev.name.replace(/[^a-z0-9]+/gi, '-').toLowerCase();
+    const safeName = `two-buff-vs-${opponentLabel}`.replace(/[^a-z0-9]+/gi, '-').toLowerCase();
     a.download = `${safeName || 'event'}-results.png`;
     document.body.appendChild(a);
     a.click();
