@@ -1906,7 +1906,7 @@ async function shareEventCard(eventId){
   const logoEl = document.querySelector('.brand-mark img');
   const logoImg = await loadImageAsync(logoEl ? logoEl.src : null);
 
-  const W = 760, scale = 2, marginX = 40, cardRadius = 20;
+  const W = 760, scale = 2, marginX = 60, cardRadius = 20;
   const contentW = W - marginX*2;
   const rowH = 48, sectionHeaderH = 32, headerH = 112, scoreH = 132, subtotalH = 38, gapAfterSection = 20, bottomPad = 24;
   const singlesRowsN = Math.max(singles.length, 1);
@@ -1942,7 +1942,7 @@ async function shareEventCard(eventId){
   }
 
   ctx.fillStyle = '#FFFFFF';
-  ctx.font = `800 25px ${FONT}`;
+  ctx.font = `800 24px ${FONT}`;
   ctx.fillText(ctxTruncateText(ctx, `Two Buff vs ${opponentLabel}`, contentW), marginX, 54);
   ctx.fillStyle = '#FFCB57';
   ctx.fillRect(marginX, 65, 42, 4);
@@ -1969,9 +1969,10 @@ async function shareEventCard(eventId){
   ctx.fillStyle = resultColor;
   ctx.fillText(resultLabel, W/2, y+34);
 
-  // Scoreboard box — sized to whatever the team names actually need, so nothing gets clipped
+  // Scoreboard box — sized to whatever the team names actually need, so nothing gets clipped.
+  // Score numbers use the same modern sans-serif as everything else, not a typewriter font.
   const scoreNumStr = `${totalUsPts}  –  ${totalOppPts}`;
-  ctx.font = `800 28px "Courier New", monospace`;
+  ctx.font = `800 26px ${FONT}`;
   const scoreNumW = ctx.measureText(scoreNumStr).width;
   ctx.font = `800 13px ${FONT}`;
   const leftLabelFull = 'TWO BUFF';
@@ -2004,17 +2005,51 @@ async function shareEventCard(eventId){
   ctx.textAlign = 'right';
   ctx.fillText(rightLabel, boxX + boxW - boxPad, boxY + 24);
 
-  ctx.font = `800 28px "Courier New", monospace`;
+  ctx.font = `800 26px ${FONT}`;
   ctx.fillStyle = '#FFC94A';
   ctx.textAlign = 'center';
-  ctx.fillText(scoreNumStr, W/2, boxY + 47);
+  ctx.fillText(scoreNumStr, W/2, boxY + 45);
   ctx.textAlign = 'left';
 
   y += scoreH;
 
+  // Given a target width, finds the largest font size (down to a floor) at which
+  // "our name — score — opponent name" fits; only truncates as a last resort, so
+  // long names (especially doubles pairs like "A & B") shrink instead of clipping.
+  const fitRow = (ourLabel, oppLabel, centerLabel, availableW, isOurWin, isOppWin, startSize) => {
+    let fontSize = startSize;
+    const minFontSize = 10;
+    const gap = 14;
+    let ourW, oppW, centerW, ourText, oppText, totalW;
+    do {
+      ctx.font = `800 ${fontSize}px ${FONT}`;
+      ourText = ourLabel; oppText = oppLabel;
+      ourW = ctx.measureText(ourText).width;
+      oppW = ctx.measureText(oppText).width;
+      ctx.font = `700 ${Math.max(fontSize-2, 9)}px ${FONT}`;
+      centerW = ctx.measureText(centerLabel).width;
+      totalW = ourW + (isOurWin?16:0) + gap + centerW + gap + oppW + (isOppWin?16:0);
+      if(totalW <= availableW) break;
+      fontSize -= 0.5;
+    } while(fontSize > minFontSize);
+    if(totalW > availableW){
+      // Even at the smallest readable size it doesn't fit — truncate the longer name.
+      ctx.font = `800 ${fontSize}px ${FONT}`;
+      const overflow = totalW - availableW + 6;
+      if(ourW >= oppW){
+        ourText = ctxTruncateText(ctx, ourLabel, Math.max(ourW - overflow, 36));
+        ourW = ctx.measureText(ourText).width;
+      } else {
+        oppText = ctxTruncateText(ctx, oppLabel, Math.max(oppW - overflow, 36));
+        oppW = ctx.measureText(oppText).width;
+      }
+    }
+    return { fontSize, ourText, oppText, ourW, oppW, centerW, gap };
+  };
+
   // ---- Section drawer: each row is a compact, centered group (name — score — name)
   // instead of stretched fixed columns, so short names don't leave a lot of dead space ----
-  const drawSection = (title, subtitle, accent, rows, usPts, oppPts) => {
+  const drawSection = (title, subtitle, accent, rows, usPts, oppPts, startFontSize) => {
     ctx.fillStyle = accent;
     ctxRoundRect(ctx, marginX, y+11, 10, 10, 3);
     ctx.fill();
@@ -2036,7 +2071,6 @@ async function shareEventCard(eventId){
       ctx.textAlign = 'left';
       y += rowH;
     } else {
-      const maxNameW = contentW * 0.32;
       rows.forEach(r=>{
         ctx.strokeStyle = '#E4DFD3';
         ctx.lineWidth = 1;
@@ -2051,48 +2085,43 @@ async function shareEventCard(eventId){
         const isTie = r.result === 'T';
         const centerLabel = r.scoreLabel || (isTie ? 'TIE' : '—');
 
-        ctx.font = `800 14.5px ${FONT}`;
-        const ourText = ctxTruncateText(ctx, r.ourLabel, maxNameW);
-        const oppText = ctxTruncateText(ctx, r.oppLabel, maxNameW);
-        const ourW = ctx.measureText(ourText).width;
-        const oppW = ctx.measureText(oppText).width;
-        ctx.font = `700 12px ${FONT}`;
-        const centerW = ctx.measureText(centerLabel).width;
-
-        const gap = 16;
+        const fit = fitRow(r.ourLabel, r.oppLabel, centerLabel, contentW, isOurWin, isOppWin, startFontSize);
+        const { fontSize, ourText, oppText, ourW, oppW, centerW, gap } = fit;
         const ourSlot = ourW + (isOurWin ? 16 : 0);
         const oppSlot = oppW + (isOppWin ? 16 : 0);
         const groupW = ourSlot + gap + centerW + gap + oppSlot;
-        let cursorX = marginX + (contentW - groupW)/2;
+        let cursorX = marginX + (contentW - groupW)/2; // group's bounding box, incl. pill padding, is centered exactly on the card
 
         ctx.textAlign = 'left';
-        ctx.font = `800 14.5px ${FONT}`;
+        ctx.font = `800 ${fontSize}px ${FONT}`;
         if(isOurWin){
           ctx.fillStyle = '#DCEFE3';
-          ctxRoundRect(ctx, cursorX - 8, midY - 15, ourW + 16, 28, 8);
+          ctxRoundRect(ctx, cursorX, midY - 15, ourSlot, 28, 8); // pill IS the slot — no boundary mismatch
           ctx.fill();
           ctx.fillStyle = '#1E7A46';
+          ctx.fillText(ourText, cursorX + 8, midY + 5);
         } else {
           ctx.fillStyle = '#2B2620';
+          ctx.fillText(ourText, cursorX, midY + 5);
         }
-        ctx.fillText(ourText, cursorX, midY + 5);
         cursorX += ourSlot + gap;
 
-        ctx.font = `700 12px ${FONT}`;
+        ctx.font = `700 ${Math.max(fontSize-2, 9)}px ${FONT}`;
         ctx.fillStyle = isTie ? '#8A6112' : '#8C8478';
         ctx.fillText(centerLabel, cursorX, midY + 4);
         cursorX += centerW + gap;
 
-        ctx.font = `800 14.5px ${FONT}`;
+        ctx.font = `800 ${fontSize}px ${FONT}`;
         if(isOppWin){
           ctx.fillStyle = '#F8DEDB';
-          ctxRoundRect(ctx, cursorX - 8, midY - 15, oppW + 16, 28, 8);
+          ctxRoundRect(ctx, cursorX, midY - 15, oppSlot, 28, 8);
           ctx.fill();
           ctx.fillStyle = '#B3352E';
+          ctx.fillText(oppText, cursorX + 8, midY + 5);
         } else {
           ctx.fillStyle = '#2B2620';
+          ctx.fillText(oppText, cursorX, midY + 5);
         }
-        ctx.fillText(oppText, cursorX, midY + 5);
 
         y += rowH;
       });
@@ -2106,10 +2135,10 @@ async function shareEventCard(eventId){
     ctxRoundRect(ctx, marginX, y+7, contentW, 30, 10);
     ctx.fill();
     ctx.restore();
-    ctx.font = `800 13px "Courier New", monospace`;
+    ctx.font = `800 13px ${FONT}`;
     ctx.fillStyle = '#12294D';
     ctx.textAlign = 'center';
-    ctx.fillText(`Two Buff  ${usPts} – ${oppPts}  ${opponentLabel}`, W/2, y+27);
+    ctx.fillText(ctxTruncateText(ctx, `Two Buff  ${usPts} – ${oppPts}  ${opponentLabel}`, contentW - 20), W/2, y+27);
     ctx.textAlign = 'left';
     y += subtotalH;
   };
@@ -2120,9 +2149,9 @@ async function shareEventCard(eventId){
   const doublesRowsData = doubles.map(d=>({
     ourLabel: d.ourSide, oppLabel: d.opponentName, scoreLabel: formatDoublesScore(d), result: d.result
   }));
-  drawSection('Matchplay', '1 pt / win', '#FFCB57', singlesRowsData, mpUsPts, mpOppPts);
+  drawSection('Matchplay', '1 pt / win', '#FFCB57', singlesRowsData, mpUsPts, mpOppPts, 14.5);
   y += gapAfterSection;
-  drawSection('Doubles', '2 pts / win', '#7FB3E0', doublesRowsData, dbUsPts, dbOppPts);
+  drawSection('Doubles', '2 pts / win', '#7FB3E0', doublesRowsData, dbUsPts, dbOppPts, 13.5);
 
   // ---- Round the whole card's corners ----
   const rounded = document.createElement('canvas');
