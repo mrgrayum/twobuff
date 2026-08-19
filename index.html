@@ -1860,7 +1860,184 @@ async function renderEventMatchBreakdown(eventId){
       <div class="divider"></div>
       <div style="text-align:center; font-size:10.5px; font-weight:800; color:var(--ink-soft); text-transform:uppercase; letter-spacing:0.3px; margin-bottom:2px;">Final Match Results</div>
       ${renderScoreboard(ourLabel, totalUsPts, totalOppPts, opponentLabel, true)}
+      <button class="btn btn-outline btn-sm" style="width:100%; margin-top:12px;" onclick="event.stopPropagation(); shareEventCard('${eventId}')">⬇️ Share Image</button>
     </div>`;
+}
+function ctxRoundRect(ctx, x, y, w, h, r){
+  ctx.beginPath();
+  ctx.moveTo(x+r, y);
+  ctx.arcTo(x+w, y, x+w, y+h, r);
+  ctx.arcTo(x+w, y+h, x, y+h, r);
+  ctx.arcTo(x, y+h, x, y, r);
+  ctx.arcTo(x, y, x+w, y, r);
+  ctx.closePath();
+}
+function ctxTruncateText(ctx, text, maxWidth){
+  if(ctx.measureText(text).width <= maxWidth) return text;
+  let t = text;
+  while(t.length > 1 && ctx.measureText(t + '…').width > maxWidth){
+    t = t.slice(0, -1);
+  }
+  return t + '…';
+}
+async function shareEventCard(eventId){
+  const ev = state.events.find(e=>e.id===eventId);
+  if(!ev){ showToast('Event not found'); return; }
+  let opponentLabel = 'Opponent';
+  if(ev.opponentTeamId){
+    const teams = await loadOppTeams();
+    const t = teams.find(x=>x.id===ev.opponentTeamId);
+    if(t) opponentLabel = t.name;
+  } else if(ev.opponentName){
+    opponentLabel = ev.opponentName;
+  }
+  const { singles, doubles, mpUsPts, mpOppPts, dbUsPts, dbOppPts, totalUsPts, totalOppPts, result } = await getEventMatchDetails(eventId);
+  showToast('Generating image…');
+
+  const W = 900, scale = 2, marginX = 44;
+  const contentW = W - marginX*2;
+  const rowH = 46, sectionHeaderH = 30, headerH = 132, scoreH = 100, footerH = 46, gapBetweenSections = 18;
+  const singlesRowsN = Math.max(singles.length, 1);
+  const doublesRowsN = Math.max(doubles.length, 1);
+  const singlesSectionH = sectionHeaderH + singlesRowsN*rowH + 34 + gapBetweenSections + 6;
+  const doublesSectionH = sectionHeaderH + doublesRowsN*rowH + 34 + gapBetweenSections + 6;
+  const totalH = headerH + scoreH + singlesSectionH + doublesSectionH + footerH;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = W*scale;
+  canvas.height = totalH*scale;
+  const ctx = canvas.getContext('2d');
+  ctx.scale(scale, scale);
+  const FONT = '-apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif';
+
+  ctx.fillStyle = '#F4F1EA';
+  ctx.fillRect(0,0,W,totalH);
+
+  // Header band
+  ctx.fillStyle = '#12294D';
+  ctx.fillRect(0,0,W,headerH);
+  ctx.fillStyle = '#B8C4D9';
+  ctx.font = `700 12px ${FONT}`;
+  ctx.fillText('TWO BUFF TEAM HUB', marginX, 34);
+  ctx.fillStyle = '#FFFFFF';
+  ctx.font = `800 26px ${FONT}`;
+  ctx.fillText(ctxTruncateText(ctx, ev.name, contentW), marginX, 70);
+  ctx.fillStyle = '#B8C4D9';
+  ctx.font = `600 14px ${FONT}`;
+  ctx.fillText(ctxTruncateText(ctx, `${fmtDateLong(ev.date)}  ·  vs ${opponentLabel}`, contentW), marginX, 96);
+
+  let y = headerH;
+
+  // Final score band
+  ctx.fillStyle = '#FFFFFF';
+  ctx.fillRect(0, y, W, scoreH);
+  const resultColor = result==='W' ? '#12294D' : result==='T' ? '#8A6112' : result==='L' ? '#8C2F2A' : '#8C8478';
+  const resultLabel = result==='W' ? 'WIN' : result==='T' ? 'TIE' : result==='L' ? 'LOSS' : 'NO RESULT YET';
+  ctx.textAlign = 'center';
+  ctx.fillStyle = resultColor;
+  ctx.font = `800 13px ${FONT}`;
+  ctx.fillText(resultLabel, W/2, y+24);
+  ctx.font = `800 40px "Courier New", monospace`;
+  ctx.fillStyle = '#12294D';
+  ctx.fillText(`${totalUsPts} – ${totalOppPts}`, W/2, y+66);
+  ctx.font = `700 13px ${FONT}`;
+  ctx.fillStyle = '#6B6558';
+  ctx.fillText(`TWO BUFF        ${opponentLabel.toUpperCase()}`, W/2, y+86);
+  ctx.textAlign = 'left';
+  y += scoreH;
+
+  const drawSection = (title, subtitle, rows, usPts, oppPts) => {
+    ctx.fillStyle = '#12294D';
+    ctx.font = `800 13px ${FONT}`;
+    ctx.fillText(title.toUpperCase(), marginX, y+20);
+    ctx.fillStyle = '#8C8478';
+    ctx.font = `700 12px ${FONT}`;
+    ctx.textAlign = 'right';
+    ctx.fillText(subtitle, W-marginX, y+20);
+    ctx.textAlign = 'left';
+    y += sectionHeaderH;
+
+    if(rows.length === 0){
+      ctx.fillStyle = '#8C8478';
+      ctx.font = `600 13px ${FONT}`;
+      ctx.fillText('No results recorded.', marginX, y+28);
+      y += rowH;
+    } else {
+      rows.forEach(r=>{
+        ctx.strokeStyle = '#E4DFD3';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(marginX, y);
+        ctx.lineTo(W-marginX, y);
+        ctx.stroke();
+
+        const pillColors = { W: ['#E1E8F5','#12294D'], T: ['#FBEFD8','#8A6112'], L: ['#F5D9D6','#8C2F2A'] };
+        const [bg, fg] = pillColors[r.result] || ['#EEE','#333'];
+        ctx.font = `800 12px ${FONT}`;
+        const pillW = ctx.measureText(r.result).width + 20;
+        const pillH = 22;
+        const pillX = W - marginX - pillW;
+        const pillY = y + (rowH - pillH)/2;
+        ctx.fillStyle = bg;
+        ctxRoundRect(ctx, pillX, pillY, pillW, pillH, 6);
+        ctx.fill();
+        ctx.fillStyle = fg;
+        ctx.textAlign = 'center';
+        ctx.fillText(r.result, pillX + pillW/2, pillY + 15);
+        ctx.textAlign = 'left';
+
+        const textMaxW = contentW - pillW - 20;
+        ctx.fillStyle = '#2B2620';
+        ctx.font = `700 14px ${FONT}`;
+        ctx.fillText(ctxTruncateText(ctx, r.nameLabel, textMaxW), marginX, y + 19);
+        ctx.fillStyle = '#8C8478';
+        ctx.font = `600 12px ${FONT}`;
+        ctx.fillText(ctxTruncateText(ctx, r.subLabel, textMaxW), marginX, y + 36);
+        y += rowH;
+      });
+    }
+
+    ctx.fillStyle = '#F0ECE1';
+    ctxRoundRect(ctx, marginX, y+6, contentW, 34, 8);
+    ctx.fill();
+    ctx.font = `800 15px "Courier New", monospace`;
+    ctx.fillStyle = '#12294D';
+    ctx.textAlign = 'center';
+    ctx.fillText(`Two Buff  ${usPts} – ${oppPts}  ${opponentLabel}`, W/2, y+29);
+    ctx.textAlign = 'left';
+    y += 34 + gapBetweenSections + 6;
+  };
+
+  const singlesRowsData = singles.map(s=>({
+    nameLabel: s.ourName,
+    subLabel: `vs ${s.opponentName}${formatMatchplayMargin(s) ? ' · ' + formatMatchplayMargin(s) : ''}`,
+    result: s.result
+  }));
+  const doublesRowsData = doubles.map(d=>({
+    nameLabel: d.ourSide,
+    subLabel: `vs ${d.opponentName}${formatDoublesScore(d) ? ' · ' + formatDoublesScore(d) : ''}`,
+    result: d.result
+  }));
+  drawSection('Matchplay', '1 pt / win', singlesRowsData, mpUsPts, mpOppPts);
+  drawSection('Doubles', '2 pts / win', doublesRowsData, dbUsPts, dbOppPts);
+
+  ctx.fillStyle = '#B0A99C';
+  ctx.font = `600 11px ${FONT}`;
+  ctx.textAlign = 'center';
+  ctx.fillText('Generated from Two Buff Team Hub', W/2, totalH - 16);
+  ctx.textAlign = 'left';
+
+  canvas.toBlob(blob=>{
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const safeName = ev.name.replace(/[^a-z0-9]+/gi, '-').toLowerCase();
+    a.download = `${safeName || 'event'}-results.png`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(()=>URL.revokeObjectURL(url), 2000);
+  }, 'image/png');
 }
 async function getOpponentPlayerHistory(oppPlayerId){
   const allData = await getAllStatsData();
