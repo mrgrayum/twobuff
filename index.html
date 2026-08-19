@@ -2063,54 +2063,73 @@ async function shareEventCard(eventId){
   // side-by-side columns. The score sits between the two names on one line — same
   // "anchor the score, names flow outward from it" technique as everywhere else —
   // just centered on this column's own center instead of the whole card's.
-  const drawCompactRow = (colX, rowTop, colW, r, startFontSize) => {
+  // "Matt Grayum" -> "Matt G." — also handles doubles pairs like "Matt Grayum & Tanner Grayum"
+  const abbreviateOneName = (name) => {
+    const parts = name.trim().split(/\s+/);
+    if(parts.length < 2) return name;
+    return `${parts[0]} ${parts[parts.length-1][0]}.`;
+  };
+  const abbreviatePlayerLabel = (label) => {
+    return label.includes(' & ')
+      ? label.split(' & ').map(abbreviateOneName).join(' & ')
+      : abbreviateOneName(label);
+  };
+
+  const drawCompactRow = (colX, rowTop, colW, r) => {
     const isOurWin = r.result === 'W';
     const isOppWin = r.result === 'L';
     const isTie = r.result === 'T';
     const centerLabel = r.scoreLabel || (isTie ? 'TIE' : '—');
     const colCenterX = colX + colW/2;
     const gap = 8;
+    const fontSize = 9; // one fixed size for every name and score in the compact table — no per-row variation
 
-    ctx.font = `700 9px ${FONT}`;
-    const centerW = Math.min(ctx.measureText(centerLabel).width, colW * 0.32);
+    const ourLabel = abbreviatePlayerLabel(r.ourLabel);
+    const oppLabel = abbreviatePlayerLabel(r.oppLabel);
+
+    ctx.font = `700 ${fontSize}px ${FONT}`;
+    const centerW = Math.min(ctx.measureText(centerLabel).width, colW * 0.3);
     const sideAvailW = (colW - centerW)/2 - gap;
 
-    const ourFit = fitNameToWidth(r.ourLabel, sideAvailW, isOurWin, startFontSize, 8);
-    const oppFit = fitNameToWidth(r.oppLabel, sideAvailW, isOppWin, startFontSize, 8);
+    ctx.font = `800 ${fontSize}px ${FONT}`;
+    const ourText = ctxTruncateText(ctx, ourLabel, sideAvailW - (isOurWin ? 16 : 0));
+    const oppText = ctxTruncateText(ctx, oppLabel, sideAvailW - (isOppWin ? 16 : 0));
+    const ourW = ctx.measureText(ourText).width;
+    const oppW = ctx.measureText(oppText).width;
     const ourRightEdge = colCenterX - centerW/2 - gap;
     const oppLeftEdge = colCenterX + centerW/2 + gap;
 
     ctx.textAlign = 'right';
-    ctx.font = `800 ${ourFit.fontSize}px ${FONT}`;
+    ctx.font = `800 ${fontSize}px ${FONT}`;
     if(isOurWin){
-      const slotW = ourFit.w + 10;
+      const slotW = ourW + 10;
       ctx.fillStyle = '#DCEFE3';
       ctxRoundRect(ctx, ourRightEdge - slotW, rowTop - 11, slotW, 20, 6);
       ctx.fill();
       ctx.fillStyle = '#1E7A46';
-      ctx.fillText(ourFit.text, ourRightEdge - 5, rowTop + 4);
+      ctx.fillText(ourText, ourRightEdge - 5, rowTop + 4);
     } else {
       ctx.fillStyle = '#2B2620';
-      ctx.fillText(ourFit.text, ourRightEdge, rowTop + 4);
+      ctx.fillText(ourText, ourRightEdge, rowTop + 4);
     }
 
     ctx.textAlign = 'center';
-    ctx.font = `700 9px ${FONT}`;
+    ctx.font = `700 ${fontSize}px ${FONT}`;
     ctx.fillStyle = isTie ? '#8A6112' : '#8C8478';
     ctx.fillText(centerLabel, colCenterX, rowTop + 4);
 
     ctx.textAlign = 'left';
-    ctx.font = `800 ${oppFit.fontSize}px ${FONT}`;
+    ctx.font = `800 ${fontSize}px ${FONT}`;
     if(isOppWin){
-      const slotW = oppFit.w + 10;
+      const slotW = oppW + 10;
       ctx.fillStyle = '#DCEFE3';
       ctxRoundRect(ctx, oppLeftEdge, rowTop - 11, slotW, 20, 6);
       ctx.fill();
       ctx.fillStyle = '#1E7A46';
-      ctx.fillText(oppFit.text, oppLeftEdge + 5, rowTop + 4);
+      ctx.fillText(oppText, oppLeftEdge + 5, rowTop + 4);
     } else {
       ctx.fillStyle = '#2B2620';
-      ctx.fillText(oppFit.text, oppLeftEdge, rowTop + 4);
+      ctx.fillText(oppText, oppLeftEdge, rowTop + 4);
     }
     ctx.textAlign = 'left';
   };
@@ -2251,7 +2270,7 @@ async function shareEventCard(eventId){
             ctx.lineTo(colX + colW, sectionTopY + i*layout.rh - 3);
             ctx.stroke();
           }
-          drawCompactRow(colX, rowTop, colW, r, startFontSize > 11 ? 11 : startFontSize);
+          drawCompactRow(colX, rowTop, colW, r);
         });
       }
       y += layout.rowsPerCol * layout.rh;
