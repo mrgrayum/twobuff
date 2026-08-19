@@ -1651,7 +1651,7 @@ function blankResultEntry(kind){
 function formatMatchplayMargin(entry){
   if(entry.marginUp == null) return '';
   const holesLeft = entry.holesRemaining || 0;
-  return holesLeft > 0 ? `${entry.marginUp} UP · ${holesLeft} to play` : `${entry.marginUp} UP · closed out`;
+  return holesLeft > 0 ? `${entry.marginUp} & ${holesLeft}` : `${entry.marginUp} UP`;
 }
 function formatDoublesScore(entry){
   if(entry.ourScore == null || entry.oppScore == null) return '';
@@ -2037,9 +2037,9 @@ async function shareEventCard(eventId){
   // to a floor) that lets "our name — score — opponent name" fit as one line;
   // only truncates a name as a last resort. Doubles gets a smaller starting size
   // since "A & B" pairs are inherently longer than a single name. ----
-  const fitNameToWidth = (label, availableW, isHighlighted, startSize) => {
+  const fitNameToWidth = (label, availableW, isHighlighted, startSize, minSize) => {
     let fontSize = startSize;
-    const minFontSize = 10;
+    const minFontSize = minSize || 10;
     let text = label, w;
     do {
       ctx.font = `800 ${fontSize}px ${FONT}`;
@@ -2071,12 +2071,12 @@ async function shareEventCard(eventId){
     const colCenterX = colX + colW/2;
     const gap = 8;
 
-    ctx.font = `700 10px ${FONT}`;
-    const centerW = Math.min(ctx.measureText(centerLabel).width, colW * 0.4);
+    ctx.font = `700 9px ${FONT}`;
+    const centerW = Math.min(ctx.measureText(centerLabel).width, colW * 0.32);
     const sideAvailW = (colW - centerW)/2 - gap;
 
-    const ourFit = fitNameToWidth(r.ourLabel, sideAvailW, isOurWin, startFontSize);
-    const oppFit = fitNameToWidth(r.oppLabel, sideAvailW, isOppWin, startFontSize);
+    const ourFit = fitNameToWidth(r.ourLabel, sideAvailW, isOurWin, startFontSize, 8);
+    const oppFit = fitNameToWidth(r.oppLabel, sideAvailW, isOppWin, startFontSize, 8);
     const ourRightEdge = colCenterX - centerW/2 - gap;
     const oppLeftEdge = colCenterX + centerW/2 + gap;
 
@@ -2095,7 +2095,7 @@ async function shareEventCard(eventId){
     }
 
     ctx.textAlign = 'center';
-    ctx.font = `700 10px ${FONT}`;
+    ctx.font = `700 9px ${FONT}`;
     ctx.fillStyle = isTie ? '#8A6112' : '#8C8478';
     ctx.fillText(centerLabel, colCenterX, rowTop + 4);
 
@@ -2251,7 +2251,7 @@ async function shareEventCard(eventId){
             ctx.lineTo(colX + colW, sectionTopY + i*layout.rh - 3);
             ctx.stroke();
           }
-          drawCompactRow(colX, rowTop, colW, r, startFontSize > 12 ? 12 : startFontSize);
+          drawCompactRow(colX, rowTop, colW, r, startFontSize > 11 ? 11 : startFontSize);
         });
       }
       y += layout.rowsPerCol * layout.rh;
