@@ -1801,6 +1801,36 @@ function computeMatchDetailsFromData(stats){
   const result = !hasAnyResult ? null : totalUsPts > totalOppPts ? 'W' : totalUsPts < totalOppPts ? 'L' : 'T';
   return { singles, doubles, mpUsPts, mpOppPts, dbUsPts, dbOppPts, adjustments, adjUsPts, adjOppPts, totalUsPts, totalOppPts, result };
 }
+async function getTeamRecordData(){
+  const currentSeason = inferSeason(todayISO());
+  const scope = state.statsScope || 'season';
+  const seasonByEvent = {};
+  state.events.forEach(e=>{ seasonByEvent[e.id] = effectiveSeason(e); });
+
+  const teamEvents = []; // {event, result, ourScore, oppScore}
+  let sumOur = 0, sumTotal = 0, tW=0, tL=0, tT=0;
+
+  try{
+    const allData = await getAllStatsData();
+    Object.keys(allData).forEach(eventId=>{
+      const eventSeason = seasonByEvent[eventId];
+      if(scope === 'season' && eventSeason !== currentSeason) return;
+      const data = allData[eventId];
+      const ev = state.events.find(e=>e.id===eventId);
+      if(!ev) return;
+      const details = computeMatchDetailsFromData(data);
+      if(details.result === null) return; // no results recorded at this event yet
+      teamEvents.push({ event: ev, result: details.result, ourScore: details.totalUsPts, oppScore: details.totalOppPts });
+      if(details.result==='W') tW++; else if(details.result==='L') tL++; else if(details.result==='T') tT++;
+      sumOur += details.totalUsPts;
+      sumTotal += details.totalUsPts + details.totalOppPts;
+    });
+  }catch(e){ /* no stats yet */ }
+
+  teamEvents.sort((a,b)=>b.event.date.localeCompare(a.event.date)); // most recent first
+  const pointPct = sumTotal > 0 ? (sumOur/sumTotal*100) : null;
+  return { currentSeason, scope, teamEvents, tW, tL, tT, pointPct };
+}
 async function getEventMatchDetails(eventId){
   const stats = await loadStats(eventId);
   return computeMatchDetailsFromData(stats);
@@ -2483,11 +2513,12 @@ async function sharePlayerCard(playerId){
     }
   });
 
-  const W = 760, scale = 2, marginX = 60, cardRadius = 20;
-  const contentW = W - marginX*2;
+  const scale = 2, marginX = 60, cardRadius = 20;
   const FONT = '-apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif';
   const headerH = 128, rowH = 66, listTopPad = 16, bottomPad = 24;
   const totalH = headerH + listTopPad + Math.max(history.length, 1)*rowH + bottomPad;
+  const W = totalH; // square card — width always matches the content-driven height
+  const contentW = W - marginX*2;
 
   const draw = document.createElement('canvas');
   draw.width = W*scale;
@@ -2572,7 +2603,7 @@ async function sharePlayerCard(playerId){
         const m = h.matchplay;
         ctx.font = `700 12px ${FONT}`;
         ctx.fillStyle = resultColor(m.result);
-        let text = `Singles ${m.result} · ${m.opponentName || 'Unknown'}`;
+        let text = `Singles ${m.result} · vs ${m.opponentName || 'Unknown'}`;
         const margin = formatMatchplayMargin(m);
         if(margin) text += ` · ${margin}`;
         ctx.fillText(ctxTruncateText(ctx, text, contentW), marginX, lineY);
@@ -2608,6 +2639,147 @@ async function sharePlayerCard(playerId){
     a.href = url;
     const safeName = `${player.name}-stats`.replace(/[^a-z0-9]+/gi, '-').toLowerCase();
     a.download = `${safeName || 'player'}-stats.png`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(()=>URL.revokeObjectURL(url), 2000);
+  }, 'image/png');
+}
+async function shareTeamRecordCard(){
+  showToast('Generating image…');
+  const { currentSeason, scope, teamEvents, tW, tL, tT, pointPct } = await getTeamRecordData();
+  const logoEl = document.querySelector('.brand-mark img');
+  const logoImg = await loadImageAsync(logoEl ? logoEl.src : null);
+  const oppTeams = await loadOppTeams();
+
+  const W = 760, scale = 2, marginX = 60, cardRadius = 20;
+  const contentW = W - marginX*2;
+  const FONT = '-apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif';
+  const headerH = 138, rowH = 56, listTopPad = 16, bottomPad = 24;
+  const totalH = headerH + listTopPad + Math.max(teamEvents.length, 1)*rowH + bottomPad;
+
+  const draw = document.createElement('canvas');
+  draw.width = W*scale;
+  draw.height = totalH*scale;
+  const ctx = draw.getContext('2d');
+  ctx.scale(scale, scale);
+
+  ctx.fillStyle = '#F4F1EA';
+  ctx.fillRect(0, 0, W, totalH);
+
+  // ---- Header: record + point % instead of a single matchup ----
+  const headerGrad = ctx.createLinearGradient(0, 0, W, headerH);
+  headerGrad.addColorStop(0, '#0F2240');
+  headerGrad.addColorStop(1, '#1B3A66');
+  ctx.fillStyle = headerGrad;
+  ctx.fillRect(0, 0, W, headerH);
+
+  if(logoImg){
+    ctx.save();
+    ctx.globalAlpha = 0.16;
+    const logoSize = 200;
+    ctx.drawImage(logoImg, W - logoSize*0.62, -logoSize*0.28, logoSize, logoSize);
+    ctx.restore();
+  }
+
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#FFFFFF';
+  ctx.font = `800 26px ${FONT}`;
+  ctx.fillText('Two Buff — Team Record', marginX, 46);
+  ctx.fillStyle = '#FFCB57';
+  ctx.fillRect(marginX, 57, 42, 4);
+
+  ctx.fillStyle = '#B8C4D9';
+  ctx.font = `600 13px ${FONT}`;
+  ctx.fillText(scope==='season' ? currentSeason : 'All-Time', marginX, 80);
+
+  ctx.font = `800 24px ${FONT}`;
+  ctx.fillStyle = '#FFC94A';
+  ctx.fillText(`${tW}-${tL}-${tT}`, marginX, 118);
+
+  ctx.textAlign = 'right';
+  ctx.font = `700 13px ${FONT}`;
+  ctx.fillStyle = '#B8C4D9';
+  ctx.fillText(pointPct != null ? `${pointPct.toFixed(1)}% of points` : 'No points recorded yet', W - marginX, 118);
+  ctx.textAlign = 'left';
+
+  let y = headerH + listTopPad;
+
+  if(teamEvents.length === 0){
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#8C8478';
+    ctx.font = `600 13px ${FONT}`;
+    ctx.fillText('No team results recorded yet.', W/2, y+28);
+    ctx.textAlign = 'left';
+    y += rowH;
+  } else {
+    teamEvents.forEach(te=>{
+      ctx.strokeStyle = '#E4DFD3';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(marginX, y);
+      ctx.lineTo(W-marginX, y);
+      ctx.stroke();
+
+      let oppLabel = 'Opponent';
+      if(te.event.opponentTeamId){
+        const t = oppTeams.find(x=>x.id===te.event.opponentTeamId);
+        if(t) oppLabel = t.name;
+      } else if(te.event.opponentName){
+        oppLabel = te.event.opponentName;
+      }
+      const matchupTitle = formatMatchupTitle(te.event, oppLabel);
+      const d = fmtDate(te.event.date);
+
+      ctx.textAlign = 'left';
+      ctx.font = `800 14px ${FONT}`;
+      ctx.fillStyle = '#2B2620';
+      ctx.fillText(ctxTruncateText(ctx, matchupTitle, contentW*0.48), marginX, y+24);
+
+      ctx.font = `600 11px ${FONT}`;
+      ctx.fillStyle = '#8C8478';
+      ctx.fillText(`${d.mon} ${d.day}`, marginX, y+40);
+
+      const resultColor = te.result==='W' ? '#1E7A46' : te.result==='T' ? '#8A6112' : '#B3352E';
+      const resultBg = te.result==='W' ? '#DCEFE3' : te.result==='T' ? '#FBEFD8' : '#F8DEDB';
+      const resultLabel = te.result==='W' ? 'WIN' : te.result==='T' ? 'TIE' : 'LOSS';
+
+      ctx.textAlign = 'right';
+      ctx.font = `800 15px ${FONT}`;
+      const scoreStr = `${te.ourScore} – ${te.oppScore}`;
+      ctx.fillStyle = '#12294D';
+      ctx.fillText(scoreStr, W-marginX, y+28);
+      const scoreW = ctx.measureText(scoreStr).width;
+
+      ctx.font = `800 12px ${FONT}`;
+      const badgeW = ctx.measureText(resultLabel).width + 20;
+      const badgeX = W - marginX - scoreW - 14 - badgeW;
+      ctx.fillStyle = resultBg;
+      ctxRoundRect(ctx, badgeX, y+14, badgeW, 20, 10);
+      ctx.fill();
+      ctx.fillStyle = resultColor;
+      ctx.textAlign = 'center';
+      ctx.fillText(resultLabel, badgeX + badgeW/2, y+28);
+      ctx.textAlign = 'left';
+
+      y += rowH;
+    });
+  }
+
+  // ---- Round the card's corners and export ----
+  const rounded = document.createElement('canvas');
+  rounded.width = draw.width;
+  rounded.height = draw.height;
+  const rctx = rounded.getContext('2d');
+  ctxRoundRect(rctx, 0, 0, draw.width, draw.height, cardRadius*scale);
+  rctx.clip();
+  rctx.drawImage(draw, 0, 0);
+
+  rounded.toBlob(blob=>{
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'two-buff-team-record.png';
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -3938,6 +4110,7 @@ async function renderStats(){
         <div class="stat-box"><div class="num" style="color:var(--orange-dark);">${pointPct!=null ? pointPct.toFixed(1)+'%' : '—'}</div><div class="lbl">Point %</div></div>
       </div>
       <div style="font-size:11px; color:var(--ink-soft); margin-top:10px; line-height:1.5;">Point % is our team's total points scored across ${state.statsScope==='season' ? esc(currentSeason) : 'all seasons'}, divided by the total points scored by both teams combined — useful for breaking ties in the standings.</div>
+      <button class="btn btn-outline btn-sm" style="width:100%; margin-top:10px;" onclick="shareTeamRecordCard()">⬇️ Share Image</button>
     </div>
     ${teamEventsHtml ? teamEventsHtml : `<div class="card empty" style="padding:20px;"><p style="margin:0; font-size:13px;">No team results recorded yet${state.statsScope==='season' ? ' for ' + esc(currentSeason) : ''}.</p></div>`}
   `;
