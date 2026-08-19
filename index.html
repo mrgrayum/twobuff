@@ -1969,26 +1969,37 @@ async function shareEventCard(eventId){
   ctx.fillStyle = resultColor;
   ctx.fillText(resultLabel, W/2, y+34);
 
-  // Scoreboard box — sized to whatever the team names actually need, so nothing gets clipped.
-  // Score numbers use the same modern sans-serif as everything else, not a typewriter font.
-  const scoreNumStr = `${totalUsPts}  –  ${totalOppPts}`;
-  ctx.font = `800 26px ${FONT}`;
-  const scoreNumW = ctx.measureText(scoreNumStr).width;
+  // Scoreboard box — each team gets its own label-above-score column, mirrored around the
+  // card's true centerline (W/2). No dash joining the numbers — the gap between the two
+  // columns IS the center, so it stays balanced no matter how many digits either score has.
+  const leftScoreStr = `${totalUsPts}`;
+  const rightScoreStr = `${totalOppPts}`;
+  ctx.font = `800 30px ${FONT}`;
+  let leftNumW = ctx.measureText(leftScoreStr).width;
+  let rightNumW = ctx.measureText(rightScoreStr).width;
   ctx.font = `800 13px ${FONT}`;
   const leftLabelFull = 'TWO BUFF';
   const rightLabelFull = opponentLabel.toUpperCase();
-  const innerGap = 22, boxPad = 26;
   let leftLabel = leftLabelFull, rightLabel = rightLabelFull;
   let leftLabelW = ctx.measureText(leftLabelFull).width;
   let rightLabelW = ctx.measureText(rightLabelFull).width;
-  let boxW = leftLabelW + rightLabelW + scoreNumW + innerGap*2 + boxPad*2;
+
+  const halfGap = 26, boxPad = 30;
+  let leftBlockW = Math.max(leftNumW, leftLabelW);
+  let rightBlockW = Math.max(rightNumW, rightLabelW);
+  let boxW = leftBlockW + rightBlockW + halfGap*2 + boxPad*2;
   if(boxW > contentW){
     boxW = contentW;
-    const maxEachLabel = (boxW - scoreNumW - innerGap*2 - boxPad*2) / 2;
+    const maxEachLabel = Math.max((boxW - boxPad*2 - halfGap*2 - leftNumW - rightNumW) / 2, 40);
     leftLabel = ctxTruncateText(ctx, leftLabelFull, maxEachLabel);
     rightLabel = ctxTruncateText(ctx, rightLabelFull, maxEachLabel);
+    leftLabelW = ctx.measureText(leftLabel).width;
+    rightLabelW = ctx.measureText(rightLabel).width;
+    leftBlockW = Math.max(leftNumW, leftLabelW);
+    rightBlockW = Math.max(rightNumW, rightLabelW);
   }
-  const boxH = 58, boxX = W/2 - boxW/2, boxY = y + 52;
+
+  const boxH = 66, boxX = W/2 - boxW/2, boxY = y + 50;
   ctx.save();
   ctx.shadowColor = 'rgba(18,41,77,0.18)';
   ctx.shadowBlur = 16;
@@ -1998,17 +2009,19 @@ async function shareEventCard(eventId){
   ctx.fill();
   ctx.restore();
 
+  const leftCenterX = W/2 - halfGap - leftBlockW/2;
+  const rightCenterX = W/2 + halfGap + rightBlockW/2;
+
+  ctx.textAlign = 'center';
   ctx.font = `800 13px ${FONT}`;
   ctx.fillStyle = '#9FB2CE';
-  ctx.textAlign = 'left';
-  ctx.fillText(leftLabel, boxX + boxPad, boxY + 24);
-  ctx.textAlign = 'right';
-  ctx.fillText(rightLabel, boxX + boxW - boxPad, boxY + 24);
+  ctx.fillText(leftLabel, leftCenterX, boxY + 24);
+  ctx.fillText(rightLabel, rightCenterX, boxY + 24);
 
-  ctx.font = `800 26px ${FONT}`;
+  ctx.font = `800 30px ${FONT}`;
   ctx.fillStyle = '#FFC94A';
-  ctx.textAlign = 'center';
-  ctx.fillText(scoreNumStr, W/2, boxY + 45);
+  ctx.fillText(leftScoreStr, leftCenterX, boxY + 55);
+  ctx.fillText(rightScoreStr, rightCenterX, boxY + 55);
   ctx.textAlign = 'left';
 
   y += scoreH;
