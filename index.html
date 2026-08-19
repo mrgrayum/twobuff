@@ -2515,9 +2515,25 @@ async function sharePlayerCard(playerId){
 
   const scale = 2, marginX = 60, cardRadius = 20;
   const FONT = '-apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif';
-  const headerH = 128, rowH = 66, listTopPad = 16, bottomPad = 24;
-  const totalH = headerH + listTopPad + Math.max(history.length, 1)*rowH + bottomPad;
-  const W = totalH; // square card — width always matches the content-driven height
+  const headerH = 128, naturalRowH = 66, maxRowH = 92, listTopPad = 16, bottomPad = 24;
+  const minTotalH = 560; // guarantees enough width for the name and event details even with few events
+  const rowCount = Math.max(history.length, 1);
+  let rowH = naturalRowH;
+  let totalH = headerH + listTopPad + rowCount*rowH + bottomPad;
+  let extraBottomPad = 0;
+  if(totalH < minTotalH){
+    // Grow rows a bit for breathing room, but cap it — stretching a 1-row card to fill
+    // 560px of height would leave a huge dead zone inside that single row. Whatever's
+    // still short after a reasonable row size gets absorbed as clean bottom padding.
+    const available = minTotalH - headerH - listTopPad - bottomPad;
+    rowH = Math.min(available / rowCount, maxRowH);
+    totalH = headerH + listTopPad + rowCount*rowH + bottomPad;
+    if(totalH < minTotalH){
+      extraBottomPad = minTotalH - totalH;
+      totalH = minTotalH;
+    }
+  }
+  const W = totalH; // square card — width always matches the (possibly stretched/padded) height
   const contentW = W - marginX*2;
 
   const draw = document.createElement('canvas');
@@ -2539,7 +2555,7 @@ async function sharePlayerCard(playerId){
   if(logoImg){
     ctx.save();
     ctx.globalAlpha = 0.16;
-    const logoSize = 200;
+    const logoSize = W * 0.34; // proportional, since this card's width varies by player unlike the fixed-width event/team cards
     ctx.drawImage(logoImg, W - logoSize*0.62, -logoSize*0.28, logoSize, logoSize);
     ctx.restore();
   }
