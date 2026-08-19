@@ -1927,6 +1927,22 @@ async function shareEventCard(eventId){
   const singlesSectionH = sectionHeaderH + colHeaderH + singlesLayout.rowsPerCol*singlesLayout.rh + subtotalH + gapAfterSection;
   const doublesSectionH = sectionHeaderH + colHeaderH + doublesLayout.rowsPerCol*doublesLayout.rh + subtotalH;
   const totalH = headerH + scoreH + singlesSectionH + doublesSectionH + bottomPad;
+  // Splits rows into numCols groups as evenly as possible (sizes never differ by
+  // more than 1), instead of filling earlier columns first and leaving the last
+  // one nearly empty.
+  const distributeIntoColumns = (rows, numCols) => {
+    const n = rows.length;
+    const base = Math.floor(n / numCols);
+    const remainder = n % numCols;
+    const cols = [];
+    let idx = 0;
+    for(let i=0; i<numCols; i++){
+      const size = base + (i < remainder ? 1 : 0);
+      cols.push(rows.slice(idx, idx+size));
+      idx += size;
+    }
+    return cols;
+  };
 
   // ---- 3. Create the canvas ----
   const draw = document.createElement('canvas');
@@ -2139,10 +2155,9 @@ async function shareEventCard(eventId){
   const drawColumnHeader = (x, w) => {
     ctx.font = `800 10px ${FONT}`;
     ctx.fillStyle = '#8C8478';
-    ctx.textAlign = 'left';
-    ctx.fillText('TWO BUFF', x, y + colHeaderH - 8);
-    ctx.textAlign = 'right';
-    ctx.fillText(ctxTruncateText(ctx, opponentLabel.toUpperCase(), w*0.55), x + w, y + colHeaderH - 8);
+    ctx.textAlign = 'center';
+    ctx.fillText('TWO BUFF', x + w*0.25, y + colHeaderH - 8);
+    ctx.fillText(ctxTruncateText(ctx, opponentLabel.toUpperCase(), w*0.42), x + w*0.75, y + colHeaderH - 8);
     ctx.textAlign = 'left';
     ctx.strokeStyle = '#D8D2C4';
     ctx.lineWidth = 1;
@@ -2257,9 +2272,10 @@ async function shareEventCard(eventId){
       }
       y += colHeaderH;
       const sectionTopY = y;
+      const columns = distributeIntoColumns(rows, layout.numCols);
       for(let col=0; col<layout.numCols; col++){
         const colX = marginX + col*(colW+colGap);
-        const colRows = rows.slice(col*layout.rowsPerCol, (col+1)*layout.rowsPerCol);
+        const colRows = columns[col];
         colRows.forEach((r,i)=>{
           const rowTop = sectionTopY + i*layout.rh + layout.rh/2;
           if(i > 0){
