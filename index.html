@@ -1980,7 +1980,7 @@ async function shareEventCard(eventId){
   ctx.fillStyle = resultColor;
   ctx.fillText(resultLabel, CENTER_X, y+34);
 
-  const scoreGap = 22; // half the visual gap between the two scores — CENTER_X sits exactly in the middle of it
+  const midGap = 26; // empty gap between the two columns, centered exactly on CENTER_X
   const boxPad = 30;
   const labelFont = `800 13px ${FONT}`;
   const numberFont = `800 30px ${FONT}`;
@@ -1990,7 +1990,6 @@ async function shareEventCard(eventId){
   const leftScoreStr = `${totalUsPts}`;
   const rightScoreStr = `${totalOppPts}`;
 
-  // Measure at full size first, purely to size the background box — positions below don't depend on these measurements.
   ctx.font = numberFont;
   const leftNumW = ctx.measureText(leftScoreStr).width;
   const rightNumW = ctx.measureText(rightScoreStr).width;
@@ -1999,13 +1998,18 @@ async function shareEventCard(eventId){
   let leftLabelW = ctx.measureText(leftLabelFull).width;
   let rightLabelW = ctx.measureText(rightLabelFull).width;
 
-  let maxBlockW = Math.max(leftNumW, leftLabelW, rightNumW, rightLabelW);
-  let boxW = (scoreGap + maxBlockW + boxPad) * 2;
+  // Each column is as wide as its widest element (label or number). Both columns use the
+  // same half-width, so they sit as true mirror images of each other around CENTER_X.
+  let columnHalfW = Math.max(leftNumW, leftLabelW, rightNumW, rightLabelW) / 2;
+  let boxW = (columnHalfW*2 + midGap/2 + boxPad) * 2;
   if(boxW > contentW){
     boxW = contentW;
-    const maxLabelW = Math.max((boxW/2) - scoreGap - boxPad, 40);
+    const maxLabelW = Math.max((boxW - midGap - 2*boxPad) / 2, 40);
     leftLabel = ctxTruncateText(ctx, leftLabelFull, maxLabelW);
     rightLabel = ctxTruncateText(ctx, rightLabelFull, maxLabelW);
+    leftLabelW = ctx.measureText(leftLabel).width;
+    rightLabelW = ctx.measureText(rightLabel).width;
+    columnHalfW = Math.max(leftNumW, leftLabelW, rightNumW, rightLabelW) / 2;
   }
 
   const boxH = 66, boxX = CENTER_X - boxW/2, boxY = y + 50;
@@ -2018,21 +2022,18 @@ async function shareEventCard(eventId){
   ctx.fill();
   ctx.restore();
 
-  ctx.textAlign = 'right';
-  ctx.font = labelFont;
-  ctx.fillStyle = '#9FB2CE';
-  ctx.fillText(leftLabel, CENTER_X - scoreGap, boxY + 24);
-  ctx.font = numberFont;
-  ctx.fillStyle = '#FFC94A';
-  ctx.fillText(leftScoreStr, CENTER_X - scoreGap, boxY + 55);
+  const leftColX = CENTER_X - midGap/2 - columnHalfW;
+  const rightColX = CENTER_X + midGap/2 + columnHalfW;
 
-  ctx.textAlign = 'left';
+  ctx.textAlign = 'center';
   ctx.font = labelFont;
   ctx.fillStyle = '#9FB2CE';
-  ctx.fillText(rightLabel, CENTER_X + scoreGap, boxY + 24);
+  ctx.fillText(leftLabel, leftColX, boxY + 24);
+  ctx.fillText(rightLabel, rightColX, boxY + 24);
   ctx.font = numberFont;
   ctx.fillStyle = '#FFC94A';
-  ctx.fillText(rightScoreStr, CENTER_X + scoreGap, boxY + 55);
+  ctx.fillText(leftScoreStr, leftColX, boxY + 55);
+  ctx.fillText(rightScoreStr, rightColX, boxY + 55);
 
   ctx.textAlign = 'left';
   y += scoreH;
@@ -2041,39 +2042,32 @@ async function shareEventCard(eventId){
   // to a floor) that lets "our name — score — opponent name" fit as one line;
   // only truncates a name as a last resort. Doubles gets a smaller starting size
   // since "A & B" pairs are inherently longer than a single name. ----
-  const fitRow = (ourLabel, oppLabel, centerLabel, availableW, isOurWin, isOppWin, startSize) => {
+  const fitNameToWidth = (label, availableW, isHighlighted, startSize) => {
     let fontSize = startSize;
     const minFontSize = 10;
-    const gap = 14;
-    let ourW, oppW, centerW, ourText, oppText, totalW;
+    let text = label, w;
     do {
       ctx.font = `800 ${fontSize}px ${FONT}`;
-      ourText = ourLabel; oppText = oppLabel;
-      ourW = ctx.measureText(ourText).width;
-      oppW = ctx.measureText(oppText).width;
-      ctx.font = `700 ${Math.max(fontSize-2, 9)}px ${FONT}`;
-      centerW = ctx.measureText(centerLabel).width;
-      totalW = ourW + (isOurWin?16:0) + gap + centerW + gap + oppW + (isOppWin?16:0);
-      if(totalW <= availableW) break;
+      text = label;
+      w = ctx.measureText(text).width;
+      const slot = w + (isHighlighted ? 16 : 0);
+      if(slot <= availableW || fontSize <= minFontSize) break;
       fontSize -= 0.5;
-    } while(fontSize > minFontSize);
-    if(totalW > availableW){
+    } while(true);
+    let slot = w + (isHighlighted ? 16 : 0);
+    if(slot > availableW){
       ctx.font = `800 ${fontSize}px ${FONT}`;
-      const overflow = totalW - availableW + 6;
-      if(ourW >= oppW){
-        ourText = ctxTruncateText(ctx, ourLabel, Math.max(ourW - overflow, 36));
-        ourW = ctx.measureText(ourText).width;
-      } else {
-        oppText = ctxTruncateText(ctx, oppLabel, Math.max(oppW - overflow, 36));
-        oppW = ctx.measureText(oppText).width;
-      }
+      const overflow = slot - availableW + 6;
+      text = ctxTruncateText(ctx, label, Math.max(w - overflow, 30));
+      w = ctx.measureText(text).width;
     }
-    return { fontSize, ourText, oppText, ourW, oppW, centerW, gap };
+    return { fontSize, text, w };
   };
 
-  // ---- 8. Section drawer: title/subtitle row, then each match as a compact,
-  // centered group (its bounding box centered on CENTER_X — same anchor as the
-  // score above), then a subtotal scoreboard. ----
+  // ---- 8. Section drawer: title/subtitle row, then each match, then a subtotal.
+  // The score summary is the anchor for each row — drawn fixed at CENTER_X, exactly
+  // like the marquee above — and both player names are fitted and positioned as
+  // mirror images flowing outward from it, not the other way around. ----
   const drawSection = (title, subtitle, accent, rows, usPts, oppPts, startFontSize) => {
     ctx.textAlign = 'left';
     ctx.fillStyle = accent;
@@ -2097,6 +2091,8 @@ async function shareEventCard(eventId){
       ctx.textAlign = 'left';
       y += rowH;
     } else {
+      const gap = 14;
+      const halfContentW = contentW / 2;
       rows.forEach(r=>{
         ctx.strokeStyle = '#E4DFD3';
         ctx.lineWidth = 1;
@@ -2111,43 +2107,50 @@ async function shareEventCard(eventId){
         const isTie = r.result === 'T';
         const centerLabel = r.scoreLabel || (isTie ? 'TIE' : '—');
 
-        const fit = fitRow(r.ourLabel, r.oppLabel, centerLabel, contentW, isOurWin, isOppWin, startFontSize);
-        const { fontSize, ourText, oppText, ourW, oppW, centerW, gap } = fit;
-        const ourSlot = ourW + (isOurWin ? 16 : 0);
-        const oppSlot = oppW + (isOppWin ? 16 : 0);
-        const groupW = ourSlot + gap + centerW + gap + oppSlot;
-        let cursorX = CENTER_X - groupW/2;
+        // The full score summary — e.g. "4 UP · 2 to play" — is one indivisible
+        // piece of text, drawn dead-center on the card first.
+        ctx.font = `700 12px ${FONT}`;
+        const centerW = Math.min(ctx.measureText(centerLabel).width, halfContentW * 0.55);
+        const sideAvailableW = halfContentW - centerW/2 - gap;
 
-        ctx.textAlign = 'left';
-        ctx.font = `800 ${fontSize}px ${FONT}`;
+        const ourFit = fitNameToWidth(r.ourLabel, sideAvailableW, isOurWin, startFontSize);
+        const oppFit = fitNameToWidth(r.oppLabel, sideAvailableW, isOppWin, startFontSize);
+        const ourRightEdge = CENTER_X - centerW/2 - gap;
+        const oppLeftEdge = CENTER_X + centerW/2 + gap;
+
+        ctx.textAlign = 'right';
+        ctx.font = `800 ${ourFit.fontSize}px ${FONT}`;
         if(isOurWin){
+          const slotW = ourFit.w + 16;
           ctx.fillStyle = '#DCEFE3';
-          ctxRoundRect(ctx, cursorX, midY - 15, ourSlot, 28, 8);
+          ctxRoundRect(ctx, ourRightEdge - slotW, midY - 15, slotW, 28, 8);
           ctx.fill();
           ctx.fillStyle = '#1E7A46';
-          ctx.fillText(ourText, cursorX + 8, midY + 5);
+          ctx.fillText(ourFit.text, ourRightEdge - 8, midY + 5);
         } else {
           ctx.fillStyle = '#2B2620';
-          ctx.fillText(ourText, cursorX, midY + 5);
+          ctx.fillText(ourFit.text, ourRightEdge, midY + 5);
         }
-        cursorX += ourSlot + gap;
 
-        ctx.font = `700 ${Math.max(fontSize-2, 9)}px ${FONT}`;
+        ctx.textAlign = 'center';
+        ctx.font = `700 12px ${FONT}`;
         ctx.fillStyle = isTie ? '#8A6112' : '#8C8478';
-        ctx.fillText(centerLabel, cursorX, midY + 4);
-        cursorX += centerW + gap;
+        ctx.fillText(centerLabel, CENTER_X, midY + 4);
 
-        ctx.font = `800 ${fontSize}px ${FONT}`;
+        ctx.textAlign = 'left';
+        ctx.font = `800 ${oppFit.fontSize}px ${FONT}`;
         if(isOppWin){
+          const slotW = oppFit.w + 16;
           ctx.fillStyle = '#F8DEDB';
-          ctxRoundRect(ctx, cursorX, midY - 15, oppSlot, 28, 8);
+          ctxRoundRect(ctx, oppLeftEdge, midY - 15, slotW, 28, 8);
           ctx.fill();
           ctx.fillStyle = '#B3352E';
-          ctx.fillText(oppText, cursorX + 8, midY + 5);
+          ctx.fillText(oppFit.text, oppLeftEdge + 8, midY + 5);
         } else {
           ctx.fillStyle = '#2B2620';
-          ctx.fillText(oppText, cursorX, midY + 5);
+          ctx.fillText(oppFit.text, oppLeftEdge, midY + 5);
         }
+        ctx.textAlign = 'left';
 
         y += rowH;
       });
@@ -2164,7 +2167,7 @@ async function shareEventCard(eventId){
     ctx.font = `800 13px ${FONT}`;
     ctx.fillStyle = '#12294D';
     ctx.textAlign = 'center';
-    ctx.fillText(ctxTruncateText(ctx, `Two Buff  ${usPts} – ${oppPts}  ${opponentLabel}`, contentW - 20), CENTER_X, y+27);
+    ctx.fillText(`${usPts} – ${oppPts}`, CENTER_X, y+27);
     ctx.textAlign = 'left';
     y += subtotalH;
   };
