@@ -1906,9 +1906,9 @@ async function shareEventCard(eventId){
   const logoEl = document.querySelector('.brand-mark img');
   const logoImg = await loadImageAsync(logoEl ? logoEl.src : null);
 
-  const W = 900, scale = 2, marginX = 44, cardRadius = 22;
+  const W = 760, scale = 2, marginX = 40, cardRadius = 20;
   const contentW = W - marginX*2;
-  const rowH = 54, sectionHeaderH = 34, headerH = 118, scoreH = 140, subtotalH = 40, gapAfterSection = 22, bottomPad = 26;
+  const rowH = 48, sectionHeaderH = 32, headerH = 112, scoreH = 132, subtotalH = 38, gapAfterSection = 20, bottomPad = 24;
   const singlesRowsN = Math.max(singles.length, 1);
   const doublesRowsN = Math.max(doubles.length, 1);
   const singlesSectionH = sectionHeaderH + singlesRowsN*rowH + subtotalH + gapAfterSection;
@@ -1936,19 +1936,19 @@ async function shareEventCard(eventId){
   if(logoImg){
     ctx.save();
     ctx.globalAlpha = 0.16;
-    const logoSize = 230;
+    const logoSize = 200;
     ctx.drawImage(logoImg, W - logoSize*0.62, -logoSize*0.28, logoSize, logoSize);
     ctx.restore();
   }
 
   ctx.fillStyle = '#FFFFFF';
-  ctx.font = `800 28px ${FONT}`;
-  ctx.fillText(ctxTruncateText(ctx, `Two Buff vs ${opponentLabel}`, contentW), marginX, 58);
+  ctx.font = `800 25px ${FONT}`;
+  ctx.fillText(ctxTruncateText(ctx, `Two Buff vs ${opponentLabel}`, contentW), marginX, 54);
   ctx.fillStyle = '#FFCB57';
-  ctx.fillRect(marginX, 70, 46, 4);
+  ctx.fillRect(marginX, 65, 42, 4);
   ctx.fillStyle = '#B8C4D9';
-  ctx.font = `600 15px ${FONT}`;
-  ctx.fillText(fmtDateLong(ev.date), marginX, 96);
+  ctx.font = `600 14px ${FONT}`;
+  ctx.fillText(fmtDateLong(ev.date), marginX, 90);
 
   let y = headerH;
 
@@ -1964,40 +1964,56 @@ async function shareEventCard(eventId){
   ctx.font = `800 12px ${FONT}`;
   const badgeW = ctx.measureText(resultLabel).width + 28;
   ctx.fillStyle = resultBg;
-  ctxRoundRect(ctx, W/2 - badgeW/2, y+20, badgeW, 24, 12);
+  ctxRoundRect(ctx, W/2 - badgeW/2, y+18, badgeW, 24, 12);
   ctx.fill();
   ctx.fillStyle = resultColor;
-  ctx.fillText(resultLabel, W/2, y+36);
+  ctx.fillText(resultLabel, W/2, y+34);
 
-  // Scoreboard box with soft shadow
-  const boxW = 300, boxH = 62, boxX = W/2 - boxW/2, boxY = y + 56;
+  // Scoreboard box — sized to whatever the team names actually need, so nothing gets clipped
+  const scoreNumStr = `${totalUsPts}  –  ${totalOppPts}`;
+  ctx.font = `800 28px "Courier New", monospace`;
+  const scoreNumW = ctx.measureText(scoreNumStr).width;
+  ctx.font = `800 13px ${FONT}`;
+  const leftLabelFull = 'TWO BUFF';
+  const rightLabelFull = opponentLabel.toUpperCase();
+  const innerGap = 22, boxPad = 26;
+  let leftLabel = leftLabelFull, rightLabel = rightLabelFull;
+  let leftLabelW = ctx.measureText(leftLabelFull).width;
+  let rightLabelW = ctx.measureText(rightLabelFull).width;
+  let boxW = leftLabelW + rightLabelW + scoreNumW + innerGap*2 + boxPad*2;
+  if(boxW > contentW){
+    boxW = contentW;
+    const maxEachLabel = (boxW - scoreNumW - innerGap*2 - boxPad*2) / 2;
+    leftLabel = ctxTruncateText(ctx, leftLabelFull, maxEachLabel);
+    rightLabel = ctxTruncateText(ctx, rightLabelFull, maxEachLabel);
+  }
+  const boxH = 58, boxX = W/2 - boxW/2, boxY = y + 52;
   ctx.save();
   ctx.shadowColor = 'rgba(18,41,77,0.18)';
-  ctx.shadowBlur = 18;
-  ctx.shadowOffsetY = 6;
+  ctx.shadowBlur = 16;
+  ctx.shadowOffsetY = 5;
   ctx.fillStyle = '#12294D';
   ctxRoundRect(ctx, boxX, boxY, boxW, boxH, 14);
   ctx.fill();
   ctx.restore();
 
-  ctx.font = `800 15px ${FONT}`;
+  ctx.font = `800 13px ${FONT}`;
   ctx.fillStyle = '#9FB2CE';
-  ctx.fillText('TWO BUFF', boxX + boxW*0.26, boxY + 24);
-  ctx.fillText(ctxTruncateText(ctx, opponentLabel.toUpperCase(), boxW*0.4), boxX + boxW*0.74, boxY + 24);
+  ctx.textAlign = 'left';
+  ctx.fillText(leftLabel, boxX + boxPad, boxY + 24);
+  ctx.textAlign = 'right';
+  ctx.fillText(rightLabel, boxX + boxW - boxPad, boxY + 24);
 
-  ctx.font = `800 30px "Courier New", monospace`;
+  ctx.font = `800 28px "Courier New", monospace`;
   ctx.fillStyle = '#FFC94A';
-  ctx.fillText(`${totalUsPts}  –  ${totalOppPts}`, boxX + boxW/2, boxY + 50);
+  ctx.textAlign = 'center';
+  ctx.fillText(scoreNumStr, W/2, boxY + 47);
   ctx.textAlign = 'left';
 
   y += scoreH;
 
-  // ---- Section drawer: linear Our Player — Score — Opponent rows, winner highlighted ----
-  const leftColX = marginX;
-  const leftColW = contentW * 0.36;
-  const rightColX = W - marginX;
-  const rightColW = contentW * 0.36;
-
+  // ---- Section drawer: each row is a compact, centered group (name — score — name)
+  // instead of stretched fixed columns, so short names don't leave a lot of dead space ----
   const drawSection = (title, subtitle, accent, rows, usPts, oppPts) => {
     ctx.fillStyle = accent;
     ctxRoundRect(ctx, marginX, y+11, 10, 10, 3);
@@ -2016,10 +2032,11 @@ async function shareEventCard(eventId){
       ctx.fillStyle = '#8C8478';
       ctx.font = `600 13px ${FONT}`;
       ctx.textAlign = 'center';
-      ctx.fillText('No results recorded.', W/2, y+30);
+      ctx.fillText('No results recorded.', W/2, y+28);
       ctx.textAlign = 'left';
       y += rowH;
     } else {
+      const maxNameW = contentW * 0.32;
       rows.forEach(r=>{
         ctx.strokeStyle = '#E4DFD3';
         ctx.lineWidth = 1;
@@ -2032,44 +2049,50 @@ async function shareEventCard(eventId){
         const isOurWin = r.result === 'W';
         const isOppWin = r.result === 'L';
         const isTie = r.result === 'T';
+        const centerLabel = r.scoreLabel || (isTie ? 'TIE' : '—');
 
-        // Our player (left)
-        ctx.font = `800 15px ${FONT}`;
-        const ourText = ctxTruncateText(ctx, r.ourLabel, leftColW - 14);
+        ctx.font = `800 14.5px ${FONT}`;
+        const ourText = ctxTruncateText(ctx, r.ourLabel, maxNameW);
+        const oppText = ctxTruncateText(ctx, r.oppLabel, maxNameW);
+        const ourW = ctx.measureText(ourText).width;
+        const oppW = ctx.measureText(oppText).width;
+        ctx.font = `700 12px ${FONT}`;
+        const centerW = ctx.measureText(centerLabel).width;
+
+        const gap = 16;
+        const ourSlot = ourW + (isOurWin ? 16 : 0);
+        const oppSlot = oppW + (isOppWin ? 16 : 0);
+        const groupW = ourSlot + gap + centerW + gap + oppSlot;
+        let cursorX = marginX + (contentW - groupW)/2;
+
         ctx.textAlign = 'left';
+        ctx.font = `800 14.5px ${FONT}`;
         if(isOurWin){
-          const tw = ctx.measureText(ourText).width;
           ctx.fillStyle = '#DCEFE3';
-          ctxRoundRect(ctx, leftColX - 8, midY - 16, tw + 16, 28, 8);
+          ctxRoundRect(ctx, cursorX - 8, midY - 15, ourW + 16, 28, 8);
           ctx.fill();
           ctx.fillStyle = '#1E7A46';
         } else {
           ctx.fillStyle = '#2B2620';
         }
-        ctx.fillText(ourText, leftColX, midY + 5);
+        ctx.fillText(ourText, cursorX, midY + 5);
+        cursorX += ourSlot + gap;
 
-        // Score / detail (center)
-        const centerLabel = r.scoreLabel || (isTie ? 'TIE' : '—');
-        ctx.textAlign = 'center';
-        ctx.font = `700 12.5px ${FONT}`;
+        ctx.font = `700 12px ${FONT}`;
         ctx.fillStyle = isTie ? '#8A6112' : '#8C8478';
-        ctx.fillText(centerLabel, W/2, midY + 4);
+        ctx.fillText(centerLabel, cursorX, midY + 4);
+        cursorX += centerW + gap;
 
-        // Opponent player (right)
-        ctx.font = `800 15px ${FONT}`;
-        const oppText = ctxTruncateText(ctx, r.oppLabel, rightColW - 14);
-        ctx.textAlign = 'right';
+        ctx.font = `800 14.5px ${FONT}`;
         if(isOppWin){
-          const tw = ctx.measureText(oppText).width;
           ctx.fillStyle = '#F8DEDB';
-          ctxRoundRect(ctx, rightColX - tw - 16, midY - 16, tw + 16, 28, 8);
+          ctxRoundRect(ctx, cursorX - 8, midY - 15, oppW + 16, 28, 8);
           ctx.fill();
           ctx.fillStyle = '#B3352E';
         } else {
           ctx.fillStyle = '#2B2620';
         }
-        ctx.fillText(oppText, rightColX, midY + 5);
-        ctx.textAlign = 'left';
+        ctx.fillText(oppText, cursorX, midY + 5);
 
         y += rowH;
       });
@@ -2080,13 +2103,13 @@ async function shareEventCard(eventId){
     ctx.shadowBlur = 8;
     ctx.shadowOffsetY = 2;
     ctx.fillStyle = '#FFFFFF';
-    ctxRoundRect(ctx, marginX, y+8, contentW, 32, 10);
+    ctxRoundRect(ctx, marginX, y+7, contentW, 30, 10);
     ctx.fill();
     ctx.restore();
-    ctx.font = `800 14px "Courier New", monospace`;
+    ctx.font = `800 13px "Courier New", monospace`;
     ctx.fillStyle = '#12294D';
     ctx.textAlign = 'center';
-    ctx.fillText(`Two Buff  ${usPts} – ${oppPts}  ${opponentLabel}`, W/2, y+29);
+    ctx.fillText(`Two Buff  ${usPts} – ${oppPts}  ${opponentLabel}`, W/2, y+27);
     ctx.textAlign = 'left';
     y += subtotalH;
   };
