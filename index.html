@@ -2459,6 +2459,161 @@ async function shareEventCard(eventId){
     setTimeout(()=>URL.revokeObjectURL(url), 2000);
   }, 'image/png');
 }
+async function sharePlayerCard(playerId){
+  const player = state.players.find(p=>p.id===playerId);
+  if(!player){ showToast('Player not found'); return; }
+  const history = await getPlayerEventHistory(playerId); // already sorted most-recent-first
+  showToast('Generating image…');
+
+  const logoEl = document.querySelector('.brand-mark img');
+  const logoImg = await loadImageAsync(logoEl ? logoEl.src : null);
+  const oppTeams = await loadOppTeams();
+
+  let mpW=0, mpL=0, mpT=0, dbW=0, dbL=0, dbT=0;
+  history.forEach(h=>{
+    if(h.matchplay){
+      if(h.matchplay.result==='W') mpW++;
+      else if(h.matchplay.result==='L') mpL++;
+      else if(h.matchplay.result==='T') mpT++;
+    }
+    if(h.doubles){
+      if(h.doubles.result==='W') dbW++;
+      else if(h.doubles.result==='L') dbL++;
+      else if(h.doubles.result==='T') dbT++;
+    }
+  });
+
+  const W = 760, scale = 2, marginX = 60, cardRadius = 20;
+  const contentW = W - marginX*2;
+  const FONT = '-apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif';
+  const headerH = 128, rowH = 66, listTopPad = 16, bottomPad = 24;
+  const totalH = headerH + listTopPad + Math.max(history.length, 1)*rowH + bottomPad;
+
+  const draw = document.createElement('canvas');
+  draw.width = W*scale;
+  draw.height = totalH*scale;
+  const ctx = draw.getContext('2d');
+  ctx.scale(scale, scale);
+
+  ctx.fillStyle = '#F4F1EA';
+  ctx.fillRect(0, 0, W, totalH);
+
+  // ---- Header: player name instead of a matchup, plus their overall record ----
+  const headerGrad = ctx.createLinearGradient(0, 0, W, headerH);
+  headerGrad.addColorStop(0, '#0F2240');
+  headerGrad.addColorStop(1, '#1B3A66');
+  ctx.fillStyle = headerGrad;
+  ctx.fillRect(0, 0, W, headerH);
+
+  if(logoImg){
+    ctx.save();
+    ctx.globalAlpha = 0.16;
+    const logoSize = 200;
+    ctx.drawImage(logoImg, W - logoSize*0.62, -logoSize*0.28, logoSize, logoSize);
+    ctx.restore();
+  }
+
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#FFFFFF';
+  ctx.font = `800 26px ${FONT}`;
+  ctx.fillText(ctxTruncateText(ctx, player.name, contentW), marginX, 54);
+  ctx.fillStyle = '#FFCB57';
+  ctx.fillRect(marginX, 65, 42, 4);
+
+  ctx.fillStyle = '#B8C4D9';
+  ctx.font = `600 14px ${FONT}`;
+  const summaryParts = [];
+  if(mpW+mpL+mpT > 0) summaryParts.push(`Singles ${mpW}-${mpL}-${mpT}`);
+  if(dbW+dbL+dbT > 0) summaryParts.push(`Doubles ${dbW}-${dbL}-${dbT}`);
+  ctx.fillText(summaryParts.length ? summaryParts.join('    ·    ') : 'No results recorded yet', marginX, 90);
+
+  let y = headerH + listTopPad;
+
+  if(history.length === 0){
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#8C8478';
+    ctx.font = `600 13px ${FONT}`;
+    ctx.fillText('No recorded results yet.', W/2, y+28);
+    ctx.textAlign = 'left';
+    y += rowH;
+  } else {
+    const resultColor = (r) => r==='W' ? '#1E7A46' : r==='T' ? '#8A6112' : '#B3352E';
+    history.forEach(h=>{
+      ctx.strokeStyle = '#E4DFD3';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(marginX, y);
+      ctx.lineTo(W-marginX, y);
+      ctx.stroke();
+
+      let oppLabel = 'Opponent';
+      if(h.event.opponentTeamId){
+        const t = oppTeams.find(x=>x.id===h.event.opponentTeamId);
+        if(t) oppLabel = t.name;
+      } else if(h.event.opponentName){
+        oppLabel = h.event.opponentName;
+      }
+      const matchupTitle = formatMatchupTitle(h.event, oppLabel);
+      const d = fmtDate(h.event.date);
+
+      ctx.textAlign = 'left';
+      ctx.font = `800 14.5px ${FONT}`;
+      ctx.fillStyle = '#2B2620';
+      ctx.fillText(ctxTruncateText(ctx, matchupTitle, contentW*0.62), marginX, y+22);
+
+      ctx.textAlign = 'right';
+      ctx.font = `600 11px ${FONT}`;
+      ctx.fillStyle = '#8C8478';
+      ctx.fillText(`${d.mon} ${d.day}`, W-marginX, y+22);
+      ctx.textAlign = 'left';
+
+      let lineY = y + 42;
+      if(h.matchplay){
+        const m = h.matchplay;
+        ctx.font = `700 12px ${FONT}`;
+        ctx.fillStyle = resultColor(m.result);
+        let text = `Singles ${m.result} · ${m.opponentName || 'Unknown'}`;
+        const margin = formatMatchplayMargin(m);
+        if(margin) text += ` · ${margin}`;
+        ctx.fillText(ctxTruncateText(ctx, text, contentW), marginX, lineY);
+        lineY += 16;
+      }
+      if(h.doubles){
+        const db = h.doubles;
+        ctx.font = `700 12px ${FONT}`;
+        ctx.fillStyle = resultColor(db.result);
+        const opps = [db.opp1Name, db.opp2Name].filter(Boolean).join(' & ') || 'Unknown';
+        let text = `Doubles ${db.result} · w/ ${db.partnerName || '—'} vs ${opps}`;
+        const score = formatDoublesScore(db);
+        if(score) text += ` · ${score}`;
+        ctx.fillText(ctxTruncateText(ctx, text, contentW), marginX, lineY);
+      }
+
+      y += rowH;
+    });
+  }
+
+  // ---- Round the card's corners and export ----
+  const rounded = document.createElement('canvas');
+  rounded.width = draw.width;
+  rounded.height = draw.height;
+  const rctx = rounded.getContext('2d');
+  ctxRoundRect(rctx, 0, 0, draw.width, draw.height, cardRadius*scale);
+  rctx.clip();
+  rctx.drawImage(draw, 0, 0);
+
+  rounded.toBlob(blob=>{
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const safeName = `${player.name}-stats`.replace(/[^a-z0-9]+/gi, '-').toLowerCase();
+    a.download = `${safeName || 'player'}-stats.png`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(()=>URL.revokeObjectURL(url), 2000);
+  }, 'image/png');
+}
 async function getOpponentPlayerHistory(oppPlayerId){
   const allData = await getAllStatsData();
   const history = [];
@@ -2508,7 +2663,11 @@ async function renderPlayerHistoryHtml(playerId){
       if(scoreText) bits.push(esc(scoreText));
       detail = bits.length ? ' · ' + bits.join(' ') : '';
     } else {
-      detail = entry.opponentName ? ' · ' + esc(entry.opponentName) : '';
+      const bits = [];
+      if(entry.opponentName) bits.push('vs ' + esc(entry.opponentName));
+      const scoreText = formatMatchplayMargin(entry);
+      if(scoreText) bits.push(esc(scoreText));
+      detail = bits.length ? ' · ' + bits.join(' ') : '';
     }
     return `<span class="pill" style="background:${bg}; color:${color}; margin-left:6px;">${label} ${entry.result}${detail}</span>`;
   };
@@ -2530,7 +2689,7 @@ async function renderPlayerHistoryHtml(playerId){
         </div>
         <div>${resultPill('Singles', h.matchplay)}${resultPill('Doubles', h.doubles)}</div>
       </div>`;
-  }).join('');
+  }).join('') + `<button class="btn btn-outline btn-sm" style="width:100%; margin-top:12px;" onclick="event.stopPropagation(); sharePlayerCard('${playerId}')">⬇️ Share Image</button>`;
 }
 async function teamCardFor(p){
   const expanded = state.expandedPlayerId === p.id;
