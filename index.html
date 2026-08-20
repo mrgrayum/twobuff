@@ -241,6 +241,7 @@
   .stats-section-header:first-of-type{ margin-top:6px; }
   .divider{height:1px; background:var(--line); margin:14px 0;}
   .home-badge{background:#FBE4D8; color:var(--orange-dark); font-size:10.5px; font-weight:800; padding:3px 8px; border-radius:8px; text-transform:uppercase; letter-spacing:0.3px;}
+  .venue-badge{background:var(--chip-bg); color:var(--ink-soft); font-size:10.5px; font-weight:800; padding:3px 8px; border-radius:8px; text-transform:uppercase; letter-spacing:0.3px;}
   .toast{
     position:fixed; bottom:96px; left:50%; transform:translateX(-50%); background:var(--forest-dark); color:#fff;
     padding:10px 18px; border-radius:20px; font-size:13px; font-weight:700; z-index:110; box-shadow:var(--shadow);
@@ -1499,10 +1500,6 @@ function openEventModal(existingId){
         <div class="sheet" onclick="event.stopPropagation()">
           <h3>${ev ? 'Edit Event' : 'Add Event'}</h3>
           <div class="field">
-            <label>Event Name</label>
-            <input id="ev_name" type="text" placeholder="e.g. Fall Classic" value="${ev ? esc(ev.name) : ''}">
-          </div>
-          <div class="field">
             <label>Date</label>
             <input id="ev_date" type="date" value="${ev ? ev.date : ''}">
           </div>
@@ -1534,11 +1531,15 @@ function openEventModal(existingId){
               <div style="font-size:11px; color:var(--ink-soft); margin-top:6px;">Add opponent teams on the Match tab to pick from a saved roster instead of typing a name.</div>
             `}
           </div>
-          <div class="toggle-row">
-            <label style="margin:0; text-transform:none; font-weight:700; color:var(--ink);">🏡 Home event (lunch spread)</label>
-            <div class="switch ${ev && ev.isHome ? 'on':''}" id="ev_homeSwitch" onclick="this.classList.toggle('on')"><div class="knob"></div></div>
+          <div class="field">
+            <label>Venue</label>
+            <div class="seg-row" id="ev_venueRow">
+              <div class="seg-btn ${eventVenue(ev)==='home' ? 'seg-sel':''}" data-v="home" onclick="selectSeg(this)">🏡 Home</div>
+              <div class="seg-btn ${eventVenue(ev)==='away' ? 'seg-sel':''}" data-v="away" onclick="selectSeg(this)">✈️ Away</div>
+              <div class="seg-btn ${eventVenue(ev)==='neutral' ? 'seg-sel':''}" data-v="neutral" onclick="selectSeg(this)">⚖️ Neutral</div>
+            </div>
           </div>
-          <div style="font-size:11.5px; color:var(--ink-soft); margin-top:-4px;">Home events show a ⭐ on the date tile and unlock the lunch spread sign-up list.</div>
+          <div style="font-size:11.5px; color:var(--ink-soft); margin-top:-4px;">Home events show a ⭐ on the date tile and unlock the lunch spread sign-up list. Neutral means neither team hosts.</div>
           <div class="divider"></div>
           <div class="btn-row">
             ${ev ? `<button class="btn btn-danger" onclick="deleteEvent('${ev.id}')">Delete</button>` : ''}
@@ -1554,12 +1555,13 @@ function closeModalIfBackdrop(e){
 function closeModal(){ document.getElementById('modalRoot').innerHTML = ''; }
 
 async function saveEventFromModal(existingId){
-  const name = document.getElementById('ev_name').value.trim();
   const date = document.getElementById('ev_date').value;
   const time = document.getElementById('ev_time').value;
   const season = document.getElementById('ev_season').value.trim() || inferSeason(date);
   const location = document.getElementById('ev_location').value.trim();
-  const isHome = document.getElementById('ev_homeSwitch').classList.contains('on');
+  const venueBtn = document.querySelector('#ev_venueRow .seg-sel');
+  const venue = venueBtn ? venueBtn.dataset.v : 'away';
+  const isHome = venue === 'home'; // keep the legacy flag in sync so lunch-spread logic is untouched
   let opponentTeamId = null, opponentName = '';
   const oppSelect = document.getElementById('ev_opponent_select');
   if(oppSelect){
@@ -1572,12 +1574,17 @@ async function saveEventFromModal(existingId){
     const customInput = document.getElementById('ev_opponent_custom');
     if(customInput) opponentName = customInput.value.trim();
   }
-  if(!name || !date){ showToast('Name and date are required'); return; }
+  if(!date){ showToast('Date is required'); return; }
+  // The title is derived from venue + opponent, not typed in. Build it against the
+  // resolved opponent (linked team or custom name) so it stays consistent everywhere.
+  const teams = await loadOppTeams();
+  const draft = { venue, isHome, opponentTeamId, opponentName };
+  const name = buildEventTitle(draft, teams);
   if(existingId){
     const ev = state.events.find(e=>e.id===existingId);
-    Object.assign(ev, {name, date, time, season, location, isHome, opponentTeamId, opponentName});
+    Object.assign(ev, {name, date, time, season, location, isHome, venue, opponentTeamId, opponentName});
   } else {
-    state.events.push({id: uid('ev'), name, date, time, season, location, isHome, opponentTeamId, opponentName});
+    state.events.push({id: uid('ev'), name, date, time, season, location, isHome, venue, opponentTeamId, opponentName});
   }
   await saveEvents();
   closeModal();
@@ -1629,7 +1636,8 @@ function buildICS(ev, opponentName){
   }
   const now = new Date();
   const stamp = now.toISOString().replace(/[-:]/g,'').split('.')[0] + 'Z';
-  const descLines = [ev.isHome ? 'Home event — lunch spread' : '', opponentName ? `Opponent: ${opponentName}` : ''].filter(Boolean);
+  const venueLine = eventVenue(ev) === 'home' ? 'Home event — lunch spread' : eventVenue(ev) === 'neutral' ? 'Neutral site' : 'Away event';
+  const descLines = [venueLine, opponentName ? `Opponent: ${opponentName}` : ''].filter(Boolean);
   const lines = [
     'BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Two Buff Team Hub//EN', 'CALSCALE:GREGORIAN',
     'BEGIN:VEVENT',
@@ -1693,7 +1701,8 @@ async function addToGoogleCalendar(eventId){
     const fmt = d => `${d.getFullYear()}${pad2(d.getMonth()+1)}${pad2(d.getDate())}`;
     datesParam = `${fmt(startDate)}/${fmt(endDate)}`;
   }
-  const details = [ev.isHome ? 'Home event — lunch spread' : '', opponentName ? `Opponent: ${opponentName}` : ''].filter(Boolean).join('\n');
+  const gcalVenueLine = eventVenue(ev) === 'home' ? 'Home event — lunch spread' : eventVenue(ev) === 'neutral' ? 'Neutral site' : 'Away event';
+  const details = [gcalVenueLine, opponentName ? `Opponent: ${opponentName}` : ''].filter(Boolean).join('\n');
   const url = new URL('https://calendar.google.com/calendar/render');
   url.searchParams.set('action', 'TEMPLATE');
   url.searchParams.set('text', ev.name);
@@ -1715,6 +1724,7 @@ async function renderEventDetail(eventId){
   ]);
   const oppTeamForEvent = ev.opponentTeamId ? oppTeams.find(t=>t.id===ev.opponentTeamId) : null;
   const opponentDisplayName = oppTeamForEvent ? oppTeamForEvent.name : (ev.opponentName || '');
+  const liveTitle = buildEventTitle(ev, oppTeams);
   const counts = rsvpCounts(rsvp);
   const roster = state.players.filter(p=>p.active !== false);
   const lunchPct = counts.confirmed ? Math.round((counts.lunchResp / counts.confirmed) * 100) : 0;
@@ -1746,8 +1756,8 @@ async function renderEventDetail(eventId){
 
   return `
     <button class="btn btn-ghost btn-sm" style="width:auto; margin-bottom:12px;" onclick="setView('events')">← All Events</button>
-    <div class="page-title">${esc(ev.name)} ${ev.isHome ? '<span class="home-badge">🏡 Home / Lunch Spread</span>' : ''}</div>
-    <div class="page-sub">${fmtDateLong(ev.date)}${ev.time ? ' · ' + fmtTime(ev.time) : ''}${ev.location ? ' · ' + esc(ev.location) : ''}${opponentDisplayName ? ' · vs ' + esc(opponentDisplayName) : ''}</div>
+    <div class="page-title">${esc(liveTitle)} ${ev.isHome ? '<span class="home-badge">🏡 Home / Lunch Spread</span>' : eventVenue(ev)==='neutral' ? '<span class="venue-badge">⚖️ Neutral</span>' : '<span class="venue-badge">✈️ Away</span>'}</div>
+    <div class="page-sub">${fmtDateLong(ev.date)}${ev.time ? ' · ' + fmtTime(ev.time) : ''}${ev.location ? ' · ' + esc(ev.location) : ''}</div>
 
     <div class="btn-row" style="margin-bottom:14px;">
       <button class="btn btn-outline btn-sm" onclick="openAddToCalendarModal('${ev.id}')">📅 Add to Calendar</button>
@@ -1871,8 +1881,35 @@ function groupFormatWinPoints(format){
 function groupFormatLabel(format){
   return format === 'singles' ? 'Stroke Singles' : format === 'triples' ? 'Triples' : 'Doubles';
 }
+// Venue is 'home' | 'away' | 'neutral'. Older events only have the boolean isHome,
+// so derive from that when venue isn't set: isHome -> home, otherwise away.
+function eventVenue(ev){
+  if(ev && (ev.venue === 'home' || ev.venue === 'away' || ev.venue === 'neutral')) return ev.venue;
+  return ev && ev.isHome ? 'home' : 'away';
+}
 function formatMatchupTitle(ev, opponentLabel){
-  return ev.isHome ? `${opponentLabel} @ Two Buff` : `Two Buff @ ${opponentLabel}`;
+  const v = eventVenue(ev);
+  if(v === 'home') return `${opponentLabel} @ Two Buff`;
+  if(v === 'neutral') return `Two Buff vs ${opponentLabel}`; // neutral site — no host
+  return `Two Buff @ ${opponentLabel}`;
+}
+// Resolve the opponent's display name for an event, whether it's a linked team or a
+// typed-in custom name. Returns '' when no opponent is set yet.
+function resolveOpponentLabel(ev, teams){
+  if(!ev) return '';
+  if(ev.opponentTeamId){
+    const t = (teams || []).find(x=>x.id===ev.opponentTeamId);
+    if(t) return t.name;
+  }
+  return ev.opponentName || '';
+}
+// The canonical event title, derived from venue + opponent. This replaces the old
+// manually-typed event name. When no opponent is set, fall back to a neutral label
+// so the event still has a usable title everywhere.
+function buildEventTitle(ev, teams){
+  const opp = resolveOpponentLabel(ev, teams);
+  if(!opp) return 'Two Buff Event';
+  return formatMatchupTitle(ev, opp);
 }
 // "Matt Grayum" -> "Matt G." ; single-word names are left as-is.
 function abbrevName(name){
@@ -4405,12 +4442,26 @@ async function saveTeamFromModal(existingId){
     return existingPlayer || { id: uid('opp'), name: lineName, notes: '', gender: null, skillRank: null, pdgaRating: null, throwHand: null, handedness: null, age: null };
   });
   if(existingTeam){
+    const nameChanged = existingTeam.name !== name;
     existingTeam.name = name;
     existingTeam.players = players;
+    await saveOppTeams(teams);
+    // Auto-generated event titles embed the opponent's name, so refresh any events
+    // linked to this team when it's renamed — keeps stored names current everywhere.
+    if(nameChanged){
+      let touched = false;
+      state.events.forEach(evt=>{
+        if(evt.opponentTeamId === existingTeam.id){
+          const fresh = buildEventTitle(evt, teams);
+          if(evt.name !== fresh){ evt.name = fresh; touched = true; }
+        }
+      });
+      if(touched) await saveEvents();
+    }
   } else {
     teams.push({ id: uid('oppteam'), name, players });
+    await saveOppTeams(teams);
   }
-  await saveOppTeams(teams);
   closeModal();
   showToast(existingTeam ? 'Team updated' : 'Team added');
   render();
