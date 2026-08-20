@@ -420,8 +420,9 @@ const state = {
   expandedPlayerId: null, // Team tab: which player card is expanded to show their event history
   armedSinglesTB: null,    // Matchups: Two Buff player currently selected, awaiting an opponent tap
   armedSinglesOpp: null,   // Matchups: opponent player currently selected, awaiting a Two Buff tap
-  armedDoublesTBPair: [],  // Matchups: up to 2 Two Buff players being grouped into a doubles pair
-  armedDoublesOppPair: [], // Matchups: up to 2 opponent players being grouped into a doubles pair
+  armedDoublesTBPair: [],  // Matchups: Two Buff players being grouped (size depends on groupFormat)
+  armedDoublesOppPair: [], // Matchups: opponent players being grouped (size depends on groupFormat)
+  groupFormat: 'doubles',  // Matchups: 'singles' (1v1 stroke), 'doubles' (2v2), or 'triples' (3v3) — set via long-press
   expandedMockupResultKey: null, // Matchups: which matchup's Won/Lost/quality section is expanded
   expandedMockupOppId: null, // Matchups: which opponent's notes/suggested-matchups are expanded (long-press)
   expandedOppTeamId: null,   // Teams page: which opponent team is expanded to show its roster
@@ -640,7 +641,8 @@ async function loadMatchupState(){
     Object.keys(dbt || {}).forEach(teamId=>{
       const arr = dbt[teamId] || [];
       const isNewShape = arr.every(m => m && typeof m === 'object' && Array.isArray(m.tb) && Array.isArray(m.opp));
-      out[teamId] = isNewShape ? arr : [];
+      // Stamp a format on any group that predates the singles/triples feature (all were doubles).
+      out[teamId] = isNewShape ? arr.map(m => m.format ? m : { ...m, format: 'doubles' }) : [];
     });
     return out;
   };
@@ -1819,8 +1821,50 @@ async function setLunchItem(eventId, playerId, value){
 }
 function blankResultEntry(kind){
   return kind === 'doubles'
-    ? {played:false, result:null, powerRank:null, partnerId:null, partnerName:'', opp1Id:null, opp1Name:'', opp2Id:null, opp2Name:'', ourScore:null, oppScore:null, playoffHoles:null}
+    ? {played:false, result:null, format:'doubles', powerRank:null, partnerIds:[], partnerNames:[], oppIds:[], oppNames:[], ourScore:null, oppScore:null, playoffHoles:null}
     : {played:false, result:null, powerRank:null, opponentPlayerId:null, opponentName:'', marginUp:null, holesRemaining:null};
+}
+// The ".doubles" stats slot now holds any stroke-play GROUP result — singles-stroke,
+// doubles, or triples. Older saved entries used single-partner (partnerId/partnerName)
+// and fixed opp1/opp2 fields; this upgrades them to the array shape on read so every
+// downstream reader can assume arrays + a format. Non-destructive: callers that save
+// go through the array shape from here on.
+function normalizeGroupEntry(db){
+  if(!db) return db;
+  if(Array.isArray(db.partnerIds) && Array.isArray(db.oppIds) && db.format){
+    return db; // already new shape
+  }
+  const partnerIds = [];
+  const partnerNames = [];
+  if(Array.isArray(db.partnerIds)){
+    db.partnerIds.forEach((id,i)=>{ if(id){ partnerIds.push(id); partnerNames.push((db.partnerNames && db.partnerNames[i]) || ''); } });
+  } else if(db.partnerId){
+    partnerIds.push(db.partnerId); partnerNames.push(db.partnerName || '');
+  }
+  const oppIds = [];
+  const oppNames = [];
+  if(Array.isArray(db.oppIds)){
+    db.oppIds.forEach((id,i)=>{ if(id){ oppIds.push(id); oppNames.push((db.oppNames && db.oppNames[i]) || ''); } });
+  } else {
+    if(db.opp1Id){ oppIds.push(db.opp1Id); oppNames.push(db.opp1Name || ''); }
+    if(db.opp2Id){ oppIds.push(db.opp2Id); oppNames.push(db.opp2Name || ''); }
+  }
+  // Infer format from team size when not explicitly stored (all legacy entries are doubles).
+  const teamSize = partnerIds.length + 1;
+  const format = db.format || (teamSize === 1 ? 'singles' : teamSize === 3 ? 'triples' : 'doubles');
+  return {
+    played: !!db.played, result: db.result ?? null, format,
+    powerRank: db.powerRank ?? null,
+    partnerIds, partnerNames, oppIds, oppNames,
+    ourScore: db.ourScore ?? null, oppScore: db.oppScore ?? null, playoffHoles: db.playoffHoles ?? null
+  };
+}
+// Points a WIN is worth for a given group format (a tie splits this evenly).
+function groupFormatWinPoints(format){
+  return format === 'singles' ? 1 : format === 'triples' ? 3 : 2;
+}
+function groupFormatLabel(format){
+  return format === 'singles' ? 'Stroke Singles' : format === 'triples' ? 'Triples' : 'Doubles';
 }
 function formatMatchupTitle(ev, opponentLabel){
   return ev.isHome ? `${opponentLabel} @ Two Buff` : `Two Buff @ ${opponentLabel}`;
@@ -1876,7 +1920,7 @@ async function setSinglesHolesRemaining(eventId, tbId, value){
 async function setDoublesScore(eventId, tbId, side, value){
   const stats = await loadStats(eventId);
   const cur = stats[tbId] || {};
-  const existing = cur.doubles || blankResultEntry('doubles');
+  const existing = normalizeGroupEntry(cur.doubles || blankResultEntry('doubles'));
   if(!existing.played) return;
   const num = value === '' ? null : Number(value);
   const parsed = (num===null || isNaN(num)) ? null : num;
@@ -1884,37 +1928,36 @@ async function setDoublesScore(eventId, tbId, side, value){
   else existing.oppScore = parsed;
   cur.doubles = existing;
   stats[tbId] = cur;
-  // Both partners hold their own mirrored copy of the same shared team score — keep them in sync.
-  const partnerId = existing.partnerId;
-  if(partnerId){
-    const curPartner = stats[partnerId] || {};
-    const partnerEntry = { ...(curPartner.doubles || blankResultEntry('doubles')) };
-    if(side === 'our') partnerEntry.ourScore = parsed;
-    else partnerEntry.oppScore = parsed;
+  // Every teammate holds their own mirrored copy of the shared team score — keep all in sync.
+  (existing.partnerIds || []).forEach(pid=>{
+    if(!pid) return;
+    const curPartner = stats[pid] || {};
+    const partnerEntry = normalizeGroupEntry(curPartner.doubles || blankResultEntry('doubles'));
+    if(side === 'our') partnerEntry.ourScore = parsed; else partnerEntry.oppScore = parsed;
     curPartner.doubles = partnerEntry;
-    stats[partnerId] = curPartner;
-  }
+    stats[pid] = curPartner;
+  });
   render();
   saveStats(eventId, stats).catch(err=>console.error('Score save failed', err));
 }
 async function setDoublesPlayoffHoles(eventId, tbId, value){
   const stats = await loadStats(eventId);
   const cur = stats[tbId] || {};
-  const existing = cur.doubles || blankResultEntry('doubles');
+  const existing = normalizeGroupEntry(cur.doubles || blankResultEntry('doubles'));
   if(!existing.played) return;
   const num = value === '' ? null : Math.max(1, Number(value));
   const parsed = (num===null || isNaN(num)) ? null : num;
   existing.playoffHoles = parsed;
   cur.doubles = existing;
   stats[tbId] = cur;
-  const partnerId = existing.partnerId;
-  if(partnerId){
-    const curPartner = stats[partnerId] || {};
-    const partnerEntry = { ...(curPartner.doubles || blankResultEntry('doubles')) };
+  (existing.partnerIds || []).forEach(pid=>{
+    if(!pid) return;
+    const curPartner = stats[pid] || {};
+    const partnerEntry = normalizeGroupEntry(curPartner.doubles || blankResultEntry('doubles'));
     partnerEntry.playoffHoles = parsed;
     curPartner.doubles = partnerEntry;
-    stats[partnerId] = curPartner;
-  }
+    stats[pid] = curPartner;
+  });
   render();
   saveStats(eventId, stats).catch(err=>console.error('Playoff holes save failed', err));
 }
@@ -1927,12 +1970,16 @@ async function setPowerRank(eventId, playerId, kind, value){
   existing.powerRank = rankValue;
   cur[kind] = existing;
   stats[playerId] = cur;
-  if(kind === 'doubles' && existing.partnerId){
-    const curPartner = stats[existing.partnerId] || {};
-    const partnerEntry = { ...(curPartner.doubles || blankResultEntry('doubles')) };
-    partnerEntry.powerRank = rankValue;
-    curPartner.doubles = partnerEntry;
-    stats[existing.partnerId] = curPartner;
+  if(kind === 'doubles'){
+    const norm = normalizeGroupEntry(existing);
+    (norm.partnerIds || []).forEach(pid=>{
+      if(!pid) return;
+      const curPartner = stats[pid] || {};
+      const partnerEntry = normalizeGroupEntry(curPartner.doubles || blankResultEntry('doubles'));
+      partnerEntry.powerRank = rankValue;
+      curPartner.doubles = partnerEntry;
+      stats[pid] = curPartner;
+    });
   }
   render();
   saveStats(eventId, stats).catch(err=>console.error('Power rank save failed', err));
@@ -1972,7 +2019,7 @@ async function getPlayerEventHistory(playerId){
     const playedMp = !!(s.matchplay && s.matchplay.played);
     const playedDb = !!(s.doubles && s.doubles.played);
     if(!playedMp && !playedDb) return;
-    history.push({ event: ev, matchplay: playedMp ? s.matchplay : null, doubles: playedDb ? s.doubles : null });
+    history.push({ event: ev, matchplay: playedMp ? s.matchplay : null, doubles: playedDb ? normalizeGroupEntry(s.doubles) : null });
   });
   history.sort((a,b)=> b.event.date.localeCompare(a.event.date));
   return history;
@@ -1982,8 +2029,8 @@ function toggleExpandTeamEvent(eventId){
   render();
 }
 function computeMatchDetailsFromData(stats){
-  const singles = [];
-  const doubles = [];
+  const singles = [];   // matchplay singles only
+  const doubles = [];   // all stroke-play group results (singles-stroke, doubles, triples)
   const countedForDoubles = new Set();
   Object.keys(stats).forEach(pid=>{
     if(pid === '__adjustments') return; // not a player entry — handled separately below
@@ -1994,18 +2041,25 @@ function computeMatchDetailsFromData(stats){
       singles.push({ ourName, result: s.matchplay.result, opponentName: s.matchplay.opponentName || 'Unknown opponent', marginUp: s.matchplay.marginUp, holesRemaining: s.matchplay.holesRemaining });
     }
     if(s.doubles && s.doubles.played && !countedForDoubles.has(pid)){
+      const db = normalizeGroupEntry(s.doubles);
       countedForDoubles.add(pid);
-      if(s.doubles.partnerId) countedForDoubles.add(s.doubles.partnerId);
-      const ourSide = s.doubles.partnerName ? `${ourName} & ${s.doubles.partnerName}` : ourName;
-      const oppSide = [s.doubles.opp1Name, s.doubles.opp2Name].filter(Boolean).join(' & ') || 'Unknown opponents';
-      doubles.push({ ourSide, result: s.doubles.result, opponentName: oppSide, ourScore: s.doubles.ourScore, oppScore: s.doubles.oppScore, playoffHoles: s.doubles.playoffHoles });
+      (db.partnerIds || []).forEach(id=>countedForDoubles.add(id));
+      const ourNames = [ourName, ...(db.partnerNames || [])].filter(Boolean);
+      const ourSide = ourNames.join(' & ') || ourName;
+      const oppSide = (db.oppNames || []).filter(Boolean).join(' & ') || 'Unknown opponents';
+      doubles.push({ ourSide, format: db.format || 'doubles', result: db.result, opponentName: oppSide, ourScore: db.ourScore, oppScore: db.oppScore, playoffHoles: db.playoffHoles });
     }
   });
-  // A win is worth the full point value; a tie splits it evenly between both teams.
+  // A win is worth its format's full point value; a tie splits that value evenly between both teams.
   const mpUsPts = singles.filter(s=>s.result==='W').length * 1 + singles.filter(s=>s.result==='T').length * 0.5;
   const mpOppPts = singles.filter(s=>s.result==='L').length * 1 + singles.filter(s=>s.result==='T').length * 0.5;
-  const dbUsPts = doubles.filter(d=>d.result==='W').length * 2 + doubles.filter(d=>d.result==='T').length * 1;
-  const dbOppPts = doubles.filter(d=>d.result==='L').length * 2 + doubles.filter(d=>d.result==='T').length * 1;
+  let dbUsPts = 0, dbOppPts = 0;
+  doubles.forEach(d=>{
+    const pts = groupFormatWinPoints(d.format);
+    if(d.result === 'W') dbUsPts += pts;
+    else if(d.result === 'L') dbOppPts += pts;
+    else if(d.result === 'T'){ dbUsPts += pts/2; dbOppPts += pts/2; }
+  });
 
   const adjustments = Array.isArray(stats.__adjustments) ? stats.__adjustments : [];
   const adjUsPts = adjustments.filter(a=>a.team==='us').reduce((sum,a)=>sum + a.points, 0);
@@ -2087,7 +2141,7 @@ async function renderEventMatchBreakdown(eventId){
   const { singles, doubles, mpUsPts, mpOppPts, dbUsPts, dbOppPts, totalUsPts, totalOppPts, adjustments } = await getEventMatchDetails(eventId);
 
   const starSpan = '<span style="color:#C68A1E;">★</span> ';
-  const matchRow = (label, result, oppLabel, scoreText, ourStar, oppStar) => {
+  const matchRow = (label, result, oppLabel, scoreText, ourStar, oppStar, fmtTag) => {
     const color = result==='W' ? 'var(--forest)' : result==='T' ? '#8A6112' : 'var(--red)';
     const bg = result==='W' ? '#E1E8F5' : result==='T' ? '#FBEFD8' : '#F5D9D6';
     const shortLabel = abbrevNameLabel(label);
@@ -2095,7 +2149,7 @@ async function renderEventMatchBreakdown(eventId){
     return `
       <div style="padding:7px 0; border-top:1px solid var(--line);">
         <div style="display:flex; justify-content:space-between; align-items:center; gap:6px;">
-          <div style="font-size:11.5px; font-weight:700; line-height:1.3;">${ourStar ? starSpan : ''}${esc(shortLabel)}<br><span style="color:var(--ink-soft); font-weight:700;">vs ${oppStar ? starSpan : ''}${esc(shortOpp)}</span>${scoreText ? `<br><span style="color:var(--ink-soft); font-weight:700;">${esc(scoreText)}</span>` : ''}</div>
+          <div style="font-size:11.5px; font-weight:700; line-height:1.3;">${fmtTag || ''}${ourStar ? starSpan : ''}${esc(shortLabel)}<br><span style="color:var(--ink-soft); font-weight:700;">vs ${oppStar ? starSpan : ''}${esc(shortOpp)}</span>${scoreText ? `<br><span style="color:var(--ink-soft); font-weight:700;">${esc(scoreText)}</span>` : ''}</div>
           <span class="pill" style="background:${bg}; color:${color}; flex-shrink:0;">${result}</span>
         </div>
       </div>`;
@@ -2116,7 +2170,10 @@ async function renderEventMatchBreakdown(eventId){
     ? doubles.map(d=>{
         const ourIsHot = d.ourScore != null && d.ourScore === hotRoundValue;
         const oppIsHot = d.oppScore != null && d.oppScore === hotRoundValue;
-        return matchRow(d.ourSide, d.result, d.opponentName, formatDoublesScore(d), ourIsHot, oppIsHot);
+        const fmtTag = (d.format && d.format !== 'doubles')
+          ? `<span style="display:inline-block; font-size:8.5px; font-weight:800; color:var(--ink-soft); text-transform:uppercase; letter-spacing:0.3px; background:var(--chip-bg); border-radius:6px; padding:1px 5px; margin-bottom:2px;">${groupFormatLabel(d.format)} · ${groupFormatWinPoints(d.format)} pt${groupFormatWinPoints(d.format)>1?'s':''}</span><br>`
+          : '';
+        return matchRow(d.ourSide, d.result, d.opponentName, formatDoublesScore(d), ourIsHot, oppIsHot, fmtTag);
       }).join('')
     : `<div style="font-size:11.5px; color:var(--ink-soft); padding:6px 0;">No results recorded.</div>`;
 
@@ -2844,11 +2901,14 @@ async function sharePlayerCard(playerId){
         lineY += 16;
       }
       if(h.doubles){
-        const db = h.doubles;
+        const db = normalizeGroupEntry(h.doubles);
         ctx.font = `700 12px ${FONT}`;
         ctx.fillStyle = resultColor(db.result);
-        const opps = [db.opp1Name, db.opp2Name].filter(Boolean).join(' & ') || 'Unknown';
-        let text = `Doubles ${db.result} · w/ ${db.partnerName || '—'} vs ${opps}`;
+        const opps = (db.oppNames || []).filter(Boolean).map(abbrevName).join(' & ') || 'Unknown';
+        const partners = (db.partnerNames || []).filter(Boolean).map(abbrevName).join(' & ');
+        let text = `${groupFormatLabel(db.format)} ${db.result} · `;
+        if(partners) text += `w/ ${partners} `;
+        text += `vs ${opps}`;
         const score = formatDoublesScore(db);
         if(score) text += ` · ${score}`;
         ctx.fillText(ctxTruncateText(ctx, text, contentW), marginX, lineY);
@@ -3037,11 +3097,12 @@ async function getOpponentPlayerHistory(oppPlayerId){
       if(mp && mp.played && mp.opponentPlayerId === oppPlayerId){
         history.push({ event: ev, kind:'matchplay', result: mp.result, ourPlayerName, partnerName: null });
       }
-      const db = s.doubles;
-      if(db && db.played && (db.opp1Id === oppPlayerId || db.opp2Id === oppPlayerId) && !countedDoublesFor.has(ourPlayerId)){
+      const db = s.doubles ? normalizeGroupEntry(s.doubles) : null;
+      if(db && db.played && (db.oppIds || []).includes(oppPlayerId) && !countedDoublesFor.has(ourPlayerId)){
         countedDoublesFor.add(ourPlayerId);
-        if(db.partnerId) countedDoublesFor.add(db.partnerId);
-        history.push({ event: ev, kind:'doubles', result: db.result, ourPlayerName, partnerName: db.partnerName || null });
+        (db.partnerIds || []).forEach(id=>countedDoublesFor.add(id));
+        const partnerLabel = (db.partnerNames || []).filter(Boolean).join(' & ') || null;
+        history.push({ event: ev, kind: db.format || 'doubles', result: db.result, ourPlayerName, partnerName: partnerLabel });
       }
     });
   });
@@ -3063,12 +3124,16 @@ async function renderPlayerHistoryHtml(playerId){
     const color = entry.result==='W' ? 'var(--forest)' : entry.result==='T' ? '#8A6112' : 'var(--red)';
     const bg = entry.result==='W' ? '#E1E8F5' : entry.result==='T' ? '#FBEFD8' : '#F5D9D6';
     let detail = '';
+    let displayLabel = label;
     if(label === 'Doubles'){
-      const opps = [entry.opp1Name, entry.opp2Name].filter(Boolean).map(abbrevName).join(' & ');
+      const e = normalizeGroupEntry(entry);
+      displayLabel = groupFormatLabel(e.format); // true format: Stroke Singles / Doubles / Triples
+      const opps = (e.oppNames || []).filter(Boolean).map(abbrevName).join(' & ');
+      const partners = (e.partnerNames || []).filter(Boolean).map(abbrevName).join(' & ');
       const bits = [];
-      if(entry.partnerName) bits.push('w/ ' + esc(abbrevName(entry.partnerName)));
+      if(partners) bits.push('w/ ' + esc(partners));
       if(opps) bits.push('vs ' + esc(opps));
-      const scoreText = formatDoublesScore(entry);
+      const scoreText = formatDoublesScore(e);
       if(scoreText) bits.push(esc(scoreText));
       detail = bits.length ? ' · ' + bits.join(' ') : '';
     } else {
@@ -3078,7 +3143,7 @@ async function renderPlayerHistoryHtml(playerId){
       if(scoreText) bits.push(esc(scoreText));
       detail = bits.length ? ' · ' + bits.join(' ') : '';
     }
-    return `<span class="pill pill-hist" style="background:${bg}; color:${color};">${label} ${entry.result}${detail}</span>`;
+    return `<span class="pill pill-hist" style="background:${bg}; color:${color};">${displayLabel} ${entry.result}${detail}</span>`;
   };
   return history.map(h=>{
     const d = fmtDate(h.event.date);
@@ -3606,14 +3671,19 @@ async function renderMatchups(){
   const doublesResultHtml = (m, key) => {
     if(!selectedEventId || !state.adminMode || state.expandedMockupResultKey !== key) return '';
     const primaryTbId = m.tb[0];
-    const entry = (eventStats[primaryTbId] && eventStats[primaryTbId].doubles) || {played:false, result:null, powerRank:null, ourScore:null, oppScore:null};
+    const entry = normalizeGroupEntry((eventStats[primaryTbId] && eventStats[primaryTbId].doubles) || blankResultEntry('doubles'));
     const rank = entry.powerRank || 5;
+    const fmt = m.format || 'doubles';
+    const winPts = groupFormatWinPoints(fmt);
+    const tbArg = JSON.stringify(m.tb).replace(/"/g, '&quot;');
+    const oppArg = JSON.stringify(m.opp).replace(/"/g, '&quot;');
+    const recordCall = (r) => `recordGroupResult('${selectedEventId}', ${tbArg}, ${oppArg}, '${fmt}', '${r}')`;
     return `
       <div style="width:100%; margin-top:8px; padding-top:8px; border-top:1px dashed var(--line);">
         <div style="display:flex; gap:8px;">
-          <button class="wl-btn ${entry.played && entry.result==='W' ? 'win-sel':''}" style="flex:1;" onclick="recordDoublesResult('${selectedEventId}','${m.tb[0]}','${m.tb[1]}','${m.opp[0]}','${m.opp[1]}','W')">Won</button>
-          <button class="wl-btn ${entry.played && entry.result==='T' ? 'tie-sel':''}" style="flex:1;" onclick="recordDoublesResult('${selectedEventId}','${m.tb[0]}','${m.tb[1]}','${m.opp[0]}','${m.opp[1]}','T')">Tie</button>
-          <button class="wl-btn ${entry.played && entry.result==='L' ? 'loss-sel':''}" style="flex:1;" onclick="recordDoublesResult('${selectedEventId}','${m.tb[0]}','${m.tb[1]}','${m.opp[0]}','${m.opp[1]}','L')">Lost</button>
+          <button class="wl-btn ${entry.played && entry.result==='W' ? 'win-sel':''}" style="flex:1;" onclick="${recordCall('W')}">Won</button>
+          <button class="wl-btn ${entry.played && entry.result==='T' ? 'tie-sel':''}" style="flex:1;" onclick="${recordCall('T')}">Tie</button>
+          <button class="wl-btn ${entry.played && entry.result==='L' ? 'loss-sel':''}" style="flex:1;" onclick="${recordCall('L')}">Lost</button>
         </div>
         ${entry.played ? `
           <div style="display:flex; gap:8px; margin-top:8px;">
@@ -3640,29 +3710,26 @@ async function renderMatchups(){
           </div>
           <div style="font-size:10px; color:var(--ink-soft); margin-top:2px;">Opponent pair quality — 5+ strong, below 5 weaker</div>
         ` : ''}
-        ${entry.played && entry.result === 'T' ? `<div style="font-size:10px; color:var(--ink-soft); margin-top:6px;">A tie splits the points — 1 to each team.</div>` : ''}
+        ${entry.played && entry.result === 'T' ? `<div style="font-size:10px; color:var(--ink-soft); margin-top:6px;">A tie splits the points — ${winPts/2} to each team.</div>` : ''}
       </div>`;
   };
 
   const doublesPairedHtml = doubles.map((m,i)=>{ // first matchup made stays on top; new ones build downward
-    const a = activeTB.find(p=>p.id===m.tb[0]);
-    const b = activeTB.find(p=>p.id===m.tb[1]);
-    const c = currentTeam.players.find(p=>p.id===m.opp[0]);
-    const d = currentTeam.players.find(p=>p.id===m.opp[1]);
-    if(!a || !b || !c || !d) return '';
+    const fmt = m.format || 'doubles';
+    const tbPlayers = m.tb.map(id=>activeTB.find(p=>p.id===id));
+    const oppPlayers = m.opp.map(id=>currentTeam.players.find(p=>p.id===id));
+    if(tbPlayers.some(p=>!p) || oppPlayers.some(p=>!p)) return ''; // a member was removed from a roster
     const resultKey = `doubles-${i}`;
+    const tbChipsCol = tbPlayers.map(p=>`<div class="matchup-chip paired" style="margin:0; cursor:default;">${esc(p.name)} ${genderBadgeHtml(p)}</div>`).join('');
+    const oppChipsCol = oppPlayers.map(p=>`<div class="matchup-chip opp-paired" style="margin:0; cursor:default;">${esc(p.name)} ${genderBadgeHtml(p)}</div>`).join('');
+    const fmtBadge = `<div style="font-size:9px; font-weight:800; color:var(--ink-soft); text-transform:uppercase; letter-spacing:0.3px; margin-bottom:3px;">${groupFormatLabel(fmt)} · ${groupFormatWinPoints(fmt)} pt${groupFormatWinPoints(fmt)>1?'s':''}/win</div>`;
     return `
       <div style="margin-bottom:9px;">
+        ${fmtBadge}
         <div class="matchup-paired-card" style="margin-bottom:0;">
-          <div style="display:flex; flex-direction:column; gap:4px; flex:1;">
-            <div class="matchup-chip paired" style="margin:0; cursor:default;">${esc(a.name)} ${genderBadgeHtml(a)}</div>
-            <div class="matchup-chip paired" style="margin:0; cursor:default;">${esc(b.name)} ${genderBadgeHtml(b)}</div>
-          </div>
+          <div style="display:flex; flex-direction:column; gap:4px; flex:1;">${tbChipsCol}</div>
           ${doublesConnector(m, resultKey)}
-          <div style="display:flex; flex-direction:column; gap:4px; flex:1;">
-            <div class="matchup-chip opp-paired" style="margin:0; cursor:default;">${esc(c.name)} ${genderBadgeHtml(c)}</div>
-            <div class="matchup-chip opp-paired" style="margin:0; cursor:default;">${esc(d.name)} ${genderBadgeHtml(d)}</div>
-          </div>
+          <div style="display:flex; flex-direction:column; gap:4px; flex:1;">${oppChipsCol}</div>
           ${state.adminMode ? `<button class="icon-btn" onclick="unpairDoublesMatchup(${i})">✕</button>` : ''}
         </div>
         ${doublesResultHtml(m, resultKey)}
@@ -3727,16 +3794,27 @@ async function renderMatchups(){
     </div>
     ${singlesScoreHtml}
 
-    <div class="stats-section-header">👥 Doubles</div>
-    <div style="font-size:11.5px; color:var(--ink-soft); margin-bottom:4px;">Tap two players on each side to form a doubles matchup — order doesn't matter, and pairings are saved per opponent team.</div>
+    <div class="stats-section-header">👥 Group Play</div>
+    <div style="display:flex; gap:6px; margin-bottom:6px;">
+      ${['singles','doubles','triples'].map(f=>`
+        <button class="seg-btn ${state.groupFormat===f ? 'seg-sel':''}" style="flex:1;" ${state.adminMode ? `onclick="setGroupFormat('${f}')"` : 'disabled'}>${groupFormatLabel(f)}</button>
+      `).join('')}
+    </div>
+    <div style="font-size:11.5px; color:var(--ink-soft); margin-bottom:4px;">${
+      state.groupFormat === 'singles'
+        ? 'Stroke-play singles — tap one player on each side. Win = 1 pt, tie = 0.5 each.'
+        : state.groupFormat === 'triples'
+          ? 'Triples — tap three players on each side. Win = 3 pts, tie = 1.5 each.'
+          : 'Doubles — tap two players on each side. Win = 2 pts, tie = 1 each.'
+    }</div>
     ${doublesPairedHtml}
     <div class="matchup-cols">
       <div>
-        <div class="matchup-col-label">Two Buff${state.armedDoublesTBPair.length ? ` (${state.armedDoublesTBPair.length}/2)` : ''}</div>
+        <div class="matchup-col-label">Two Buff${state.armedDoublesTBPair.length ? ` (${state.armedDoublesTBPair.length}/${groupTeamSize(state.groupFormat)})` : ''}</div>
         ${doublesTBChips}
       </div>
       <div>
-        <div class="matchup-col-label">${esc(currentTeam.name)}${state.armedDoublesOppPair.length ? ` (${state.armedDoublesOppPair.length}/2)` : ''}</div>
+        <div class="matchup-col-label">${esc(currentTeam.name)}${state.armedDoublesOppPair.length ? ` (${state.armedDoublesOppPair.length}/${groupTeamSize(state.groupFormat)})` : ''}</div>
         ${doublesOppChips}
       </div>
     </div>
@@ -3916,10 +3994,23 @@ async function unpairSingles(tbId){
   saveMatchupState(ms).catch(err=>console.error('Matchup save failed', err));
   if(eventId) clearSinglesResultIfExists(eventId, tbId);
 }
+// How many players each side needs for the currently-armed format.
+function groupTeamSize(format){
+  return format === 'singles' ? 1 : format === 'triples' ? 3 : 2;
+}
+function setGroupFormat(format){
+  if(state.groupFormat === format) return; // already active — no change
+  state.groupFormat = format;
+  // Switching format mid-selection would leave an ambiguous partial group — clear it.
+  state.armedDoublesTBPair = [];
+  state.armedDoublesOppPair = [];
+  render();
+}
 function finalizeDoublesMatchupIfReady(ms){
-  if(state.armedDoublesTBPair.length === 2 && state.armedDoublesOppPair.length === 2){
+  const need = groupTeamSize(state.groupFormat);
+  if(state.armedDoublesTBPair.length === need && state.armedDoublesOppPair.length === need){
     const doubles = getDoublesBucket(ms);
-    doubles.push({ tb: [...state.armedDoublesTBPair], opp: [...state.armedDoublesOppPair] });
+    doubles.push({ tb: [...state.armedDoublesTBPair], opp: [...state.armedDoublesOppPair], format: state.groupFormat });
     state.armedDoublesTBPair = [];
     state.armedDoublesOppPair = [];
     saveMatchupState(ms).catch(err=>console.error('Matchup save failed', err));
@@ -3928,9 +4019,10 @@ function finalizeDoublesMatchupIfReady(ms){
 async function tapDoublesTBMember(playerId){
   const ms = state.matchupStateCache || await loadMatchupState();
   state.matchupStateCache = ms;
+  const need = groupTeamSize(state.groupFormat);
   const idx = state.armedDoublesTBPair.indexOf(playerId);
   if(idx !== -1){ state.armedDoublesTBPair.splice(idx, 1); render(); return; } // tap again to deselect
-  if(state.armedDoublesTBPair.length >= 2){ showToast('Deselect one first'); return; }
+  if(state.armedDoublesTBPair.length >= need){ showToast(need === 1 ? 'Singles is 1 player — tap an opponent' : 'Deselect one first'); return; }
   state.armedDoublesTBPair.push(playerId);
   finalizeDoublesMatchupIfReady(ms);
   render();
@@ -3938,9 +4030,10 @@ async function tapDoublesTBMember(playerId){
 async function tapDoublesOppMember(oppId){
   const ms = state.matchupStateCache || await loadMatchupState();
   state.matchupStateCache = ms;
+  const need = groupTeamSize(state.groupFormat);
   const idx = state.armedDoublesOppPair.indexOf(oppId);
   if(idx !== -1){ state.armedDoublesOppPair.splice(idx, 1); render(); return; } // tap again to deselect
-  if(state.armedDoublesOppPair.length >= 2){ showToast('Deselect one first'); return; }
+  if(state.armedDoublesOppPair.length >= need){ showToast(need === 1 ? 'Singles is 1 player — tap a Two Buff player' : 'Deselect one first'); return; }
   state.armedDoublesOppPair.push(oppId);
   finalizeDoublesMatchupIfReady(ms);
   render();
@@ -3969,11 +4062,13 @@ async function clearDoublesResultIfExists(eventId, tbId){
   const stats = await loadStats(eventId);
   const cur = stats[tbId];
   if(cur && cur.doubles && cur.doubles.played){
-    const partnerId = cur.doubles.partnerId;
+    const norm = normalizeGroupEntry(cur.doubles);
     cur.doubles = blankResultEntry('doubles');
-    if(partnerId && stats[partnerId] && stats[partnerId].doubles){
-      stats[partnerId].doubles = blankResultEntry('doubles');
-    }
+    (norm.partnerIds || []).forEach(pid=>{
+      if(pid && stats[pid] && stats[pid].doubles){
+        stats[pid].doubles = blankResultEntry('doubles');
+      }
+    });
     render();
     saveStats(eventId, stats).catch(err=>console.error('Result clear failed', err));
   }
@@ -3995,38 +4090,49 @@ async function recordSinglesResult(eventId, tbId, oppId, result){
   render();
   saveStats(eventId, stats).catch(err=>console.error('Result save failed', err));
 }
-async function recordDoublesResult(eventId, tbId1, tbId2, oppId1, oppId2, result){
+async function recordGroupResult(eventId, tbIds, oppIds, format, result){
   const teams = await loadOppTeams();
   const team = teams.find(t=>t.id === (state.matchupStateCache && state.matchupStateCache.currentTeamId));
-  const p1 = state.players.find(p=>p.id===tbId1);
-  const p2 = state.players.find(p=>p.id===tbId2);
-  const opp1 = team && team.players.find(p=>p.id===oppId1);
-  const opp2 = team && team.players.find(p=>p.id===oppId2);
+  const tbPlayers = tbIds.map(id => state.players.find(p=>p.id===id)).filter(Boolean);
+  const oppPlayers = oppIds.map(id => (team && team.players.find(p=>p.id===id)) || null);
+  const oppIdsClean = [];
+  const oppNames = [];
+  oppIds.forEach((id,i)=>{ oppIdsClean.push(id); oppNames.push(oppPlayers[i] ? oppPlayers[i].name : ''); });
+
   const stats = await loadStats(eventId);
-  const cur1 = stats[tbId1] || {};
-  const existing = cur1.doubles || blankResultEntry('doubles');
-  let entryFor1, entryFor2;
-  if(existing.played && existing.result === result){
-    entryFor1 = blankResultEntry('doubles'); // tap again to clear
-    entryFor2 = blankResultEntry('doubles');
-  } else {
-    const shared = {
-      played:true, result,
-      powerRank: existing.powerRank || 5,
-      opp1Id: oppId1, opp1Name: opp1 ? opp1.name : '',
-      opp2Id: oppId2, opp2Name: opp2 ? opp2.name : '',
-      ourScore: existing.ourScore ?? null, oppScore: existing.oppScore ?? null, playoffHoles: existing.playoffHoles ?? null
-    };
-    entryFor1 = { ...shared, partnerId: tbId2, partnerName: p2 ? p2.name : '' };
-    entryFor2 = { ...shared, partnerId: tbId1, partnerName: p1 ? p1.name : '' };
-  }
-  cur1.doubles = entryFor1;
-  stats[tbId1] = cur1;
-  const cur2 = stats[tbId2] || {};
-  cur2.doubles = entryFor2;
-  stats[tbId2] = cur2;
+  const primaryId = tbIds[0];
+  const existing = normalizeGroupEntry((stats[primaryId] && stats[primaryId].doubles) || blankResultEntry('doubles'));
+  const clearing = existing.played && existing.result === result; // tap the same verdict again to clear
+
+  tbIds.forEach(pid=>{
+    const cur = stats[pid] || {};
+    if(clearing){
+      cur.doubles = blankResultEntry('doubles');
+    } else {
+      const partnerIds = [];
+      const partnerNames = [];
+      tbIds.forEach(otherId=>{
+        if(otherId === pid) return; // teammates are everyone on this side except me
+        partnerIds.push(otherId);
+        const op = state.players.find(p=>p.id===otherId);
+        partnerNames.push(op ? op.name : '');
+      });
+      cur.doubles = {
+        played:true, result, format,
+        powerRank: existing.powerRank || 5,
+        partnerIds, partnerNames,
+        oppIds: [...oppIdsClean], oppNames: [...oppNames],
+        ourScore: existing.ourScore ?? null, oppScore: existing.oppScore ?? null, playoffHoles: existing.playoffHoles ?? null
+      };
+    }
+    stats[pid] = cur;
+  });
   render();
   saveStats(eventId, stats).catch(err=>console.error('Result save failed', err));
+}
+// Back-compat shim: existing doubles UI still calls recordDoublesResult with fixed args.
+async function recordDoublesResult(eventId, tbId1, tbId2, oppId1, oppId2, result){
+  return recordGroupResult(eventId, [tbId1, tbId2], [oppId1, oppId2], 'doubles', result);
 }
 
 /* ---- Special / penalty points adjustments (admin only, per event) ---- */
