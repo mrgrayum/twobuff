@@ -138,6 +138,7 @@
 
   /* ---------- Chips / status pills ---------- */
   .pill{display:inline-flex; align-items:center; gap:5px; padding:4px 10px; border-radius:20px; font-size:11.5px; font-weight:800;}
+  .pill.pill-hist{max-width:100%; box-sizing:border-box; white-space:normal; overflow-wrap:anywhere; text-align:right;}
   .pill-forest{background:#E1E8F5; color:var(--forest);}
   .pill-orange{background:#FBE4D8; color:var(--orange-dark);}
   .pill-gray{background:var(--chip-bg); color:var(--ink-soft);}
@@ -1824,6 +1825,20 @@ function blankResultEntry(kind){
 function formatMatchupTitle(ev, opponentLabel){
   return ev.isHome ? `${opponentLabel} @ Two Buff` : `Two Buff @ ${opponentLabel}`;
 }
+// "Matt Grayum" -> "Matt G." ; single-word names are left as-is.
+function abbrevName(name){
+  if(!name) return name;
+  const parts = String(name).trim().split(/\s+/);
+  if(parts.length < 2) return name;
+  return `${parts[0]} ${parts[parts.length-1][0]}.`;
+}
+// Handles single names and doubles pairs like "Matt Grayum & Jon Doe".
+function abbrevNameLabel(label){
+  if(!label) return label;
+  return label.includes(' & ')
+    ? label.split(' & ').map(s=>abbrevName(s.trim())).join(' & ')
+    : abbrevName(label);
+}
 function formatMatchplayMargin(entry){
   if(entry.marginUp == null) return '';
   const holesLeft = entry.holesRemaining || 0;
@@ -2075,10 +2090,12 @@ async function renderEventMatchBreakdown(eventId){
   const matchRow = (label, result, oppLabel, scoreText, ourStar, oppStar) => {
     const color = result==='W' ? 'var(--forest)' : result==='T' ? '#8A6112' : 'var(--red)';
     const bg = result==='W' ? '#E1E8F5' : result==='T' ? '#FBEFD8' : '#F5D9D6';
+    const shortLabel = abbrevNameLabel(label);
+    const shortOpp = abbrevNameLabel(oppLabel);
     return `
       <div style="padding:7px 0; border-top:1px solid var(--line);">
         <div style="display:flex; justify-content:space-between; align-items:center; gap:6px;">
-          <div style="font-size:11.5px; font-weight:700; line-height:1.3;">${ourStar ? starSpan : ''}${esc(label)}<br><span style="color:var(--ink-soft); font-weight:700;">vs ${oppStar ? starSpan : ''}${esc(oppLabel)}</span>${scoreText ? `<br><span style="color:var(--ink-soft); font-weight:700;">${esc(scoreText)}</span>` : ''}</div>
+          <div style="font-size:11.5px; font-weight:700; line-height:1.3;">${ourStar ? starSpan : ''}${esc(shortLabel)}<br><span style="color:var(--ink-soft); font-weight:700;">vs ${oppStar ? starSpan : ''}${esc(shortOpp)}</span>${scoreText ? `<br><span style="color:var(--ink-soft); font-weight:700;">${esc(scoreText)}</span>` : ''}</div>
           <span class="pill" style="background:${bg}; color:${color}; flex-shrink:0;">${result}</span>
         </div>
       </div>`;
@@ -3047,21 +3064,21 @@ async function renderPlayerHistoryHtml(playerId){
     const bg = entry.result==='W' ? '#E1E8F5' : entry.result==='T' ? '#FBEFD8' : '#F5D9D6';
     let detail = '';
     if(label === 'Doubles'){
-      const opps = [entry.opp1Name, entry.opp2Name].filter(Boolean).join(' & ');
+      const opps = [entry.opp1Name, entry.opp2Name].filter(Boolean).map(abbrevName).join(' & ');
       const bits = [];
-      if(entry.partnerName) bits.push('w/ ' + esc(entry.partnerName));
+      if(entry.partnerName) bits.push('w/ ' + esc(abbrevName(entry.partnerName)));
       if(opps) bits.push('vs ' + esc(opps));
       const scoreText = formatDoublesScore(entry);
       if(scoreText) bits.push(esc(scoreText));
       detail = bits.length ? ' · ' + bits.join(' ') : '';
     } else {
       const bits = [];
-      if(entry.opponentName) bits.push('vs ' + esc(entry.opponentName));
+      if(entry.opponentName) bits.push('vs ' + esc(abbrevName(entry.opponentName)));
       const scoreText = formatMatchplayMargin(entry);
       if(scoreText) bits.push(esc(scoreText));
       detail = bits.length ? ' · ' + bits.join(' ') : '';
     }
-    return `<span class="pill" style="background:${bg}; color:${color};">${label} ${entry.result}${detail}</span>`;
+    return `<span class="pill pill-hist" style="background:${bg}; color:${color};">${label} ${entry.result}${detail}</span>`;
   };
   return history.map(h=>{
     const d = fmtDate(h.event.date);
@@ -3074,12 +3091,12 @@ async function renderPlayerHistoryHtml(playerId){
     }
     const matchupTitle = formatMatchupTitle(h.event, oppLabel);
     return `
-      <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; padding:9px 2px; border-top:1px solid var(--line);">
-        <div style="flex:1; min-width:0;">
+      <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px; padding:9px 2px; border-top:1px solid var(--line);">
+        <div style="flex:0 1 auto; white-space:nowrap;">
           <div style="font-size:13px; font-weight:800;">${esc(matchupTitle)}</div>
           <div style="font-size:10.5px; color:var(--ink-soft); font-weight:700;">${d.mon} ${d.day}</div>
         </div>
-        <div style="flex-shrink:0; display:flex; flex-wrap:wrap; justify-content:flex-end; gap:4px;">${resultPill('Singles', h.matchplay)}${resultPill('Doubles', h.doubles)}</div>
+        <div style="flex:1 1 auto; display:flex; flex-direction:column; align-items:flex-end; gap:5px; min-width:0;">${resultPill('Singles', h.matchplay)}${resultPill('Doubles', h.doubles)}</div>
       </div>`;
   }).join('') + `<button class="btn btn-outline btn-sm" style="width:100%; margin-top:12px;" onclick="event.stopPropagation(); sharePlayerCard('${playerId}')">⬇️ Share Image</button>`;
 }
