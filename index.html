@@ -743,6 +743,64 @@ async function init(){
   render();
   const gateInput = document.getElementById('app_pin_input');
   if(gateInput) gateInput.focus();
+  backfillDoublesPartnerEntries(); // one-time, self-guarding — runs quietly in the background
+}
+// ONE-TIME MIGRATION: before doubles results were mirrored to both partners, only the
+// first-tapped player got a doubles stats entry (the partner's card showed nothing).
+// This walks every event's stats once and, for any doubles entry naming a partner who
+// lacks their own played doubles entry, creates the missing mirror. It's careful to:
+//   - never overwrite a partner who already has their own played entry (idempotent)
+//   - never touch matchplay, adjustments, or anything else
+//   - skip entirely after its first successful run, via a stored version flag
+async function backfillDoublesPartnerEntries(){
+  try{
+    const done = await storeGet('dg_migration_doubles_mirror', true);
+    if(done) return; // already run — do nothing
+    const listRes = await window.storage.list('dg_stats_', true);
+    const keys = (listRes && listRes.keys) || [];
+    for(const key of keys){
+      const raw = await storeGet(key, true);
+      if(!raw) continue;
+      const data = JSON.parse(raw);
+      let changed = false;
+      // Snapshot the player ids up front so mirrors we add don't get re-processed this pass.
+      const playerIds = Object.keys(data).filter(pid => pid !== '__adjustments');
+      for(const pid of playerIds){
+        const s = data[pid];
+        const db = s && s.doubles;
+        if(!db || !db.played || !db.partnerId) continue;
+        const partnerId = db.partnerId;
+        const partnerRec = data[partnerId];
+        const partnerHasEntry = partnerRec && partnerRec.doubles && partnerRec.doubles.played;
+        if(partnerHasEntry) continue; // partner already covered — leave untouched
+        // Build the partner's mirror: same shared result, but pointing back at this player.
+        const partnerName = (state.players.find(p=>p.id===partnerId) || {}).name || db.partnerName || '';
+        const mirror = {
+          played:true, result: db.result,
+          powerRank: db.powerRank || 5,
+          partnerId: pid,
+          partnerName: (state.players.find(p=>p.id===pid) || {}).name || '',
+          opp1Id: db.opp1Id ?? null, opp1Name: db.opp1Name || '',
+          opp2Id: db.opp2Id ?? null, opp2Name: db.opp2Name || '',
+          ourScore: db.ourScore ?? null, oppScore: db.oppScore ?? null, playoffHoles: db.playoffHoles ?? null
+        };
+        const partnerCur = data[partnerId] || {};
+        partnerCur.doubles = mirror;
+        data[partnerId] = partnerCur;
+        // Also make sure this player's own entry correctly names the partner (older
+        // entries always did, but this is cheap insurance).
+        if(!db.partnerName && partnerName){ db.partnerName = partnerName; }
+        changed = true;
+      }
+      if(changed){
+        await storeSet(key, JSON.stringify(data), true);
+        state.statsCache[key.slice('dg_stats_'.length)] = data;
+      }
+    }
+    state.allStatsCache = null; // force a fresh bulk read next time stats are shown
+    await storeSet('dg_migration_doubles_mirror', 'done', true);
+    render();
+  }catch(e){ console.error('Doubles backfill migration failed', e); }
 }
 
 async function getAppPin(){
