@@ -680,8 +680,10 @@ function getDoublesBucket(ms){
 // selectively clearing individual in-memory caches (rsvpCache, statsCache, etc.) because
 // a real reload can't have a bug where one cache gets missed and gives false confidence
 // that the data on screen is current when it isn't.
-function hardRefresh(){
-  location.reload();
+async function hardRefresh(){
+  await refreshAllData();
+  render();
+  showToast('Data refreshed');
 }
 // Re-locks the app (back to the PIN gate) if it's been backgrounded for 90+ seconds.
 // Deliberate, using the Page Visibility API — not left up to whatever the phone's OS
