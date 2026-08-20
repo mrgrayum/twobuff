@@ -3785,7 +3785,6 @@ async function renderMatchups(){
     </div>` : ''}
 
     <div class="stats-section-header">🥏 Singles</div>
-    <div style="font-size:11.5px; color:var(--ink-soft); margin-bottom:4px;">Tap a player from either side first — the next tap from the other side completes the pairing.</div>
     ${pairedSinglesHtml}
     <div class="matchup-cols">
       <div>
@@ -3806,13 +3805,6 @@ async function renderMatchups(){
         <span style="font-size:10.5px; color:var(--ink-soft); font-weight:700;">Long-press to switch format</span>
       </div>
     ` : ''}
-    <div style="font-size:11.5px; color:var(--ink-soft); margin-bottom:4px;">${
-      state.groupFormat === 'singles'
-        ? 'Stroke-play singles — tap one player on each side. Win = 1 pt, tie = 0.5 each.'
-        : state.groupFormat === 'triples'
-          ? 'Triples — tap three players on each side. Win = 3 pts, tie = 1.5 each.'
-          : 'Doubles — tap two players on each side. Win = 2 pts, tie = 1 each.'
-    }</div>
     ${doublesPairedHtml}
     <div class="matchup-cols">
       <div>
