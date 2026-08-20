@@ -565,9 +565,30 @@ async function deleteAllRsvpForEvent(eventId){
 async function getAllRsvpData(){
   if(state.allRsvpCache) return state.allRsvpCache;
   const map = {}; // eventId -> {playerId: {status, lunch}}
-  await Promise.all(state.events.map(async (ev)=>{
-    map[ev.id] = await loadRsvp(ev.id); // reuses per-event cache if already loaded
-  }));
+  state.events.forEach(ev => { map[ev.id] = {}; });
+  try{
+    const listRes = await window.storage.list('dg_rsvp_', true);
+    const keys = (listRes && listRes.keys) || [];
+    const applyEntry = (key, raw) => {
+      if(!raw) return;
+      // Match against a known event ID rather than trying to parse the key apart —
+      // both event and player IDs can themselves contain underscores, so splitting
+      // dg_rsvp_<eventId>_<playerId> back out would be ambiguous otherwise.
+      const ev = state.events.find(e => key.startsWith('dg_rsvp_' + e.id + '_'));
+      if(!ev) return; // legacy/orphaned key (e.g. a deleted event) — ignore
+      const playerId = key.slice(('dg_rsvp_' + ev.id + '_').length);
+      map[ev.id][playerId] = JSON.parse(raw);
+    };
+    if(listRes && listRes.values){
+      keys.forEach(k => applyEntry(k, listRes.values[k]));
+    } else {
+      const raws = await Promise.all(keys.map(k=>storeGet(k, true)));
+      keys.forEach((k,i) => applyEntry(k, raws[i]));
+    }
+  }catch(e){ /* no rsvp data yet */ }
+  // Populate the per-event cache too, so visiting an event's own detail page
+  // right after Home doesn't trigger a second, redundant fetch for that event.
+  state.events.forEach(ev => { state.rsvpCache[ev.id] = map[ev.id]; });
   state.allRsvpCache = map;
   return map;
 }
