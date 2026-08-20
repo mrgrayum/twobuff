@@ -323,6 +323,7 @@
       </div>
     </div>
     <div style="display:flex; align-items:center; gap:14px;">
+      <button class="settings-gear" onclick="hardRefresh()" aria-label="Refresh">🔄</button>
       <button class="settings-gear" onclick="openSettingsModal()" aria-label="Settings">⚙️</button>
       <div class="admin-toggle">
         Admin
@@ -499,35 +500,74 @@ async function loadEvents(){
 async function saveEvents(){
   await storeSet('dg_events', JSON.stringify(state.events), true);
 }
+// RSVPs are stored one key PER PLAYER PER EVENT (dg_rsvp_<eventId>_<playerId>) rather
+// than one shared blob per event. This means two different people RSVPing at the same
+// moment write to entirely different keys and can never overwrite each other — the only
+// remaining collision is two writes to the exact same person's own entry at the same
+// instant, which is an accepted, much narrower edge case.
 async function loadRsvp(eventId){
   if(state.rsvpCache[eventId]) return state.rsvpCache[eventId];
-  const raw = await storeGet('dg_rsvp_' + eventId, true);
-  const data = raw ? JSON.parse(raw) : {};
+  const prefix = 'dg_rsvp_' + eventId + '_';
+  const data = {};
+  try{
+    const listRes = await window.storage.list(prefix, true);
+    const keys = (listRes && listRes.keys) || [];
+    if(listRes && listRes.values){
+      keys.forEach(k=>{
+        const raw = listRes.values[k];
+        if(raw) data[k.slice(prefix.length)] = JSON.parse(raw);
+      });
+    } else {
+      const raws = await Promise.all(keys.map(k=>storeGet(k, true)));
+      keys.forEach((k,i)=>{
+        if(!raws[i]) return;
+        data[k.slice(prefix.length)] = JSON.parse(raws[i]);
+      });
+    }
+    // One-time migration: RSVPs used to be saved as a single blob under the bare event
+    // key (no trailing player id). If no per-player keys were found but that legacy blob
+    // exists, adopt its data now and quietly split it into per-player keys in the
+    // background so existing responses aren't orphaned by the new storage scheme.
+    if(Object.keys(data).length === 0){
+      const legacyRaw = await storeGet('dg_rsvp_' + eventId, true);
+      if(legacyRaw){
+        const legacyData = JSON.parse(legacyRaw);
+        Object.keys(legacyData).forEach(pid => { data[pid] = legacyData[pid]; });
+        Promise.all(Object.keys(legacyData).map(pid =>
+          storeSet('dg_rsvp_' + eventId + '_' + pid, JSON.stringify(legacyData[pid]), true)
+        )).then(() => window.storage.delete('dg_rsvp_' + eventId, true)).catch(()=>{});
+      }
+    }
+  }catch(e){ /* no rsvp entries yet for this event */ }
   state.rsvpCache[eventId] = data;
   return data;
 }
-async function saveRsvp(eventId, data){
-  state.rsvpCache[eventId] = data;
-  if(state.allRsvpCache) state.allRsvpCache[eventId] = data; // keep the bulk cache in sync
-  await storeSet('dg_rsvp_' + eventId, JSON.stringify(data), true);
+// Writes exactly ONE player's RSVP entry — never touches anyone else's key.
+async function saveRsvpEntry(eventId, playerId, entry){
+  if(!state.rsvpCache[eventId]) state.rsvpCache[eventId] = {};
+  state.rsvpCache[eventId][playerId] = entry;
+  if(state.allRsvpCache){
+    if(!state.allRsvpCache[eventId]) state.allRsvpCache[eventId] = {};
+    state.allRsvpCache[eventId][playerId] = entry;
+  }
+  await storeSet('dg_rsvp_' + eventId + '_' + playerId, JSON.stringify(entry), true);
+}
+// Deletes every per-player RSVP key for an event (used when the whole event is removed).
+async function deleteAllRsvpForEvent(eventId){
+  try{
+    const prefix = 'dg_rsvp_' + eventId + '_';
+    const listRes = await window.storage.list(prefix, true);
+    const keys = (listRes && listRes.keys) || [];
+    await Promise.all(keys.map(k => window.storage.delete(k, true).catch(()=>{})));
+  }catch(err){ /* nothing to delete */ }
+  try{ await window.storage.delete('dg_rsvp_' + eventId, true); }catch(err){ /* legacy key may not exist */ }
 }
 async function getAllRsvpData(){
   if(state.allRsvpCache) return state.allRsvpCache;
-  const listRes = await window.storage.list('dg_rsvp_', true);
-  const keys = (listRes && listRes.keys) || [];
-  const map = {};
-  if(listRes && listRes.values){
-    keys.forEach(k=>{
-      const raw = listRes.values[k];
-      if(raw) map[k.slice('dg_rsvp_'.length)] = JSON.parse(raw);
-    });
-  } else {
-    const raws = await Promise.all(keys.map(k=>storeGet(k, true)));
-    keys.forEach((k,i)=>{
-      if(!raws[i]) return;
-      map[k.slice('dg_rsvp_'.length)] = JSON.parse(raws[i]);
-    });
-  }
+  const map = {}; // eventId -> {playerId: {status, lunch}}
+  await Promise.all(state.events.map(async (ev)=>{
+    map[ev.id] = await loadRsvp(ev.id); // reuses per-event cache if already loaded
+  }));
   state.allRsvpCache = map;
   return map;
 }
@@ -636,6 +676,43 @@ function getDoublesBucket(ms){
 }
 
 /* ============================= INIT ============================= */
+// A deliberate, full page reload — available to everyone in the topbar. Chosen over
+// selectively clearing individual in-memory caches (rsvpCache, statsCache, etc.) because
+// a real reload can't have a bug where one cache gets missed and gives false confidence
+// that the data on screen is current when it isn't.
+function hardRefresh(){
+  location.reload();
+}
+// Re-locks the app (back to the PIN gate) if it's been backgrounded for 90+ seconds.
+// Deliberate, using the Page Visibility API — not left up to whatever the phone's OS
+// happens to do with the underlying process while the app is out of view.
+const LOCK_GRACE_MS = 90 * 1000; // ~90 seconds
+let _backgroundedAt = null;
+document.addEventListener('visibilitychange', () => {
+  if(document.hidden){
+    _backgroundedAt = Date.now();
+  } else if(_backgroundedAt !== null){
+    const awayMs = Date.now() - _backgroundedAt;
+    _backgroundedAt = null;
+    if(awayMs >= LOCK_GRACE_MS && state.loaded) relockApp();
+  }
+});
+function relockApp(){
+  state.adminMode = false;
+  state.isSuperAdmin = false;
+  closeModal();
+  const gate = document.getElementById('appGate');
+  const main = document.getElementById('mainApp');
+  const input = document.getElementById('app_pin_input');
+  const error = document.getElementById('app_pin_error');
+  if(gate) gate.style.display = ''; // clear the inline override so the CSS default (flex) shows again
+  if(main) main.style.visibility = 'hidden';
+  if(input) input.value = '';
+  if(error) error.style.display = 'none';
+  const adminSwitch = document.getElementById('adminSwitch');
+  if(adminSwitch) adminSwitch.classList.toggle('on', false);
+  if(input) input.focus();
+}
 async function init(){
   await Promise.all([loadPlayers(), loadEvents()]);
   state.loaded = true;
@@ -669,11 +746,25 @@ async function submitAppPin(){
     document.getElementById('appGate').style.display = 'none';
     document.getElementById('mainApp').style.visibility = 'visible';
     if(state.adminMode) showToast(state.isSuperAdmin ? 'Super admin unlocked' : 'Admin mode unlocked');
+    // Entering the PIN is the one moment this app is guaranteed to fetch fresh data —
+    // this is what makes the 90s auto re-lock actually meaningful, rather than just
+    // re-asking for the same PIN while showing the exact same stale data underneath.
+    await refreshAllData();
     render();
   } else {
     document.getElementById('app_pin_error').style.display = 'block';
     showToast('Incorrect PIN');
   }
+}
+// Clears every in-memory cache and re-fetches the core data, without a full page
+// reload (which would just re-trigger the PIN gate and create a loop).
+async function refreshAllData(){
+  state.rsvpCache = {};
+  state.allRsvpCache = null;
+  state.statsCache = {};
+  state.allStatsCache = null;
+  state.matchupStateCache = null;
+  await Promise.all([loadPlayers(), loadEvents()]);
 }
 
 // Both PINs live in shared storage so they can be changed without editing code.
@@ -1294,7 +1385,7 @@ async function performRemoveSeason(season){
   state.events = state.events.filter(e=>effectiveSeason(e)!==season);
   await saveEvents();
   for(const e of toRemove){
-    try{ await window.storage.delete('dg_rsvp_' + e.id, true); }catch(err){ /* key may not exist */ }
+    await deleteAllRsvpForEvent(e.id);
     try{ await window.storage.delete('dg_stats_' + e.id, true); }catch(err){ /* key may not exist */ }
     try{ await window.storage.delete('dg_teamresult_' + e.id, true); }catch(err){ /* key may not exist */ }
     delete state.rsvpCache[e.id];
@@ -1407,7 +1498,7 @@ async function saveEventFromModal(existingId){
 async function deleteEvent(id){
   state.events = state.events.filter(e=>e.id!==id);
   await saveEvents();
-  try{ await window.storage.delete('dg_rsvp_' + id, true); }catch(err){}
+  await deleteAllRsvpForEvent(id);
   try{ await window.storage.delete('dg_stats_' + id, true); }catch(err){}
   try{ await window.storage.delete('dg_teamresult_' + id, true); }catch(err){}
   delete state.rsvpCache[id];
@@ -1633,14 +1724,14 @@ async function setRsvpStatus(eventId, playerId, status){
   cur.status = (cur.status === status) ? 'none' : status;
   rsvp[playerId] = cur;
   render();
-  saveRsvp(eventId, rsvp).catch(err=>console.error('RSVP save failed', err));
+  saveRsvpEntry(eventId, playerId, cur).catch(err=>console.error('RSVP save failed', err));
 }
 async function setLunchItem(eventId, playerId, value){
   const rsvp = await loadRsvp(eventId);
   const cur = rsvp[playerId] || {status:'none', lunch:''};
   cur.lunch = value;
   rsvp[playerId] = cur;
-  await saveRsvp(eventId, rsvp);
+  await saveRsvpEntry(eventId, playerId, cur);
   showToast('Lunch item saved');
 }
 function blankResultEntry(kind){
@@ -3113,17 +3204,12 @@ async function performDeletePlayer(id){
   state.players = state.players.filter(p=>p.id!==id);
   await savePlayers();
   try{
-    const rsvpList = await window.storage.list('dg_rsvp_', true);
-    for(const k of ((rsvpList && rsvpList.keys) || [])){
-      const raw = await storeGet(k, true);
-      if(!raw) continue;
-      const data = JSON.parse(raw);
-      if(data[id] !== undefined){
-        delete data[id];
-        await storeSet(k, JSON.stringify(data), true);
-        state.rsvpCache[k.slice('dg_rsvp_'.length)] = data;
-      }
-    }
+    await Promise.all(state.events.map(async (ev)=>{
+      const key = 'dg_rsvp_' + ev.id + '_' + id;
+      try{ await window.storage.delete(key, true); }catch(err){ /* no rsvp entry for this player at this event */ }
+      if(state.rsvpCache[ev.id]) delete state.rsvpCache[ev.id][id];
+      if(state.allRsvpCache && state.allRsvpCache[ev.id]) delete state.allRsvpCache[ev.id][id];
+    }));
     const statsList = await window.storage.list('dg_stats_', true);
     for(const k of ((statsList && statsList.keys) || [])){
       const raw = await storeGet(k, true);
