@@ -1806,10 +1806,21 @@ async function setDoublesScore(eventId, tbId, side, value){
   const existing = cur.doubles || blankResultEntry('doubles');
   if(!existing.played) return;
   const num = value === '' ? null : Number(value);
-  if(side === 'our') existing.ourScore = (num===null || isNaN(num)) ? null : num;
-  else existing.oppScore = (num===null || isNaN(num)) ? null : num;
+  const parsed = (num===null || isNaN(num)) ? null : num;
+  if(side === 'our') existing.ourScore = parsed;
+  else existing.oppScore = parsed;
   cur.doubles = existing;
   stats[tbId] = cur;
+  // Both partners hold their own mirrored copy of the same shared team score — keep them in sync.
+  const partnerId = existing.partnerId;
+  if(partnerId){
+    const curPartner = stats[partnerId] || {};
+    const partnerEntry = { ...(curPartner.doubles || blankResultEntry('doubles')) };
+    if(side === 'our') partnerEntry.ourScore = parsed;
+    else partnerEntry.oppScore = parsed;
+    curPartner.doubles = partnerEntry;
+    stats[partnerId] = curPartner;
+  }
   render();
   saveStats(eventId, stats).catch(err=>console.error('Score save failed', err));
 }
@@ -1819,9 +1830,18 @@ async function setDoublesPlayoffHoles(eventId, tbId, value){
   const existing = cur.doubles || blankResultEntry('doubles');
   if(!existing.played) return;
   const num = value === '' ? null : Math.max(1, Number(value));
-  existing.playoffHoles = (num===null || isNaN(num)) ? null : num;
+  const parsed = (num===null || isNaN(num)) ? null : num;
+  existing.playoffHoles = parsed;
   cur.doubles = existing;
   stats[tbId] = cur;
+  const partnerId = existing.partnerId;
+  if(partnerId){
+    const curPartner = stats[partnerId] || {};
+    const partnerEntry = { ...(curPartner.doubles || blankResultEntry('doubles')) };
+    partnerEntry.playoffHoles = parsed;
+    curPartner.doubles = partnerEntry;
+    stats[partnerId] = curPartner;
+  }
   render();
   saveStats(eventId, stats).catch(err=>console.error('Playoff holes save failed', err));
 }
@@ -1830,9 +1850,17 @@ async function setPowerRank(eventId, playerId, kind, value){
   const cur = stats[playerId] || {};
   const existing = cur[kind] || {played:false, result:null, powerRank:null};
   if(!existing.played) return;
-  existing.powerRank = Math.max(1, Math.min(10, Number(value) || 5));
+  const rankValue = Math.max(1, Math.min(10, Number(value) || 5));
+  existing.powerRank = rankValue;
   cur[kind] = existing;
   stats[playerId] = cur;
+  if(kind === 'doubles' && existing.partnerId){
+    const curPartner = stats[existing.partnerId] || {};
+    const partnerEntry = { ...(curPartner.doubles || blankResultEntry('doubles')) };
+    partnerEntry.powerRank = rankValue;
+    curPartner.doubles = partnerEntry;
+    stats[existing.partnerId] = curPartner;
+  }
   render();
   saveStats(eventId, stats).catch(err=>console.error('Power rank save failed', err));
 }
@@ -2924,6 +2952,7 @@ async function getOpponentPlayerHistory(oppPlayerId){
     const ev = state.events.find(e=>e.id===eventId);
     if(!ev) return; // event deleted
     const data = allData[eventId];
+    const countedDoublesFor = new Set(); // avoid listing the same doubles match twice (once per partner)
     Object.keys(data).forEach(ourPlayerId=>{
       if(ourPlayerId === '__adjustments') return; // not a player entry
       const s = data[ourPlayerId];
@@ -2934,7 +2963,9 @@ async function getOpponentPlayerHistory(oppPlayerId){
         history.push({ event: ev, kind:'matchplay', result: mp.result, ourPlayerName, partnerName: null });
       }
       const db = s.doubles;
-      if(db && db.played && (db.opp1Id === oppPlayerId || db.opp2Id === oppPlayerId)){
+      if(db && db.played && (db.opp1Id === oppPlayerId || db.opp2Id === oppPlayerId) && !countedDoublesFor.has(ourPlayerId)){
+        countedDoublesFor.add(ourPlayerId);
+        if(db.partnerId) countedDoublesFor.add(db.partnerId);
         history.push({ event: ev, kind:'doubles', result: db.result, ourPlayerName, partnerName: db.partnerName || null });
       }
     });
@@ -3863,7 +3894,11 @@ async function clearDoublesResultIfExists(eventId, tbId){
   const stats = await loadStats(eventId);
   const cur = stats[tbId];
   if(cur && cur.doubles && cur.doubles.played){
+    const partnerId = cur.doubles.partnerId;
     cur.doubles = blankResultEntry('doubles');
+    if(partnerId && stats[partnerId] && stats[partnerId].doubles){
+      stats[partnerId].doubles = blankResultEntry('doubles');
+    }
     render();
     saveStats(eventId, stats).catch(err=>console.error('Result clear failed', err));
   }
@@ -3888,25 +3923,33 @@ async function recordSinglesResult(eventId, tbId, oppId, result){
 async function recordDoublesResult(eventId, tbId1, tbId2, oppId1, oppId2, result){
   const teams = await loadOppTeams();
   const team = teams.find(t=>t.id === (state.matchupStateCache && state.matchupStateCache.currentTeamId));
-  const partner = state.players.find(p=>p.id===tbId2);
+  const p1 = state.players.find(p=>p.id===tbId1);
+  const p2 = state.players.find(p=>p.id===tbId2);
   const opp1 = team && team.players.find(p=>p.id===oppId1);
   const opp2 = team && team.players.find(p=>p.id===oppId2);
   const stats = await loadStats(eventId);
-  const cur = stats[tbId1] || {};
-  const existing = cur.doubles || blankResultEntry('doubles');
+  const cur1 = stats[tbId1] || {};
+  const existing = cur1.doubles || blankResultEntry('doubles');
+  let entryFor1, entryFor2;
   if(existing.played && existing.result === result){
-    cur.doubles = blankResultEntry('doubles'); // tap again to clear
+    entryFor1 = blankResultEntry('doubles'); // tap again to clear
+    entryFor2 = blankResultEntry('doubles');
   } else {
-    cur.doubles = {
+    const shared = {
       played:true, result,
       powerRank: existing.powerRank || 5,
-      partnerId: tbId2, partnerName: partner ? partner.name : '',
       opp1Id: oppId1, opp1Name: opp1 ? opp1.name : '',
       opp2Id: oppId2, opp2Name: opp2 ? opp2.name : '',
       ourScore: existing.ourScore ?? null, oppScore: existing.oppScore ?? null, playoffHoles: existing.playoffHoles ?? null
     };
+    entryFor1 = { ...shared, partnerId: tbId2, partnerName: p2 ? p2.name : '' };
+    entryFor2 = { ...shared, partnerId: tbId1, partnerName: p1 ? p1.name : '' };
   }
-  stats[tbId1] = cur;
+  cur1.doubles = entryFor1;
+  stats[tbId1] = cur1;
+  const cur2 = stats[tbId2] || {};
+  cur2.doubles = entryFor2;
+  stats[tbId2] = cur2;
   render();
   saveStats(eventId, stats).catch(err=>console.error('Result save failed', err));
 }
