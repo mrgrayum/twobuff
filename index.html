@@ -3061,7 +3061,7 @@ async function renderPlayerHistoryHtml(playerId){
       if(scoreText) bits.push(esc(scoreText));
       detail = bits.length ? ' · ' + bits.join(' ') : '';
     }
-    return `<span class="pill" style="background:${bg}; color:${color}; margin-left:6px;">${label} ${entry.result}${detail}</span>`;
+    return `<span class="pill" style="background:${bg}; color:${color};">${label} ${entry.result}${detail}</span>`;
   };
   return history.map(h=>{
     const d = fmtDate(h.event.date);
@@ -3074,12 +3074,12 @@ async function renderPlayerHistoryHtml(playerId){
     }
     const matchupTitle = formatMatchupTitle(h.event, oppLabel);
     return `
-      <div style="display:flex; justify-content:space-between; align-items:center; padding:9px 2px; border-top:1px solid var(--line);">
-        <div>
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; padding:9px 2px; border-top:1px solid var(--line);">
+        <div style="flex:1; min-width:0;">
           <div style="font-size:13px; font-weight:800;">${esc(matchupTitle)}</div>
           <div style="font-size:10.5px; color:var(--ink-soft); font-weight:700;">${d.mon} ${d.day}</div>
         </div>
-        <div>${resultPill('Singles', h.matchplay)}${resultPill('Doubles', h.doubles)}</div>
+        <div style="flex-shrink:0; display:flex; flex-wrap:wrap; justify-content:flex-end; gap:4px;">${resultPill('Singles', h.matchplay)}${resultPill('Doubles', h.doubles)}</div>
       </div>`;
   }).join('') + `<button class="btn btn-outline btn-sm" style="width:100%; margin-top:12px;" onclick="event.stopPropagation(); sharePlayerCard('${playerId}')">⬇️ Share Image</button>`;
 }
