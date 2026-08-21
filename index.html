@@ -291,11 +291,6 @@
     padding:10px 12px; margin-bottom:8px; font-size:13.5px; font-weight:700; color:var(--ink); cursor:pointer;
     -webkit-user-select:none; user-select:none; -webkit-touch-callout:none;
   }
-  .chip-expand-btn{
-    flex-shrink:0; width:38px; align-self:stretch; background:#fff; border:2px solid var(--line); border-radius:12px;
-    font-size:13px; font-weight:800; color:var(--ink-soft); cursor:pointer; -webkit-user-select:none; user-select:none; -webkit-touch-callout:none;
-  }
-  .chip-expand-btn.open{background:var(--chip-bg); color:var(--forest); border-color:var(--forest);}
   .matchup-chip.armed{background:var(--orange); border-color:var(--orange); color:#fff;}
   .matchup-chip.paired{background:#E1E8F5; border-color:var(--forest); color:var(--forest);}
   .matchup-chip .sub{display:block; font-size:10.5px; font-weight:700; opacity:0.8; margin-top:2px;}
@@ -3699,7 +3694,6 @@ async function renderMatchups(){
           <button class="matchup-chip paired" style="margin:0; flex:1;" ${state.adminMode ? `onclick="tapSinglesTB('${tbId}')"` : 'disabled'}>${esc(tb.name)} ${genderBadgeHtml(tb)}${tbInfo ? `<span class="sub">${esc(tbInfo)}</span>` : ''}</button>
           ${singlesConnector(tbId, opp.id, resultKey)}
           <button class="matchup-chip opp-paired" style="margin:0; flex:1;" ${state.adminMode ? `onmousedown="startOppLongPress('${opp.id}')" onmouseup="cancelOppLongPress()" onmouseleave="cancelOppLongPress()" ontouchstart="startOppLongPress('${opp.id}')" ontouchend="cancelOppLongPress()" ontouchmove="cancelOppLongPress()" onclick="handleOppChipClick(event, '${opp.id}')"` : 'disabled'}>${esc(opp.name)} ${genderBadgeHtml(opp)}${oppInfo ? `<span class="sub">${esc(oppInfo)}</span>` : ''}</button>
-          ${state.adminMode ? `<button class="chip-expand-btn ${state.expandedMockupOppId===opp.id?'open':''}" onclick="event.stopPropagation(); toggleExpandMockupOpp('${opp.id}')" aria-label="Notes & suggestions">${state.expandedMockupOppId===opp.id ? '▲' : '▼'}</button>` : ''}
           ${state.adminMode ? `<button class="icon-btn" onclick="unpairSingles('${tbId}')">✕</button>` : ''}
         </div>
         ${renderOppMockupExpansion(opp)}
@@ -3716,10 +3710,7 @@ async function renderMatchups(){
   const oppSinglesChips = availableOpp.length ? availableOpp.map(o=>{
     const isArmed = state.armedSinglesOpp === o.id;
     const info = compactPlayerInfoLine(o);
-    const isOpen = state.expandedMockupOppId === o.id;
-    const chip = `<button class="matchup-chip ${isArmed?'armed':''}" style="margin:0; flex:1;" ${state.adminMode ? `onmousedown="startOppLongPress('${o.id}')" onmouseup="cancelOppLongPress()" onmouseleave="cancelOppLongPress()" ontouchstart="startOppLongPress('${o.id}')" ontouchend="cancelOppLongPress()" ontouchmove="cancelOppLongPress()" onclick="handleOppChipClick(event, '${o.id}')"` : 'disabled'}>${esc(o.name)} ${genderBadgeHtml(o)}${info ? `<span class="sub">${esc(info)}</span>` : ''}${isArmed ? `<span class="sub">← Tap a Two Buff player</span>` : ''}</button>`;
-    const chevron = state.adminMode ? `<button class="chip-expand-btn ${isOpen?'open':''}" onclick="event.stopPropagation(); toggleExpandMockupOpp('${o.id}')" aria-label="Notes & suggestions">${isOpen ? '▲' : '▼'}</button>` : '';
-    return `<div style="display:flex; gap:4px; align-items:stretch; margin-bottom:8px;">${chip}${chevron}</div>${renderOppMockupExpansion(o)}`;
+    return `<button class="matchup-chip ${isArmed?'armed':''}" ${state.adminMode ? `onmousedown="startOppLongPress('${o.id}')" onmouseup="cancelOppLongPress()" onmouseleave="cancelOppLongPress()" ontouchstart="startOppLongPress('${o.id}')" ontouchend="cancelOppLongPress()" ontouchmove="cancelOppLongPress()" onclick="handleOppChipClick(event, '${o.id}')"` : 'disabled'}>${esc(o.name)} ${genderBadgeHtml(o)}${info ? `<span class="sub">${esc(info)}</span>` : ''}${isArmed ? `<span class="sub">← Tap a Two Buff player</span>` : ''}</button>${renderOppMockupExpansion(o)}`;
   }).join('') : `<div style="font-size:12.5px; color:var(--ink-soft); text-align:center; padding:10px 0;">${currentTeam.players.length ? 'All matched up' : 'No players on this roster yet'}</div>`;
 
   // ---- Doubles: now a real doubles-vs-doubles matchup (tap two on each side) ----
