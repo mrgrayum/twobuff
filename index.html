@@ -3754,7 +3754,10 @@ async function renderMatchups(){
           const tb = state.players.find(p=>p.id===tbId);
           if(!tb) return '';
           const isPaired = singles[tbId] !== undefined;
-          return `<button class="matchup-chip" style="margin:3px; ${isPaired ? 'opacity:0.45; cursor:not-allowed;' : ''}" ${isPaired ? 'disabled' : `onclick="quickPairSinglesFromSuggestion('${tbId}','${player.id}')"`}><span class="suggest-rank">${idx+1}</span> ${esc(tb.name)}${isPaired ? '<span class="sub">Already paired</span>' : ''}</button>`;
+          const isBenched = benchedSingles.has(tbId);
+          const unavailable = isPaired || isBenched;
+          const reason = isPaired ? 'Already paired' : isBenched ? 'Sitting out' : '';
+          return `<button class="matchup-chip" style="margin:3px; ${unavailable ? 'opacity:0.45; cursor:not-allowed;' : ''}" ${unavailable ? 'disabled' : `onclick="quickPairSinglesFromSuggestion('${tbId}','${player.id}')"`}><span class="suggest-rank">${idx+1}</span> ${esc(tb.name)}${reason ? `<span class="sub">${reason}</span>` : ''}</button>`;
         }).join('') : `<div style="font-size:12px; color:var(--ink-soft);">No suggested matchups set yet.</div>`;
         inner += `<div style="font-size:11px; font-weight:800; color:var(--ink-soft); text-transform:uppercase; margin-bottom:6px;">Suggested Matchups</div>
           <div style="display:flex; flex-wrap:wrap;">${suggestionsHtml}</div>
@@ -4200,15 +4203,18 @@ function toggleMatchupCard(playerId, format){
   state.expandedMatchupKey = (state.expandedMatchupKey === key) ? null : key;
   render();
 }
-// One-tap shortcut from a suggested-matchup chip. Only ever called on a player who is
-// already confirmed unpaired (the chip is disabled otherwise), so no guard is needed
-// beyond freeing the opponent's own prior pairing, if any.
+// One-tap shortcut from a suggested-matchup chip. The chip is disabled when the player is
+// already paired or sitting out singles, but we guard here too as a safety net.
 async function quickPairSinglesFromSuggestion(tbId, oppId){
   const ms = state.matchupStateCache || await loadMatchupState();
   state.matchupStateCache = ms;
   const singles = getSinglesBucket(ms);
   if(singles[tbId] !== undefined){ showToast('That player is already matched up'); render(); return; }
   const eventId = ms.eventIdByTeam[ms.currentTeamId];
+  if(eventId){
+    const bench = await loadBench(eventId);
+    if(bench.singles.includes(tbId)){ showToast('That player is sitting out singles'); render(); return; }
+  }
   const existingTbId = Object.keys(singles).find(tid => singles[tid] === oppId);
   if(existingTbId){
     delete singles[existingTbId];
