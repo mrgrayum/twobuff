@@ -3591,6 +3591,15 @@ async function renderMatchups(){
   const selectedEvent = selectedEventId ? state.events.find(e=>e.id===selectedEventId) : null;
   const eventStats = selectedEventId ? await loadStats(selectedEventId) : null;
 
+  // Once a specific event is selected, the Two Buff pool is limited to players who are
+  // actually available for it — anyone who RSVP'd "Out" (declined) is dropped. Players who
+  // said in/maybe, or who haven't responded at all, stay. For a generic mockup (no event
+  // selected) the full active roster shows. The opponent side is always the full team.
+  const eventRsvp = selectedEventId ? await loadRsvp(selectedEventId) : null;
+  const eligibleTB = eventRsvp
+    ? activeTB.filter(p => !(eventRsvp[p.id] && eventRsvp[p.id].status === 'declined'))
+    : activeTB;
+
   const eventPillsHtml = linkedEvents.length ? `
     <div class="season-tabs">
       ${linkedEvents.map(e=>{
@@ -3614,7 +3623,7 @@ async function renderMatchups(){
   const singles = getSinglesBucket(ms);
   const usedOppIds = new Set(Object.values(singles));
   const availableOpp = currentTeam.players.filter(p=>!usedOppIds.has(p.id));
-  const availableTB = activeTB.filter(p=>singles[p.id] === undefined);
+  const availableTB = eligibleTB.filter(p=>singles[p.id] === undefined);
 
   const singlesConnector = (tbId, oppId, key) => {
     let statusEmoji = '';
@@ -3716,7 +3725,7 @@ async function renderMatchups(){
   const doubles = getDoublesBucket(ms);
   const pairedTBIds = new Set(doubles.flatMap(m=>m.tb));
   const pairedOppIds = new Set(doubles.flatMap(m=>m.opp));
-  const availableDoublesTB = activeTB.filter(p=>!pairedTBIds.has(p.id));
+  const availableDoublesTB = eligibleTB.filter(p=>!pairedTBIds.has(p.id));
   const availableDoublesOpp = currentTeam.players.filter(p=>!pairedOppIds.has(p.id));
 
   const doublesConnector = (m, key) => {
