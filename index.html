@@ -3974,7 +3974,7 @@ async function renderMatchups(){
     ${resultBannerHtml}
     ${state.adminMode ? `
     <div class="btn-row" style="margin:6px 0 4px;">
-      <button class="btn btn-ghost btn-sm" onclick="resetMatchup()">↺ Reset Board</button>
+      <button class="btn btn-ghost btn-sm" onclick="confirmResetMatchup()">↺ Reset Board</button>
     </div>` : ''}
 
     <div class="stats-section-header">🥏 Singles</div>
@@ -4046,17 +4046,54 @@ async function selectMockupEvent(teamId, eventId){
   render();
   saveMatchupState(ms).catch(err=>console.error('Matchup save failed', err));
 }
-async function resetMatchup(){
-  // Only clears whichever pairing arrangement is currently on screen — trial pairings and
-  // event-linked pairings live in separate buckets, so this never touches the other one.
-  // Any results already recorded against the selected event are real season data and are
-  // left completely untouched.
+async function confirmResetMatchup(){
+  const ms = state.matchupStateCache || await loadMatchupState();
+  state.matchupStateCache = ms;
+  const eventId = ms.currentTeamId ? ms.eventIdByTeam[ms.currentTeamId] : null;
+  // Detect whether this event has any recorded results/adjustments to warn about.
+  let hasResults = false;
+  if(eventId){
+    const stats = await loadStats(eventId);
+    hasResults = Object.keys(stats).some(k=>{
+      if(k === '__adjustments') return Array.isArray(stats[k]) && stats[k].length > 0;
+      const s = stats[k];
+      return (s.matchplay && s.matchplay.played) || (s.doubles && s.doubles.played);
+    });
+  }
+  const modal = document.getElementById('modalRoot');
+  modal.innerHTML = `
+    <div class="overlay" onclick="closeModalIfBackdrop(event)">
+      <div class="sheet" onclick="event.stopPropagation()">
+        <h3>Reset the board?</h3>
+        <div style="font-size:13px; color:var(--ink); line-height:1.5; margin-bottom:8px;">
+          This clears every matchup, the sitting-out lineup, and all inputs for ${eventId ? 'this event' : 'this mockup'}.
+        </div>
+        ${hasResults ? `<div style="font-size:12.5px; color:var(--red); font-weight:700; line-height:1.5; margin-bottom:14px;">⚠️ Recorded match results and scores for this event will also be reset. This can't be undone.</div>` : `<div style="font-size:12.5px; color:var(--ink-soft); line-height:1.5; margin-bottom:14px;">Nothing has been recorded yet, so this just clears the arrangement.</div>`}
+        <div class="btn-row">
+          <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+          <button class="btn btn-danger" onclick="performResetMatchup()">Reset Board</button>
+        </div>
+      </div>
+    </div>`;
+}
+async function performResetMatchup(){
+  // Full wipe of the current board: pairings, the sitting-out bench, AND any recorded
+  // results/scores/adjustments for the selected event. Trial (mockup) mode has no stored
+  // results, so it only clears the on-screen arrangement.
   const ms = state.matchupStateCache || await loadMatchupState();
   if(ms.currentTeamId){
     const eventId = ms.eventIdByTeam[ms.currentTeamId];
     if(eventId){
       ms.singlesByEvent[eventId] = {};
       ms.doublesByEvent[eventId] = [];
+      const emptyBench = { singles: [], doubles: [] };
+      state.benchCache[eventId] = emptyBench;
+      saveBench(eventId, emptyBench).catch(err=>console.error('Bench reset failed', err));
+      // Wipe all recorded results/scores/adjustments for this event.
+      const emptyStats = {};
+      state.statsCache[eventId] = emptyStats;
+      if(state.allStatsCache) state.allStatsCache[eventId] = emptyStats;
+      saveStats(eventId, emptyStats).catch(err=>console.error('Stats reset failed', err));
     } else {
       ms.singlesByTeam[ms.currentTeamId] = {};
       ms.doublesByTeam[ms.currentTeamId] = [];
@@ -4066,8 +4103,10 @@ async function resetMatchup(){
   state.armedSinglesOpp = null;
   state.armedDoublesTBPair = [];
   state.armedDoublesOppPair = [];
+  state.expandedMatchupKey = null;
   state.matchupStateCache = ms;
-  showToast('Matchup board reset');
+  closeModal();
+  showToast('Board reset');
   render();
   saveMatchupState(ms).catch(err=>console.error('Matchup save failed', err));
 }
