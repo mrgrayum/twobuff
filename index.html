@@ -638,9 +638,46 @@ async function toggleBench(playerId, format){
   const bench = await loadBench(eventId);
   const list = format === 'doubles' ? bench.doubles : bench.singles;
   const i = list.indexOf(playerId);
-  if(i === -1) list.push(playerId); else list.splice(i, 1);
+  if(i === -1){
+    list.push(playerId);
+    // Benching a player who was already matched up should free that matchup automatically,
+    // so no stale pairing lingers with someone who's sitting the round out.
+    if(format === 'singles') clearSinglesPairingFor(ms, eventId, playerId);
+    else clearDoublesPairingFor(ms, eventId, playerId);
+  } else {
+    list.splice(i, 1);
+  }
   render();
   saveBench(eventId, bench).catch(err=>console.error('Bench save failed', err));
+}
+// Removes any singles pairing involving playerId (as the Two Buff player OR the opponent),
+// clearing the recorded result too. Saves matchup state.
+function clearSinglesPairingFor(ms, eventId, playerId){
+  const singles = getSinglesBucket(ms);
+  let changed = false;
+  Object.keys(singles).forEach(tbId=>{
+    if(tbId === playerId || singles[tbId] === playerId){
+      if(eventId) clearSinglesResultIfExists(eventId, tbId);
+      delete singles[tbId];
+      changed = true;
+    }
+  });
+  if(changed) saveMatchupState(ms).catch(err=>console.error('Matchup save failed', err));
+}
+// Removes any doubles/triples group that includes playerId on either side, clearing the
+// recorded result too. Saves matchup state.
+function clearDoublesPairingFor(ms, eventId, playerId){
+  const doubles = getDoublesBucket(ms);
+  let changed = false;
+  for(let idx = doubles.length - 1; idx >= 0; idx--){
+    const m = doubles[idx];
+    if((m.tb || []).includes(playerId) || (m.opp || []).includes(playerId)){
+      if(eventId && m.tb && m.tb[0]) clearDoublesResultIfExists(eventId, m.tb[0]);
+      doubles.splice(idx, 1);
+      changed = true;
+    }
+  }
+  if(changed) saveMatchupState(ms).catch(err=>console.error('Matchup save failed', err));
 }
 // NOTE: team-level win/loss/score used to be manually entered and stored under
 // dg_teamresult_<eventId>. That's been replaced by computeTeamResult(), which
@@ -3724,12 +3761,20 @@ async function renderMatchups(){
           ${state.adminMode ? `<button class="btn btn-outline btn-sm" style="margin-top:8px;" onclick="openOppPlayerEditModal('${currentTeam.id}','${player.id}')">✏️ Edit Notes &amp; Suggestions</button>` : ''}`;
       }
     }
-    // Sit-out toggle, scoped to the section's format. Only available with an event selected.
+    // Sit-out toggle, scoped to the section's format. Only available with an event
+    // selected AND when the player isn't already paired in that format — benching is a
+    // "who's playing" decision made before matchups are formed.
+    const isPairedInFormat = (id) => {
+      if(format === 'singles') return singles[id] !== undefined || Object.values(singles).includes(id);
+      return getDoublesBucket(ms).some(m => (m.tb || []).includes(id) || (m.opp || []).includes(id));
+    };
     const fmtLabel = format === 'doubles' ? 'Doubles' : 'Singles';
     let benchBtn = '';
     if(state.adminMode){
       if(!selectedEventId){
         benchBtn = `<div style="font-size:10.5px; color:var(--ink-soft); margin-top:${isOpponent ? '8' : '0'}px;">Select an event to set the lineup.</div>`;
+      } else if(isPairedInFormat(player.id)){
+        benchBtn = '';
       } else {
         const benched = (format === 'doubles' ? benchedDoubles : benchedSingles).has(player.id);
         benchBtn = `<button class="btn ${benched ? 'btn-primary' : 'btn-outline'} btn-sm" style="width:100%; margin-top:${isOpponent ? '8' : '0'}px;" onclick="toggleBench('${player.id}','${format}')">${benched ? `↩️ Back in ${fmtLabel}` : `🪑 Sit out ${fmtLabel}`}</button>`;
@@ -3882,17 +3927,27 @@ async function renderMatchups(){
     const ids = format === 'doubles' ? bench.doubles : bench.singles;
     if(!ids.length) return '';
     const fmtLabel = format === 'doubles' ? 'doubles' : 'singles';
-    const chips = ids.map(id=>{
+    const chipFor = (id) => {
       const pl = resolveMatchupPlayer(id);
       if(!pl) return '';
-      const isOpp = currentTeam.players.some(x=>x.id===id);
-      const sideTag = isOpp ? esc(currentTeam.name) : 'Two Buff';
-      return `<button class="matchup-chip" style="margin:0 0 6px; opacity:0.8;" ${state.adminMode ? `onclick="toggleBench('${id}','${format}')"` : 'disabled'}>${esc(pl.name)} ${genderBadgeHtml(pl)}<span class="sub">${sideTag} · tap to add back</span></button>`;
-    }).join('');
+      return `<button class="matchup-chip" style="margin:0 0 6px; opacity:0.85;" ${state.adminMode ? `onclick="toggleBench('${id}','${format}')"` : 'disabled'}>${esc(pl.name)} ${genderBadgeHtml(pl)}<span class="sub">tap to add back</span></button>`;
+    };
+    const tbBenched = ids.filter(id=>!currentTeam.players.some(x=>x.id===id));
+    const oppBenched = ids.filter(id=>currentTeam.players.some(x=>x.id===id));
+    const emptyCol = `<div style="font-size:11.5px; color:var(--ink-soft); text-align:center; padding:8px 0;">—</div>`;
     return `
       <div style="margin-top:10px; padding:10px 12px; background:var(--chip-bg); border-radius:12px;">
         <div style="font-size:11px; font-weight:800; color:var(--ink-soft); text-transform:uppercase; letter-spacing:0.3px; margin-bottom:8px;">🪑 Sitting out ${fmtLabel}</div>
-        ${chips}
+        <div class="matchup-cols">
+          <div>
+            <div class="matchup-col-label">Two Buff</div>
+            ${tbBenched.length ? tbBenched.map(chipFor).join('') : emptyCol}
+          </div>
+          <div>
+            <div class="matchup-col-label">${esc(currentTeam.name)}</div>
+            ${oppBenched.length ? oppBenched.map(chipFor).join('') : emptyCol}
+          </div>
+        </div>
       </div>`;
   };
 
