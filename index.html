@@ -421,6 +421,7 @@ const state = {
   currentEventId: null,
   rsvpCache: {},   // eventId -> {playerId: {status, lunch}}
   statsCache: {},  // eventId -> {playerId: {matchplay:{played,result}, doubles:{played,result}}}
+  benchCache: {},  // eventId -> {singles:[ids], doubles:[ids]} — who's present but sitting out each format
   loaded: false,
   selectedSeason: null,   // set on first render of the Events tab
   pastExpanded: {},       // season -> bool, whether the "past events" group is expanded
@@ -432,7 +433,7 @@ const state = {
   armedDoublesOppPair: [], // Matchups: opponent players being grouped (size depends on groupFormat)
   groupFormat: 'doubles',  // Matchups: 'singles' (1v1 stroke), 'doubles' (2v2), or 'triples' (3v3) — set via long-press
   expandedMockupResultKey: null, // Matchups: which matchup's Won/Lost/quality section is expanded
-  expandedMockupOppId: null, // Matchups: which opponent's notes/suggested-matchups are expanded (long-press)
+  expandedMatchupKey: null, // Matchups: '<format>:<playerId>' — which player's card is open and in which section (singles/doubles)
   expandedOppTeamId: null,   // Teams page: which opponent team is expanded to show its roster
   expandedOppPlayerId: null, // Teams page: which opponent player is expanded to show notes + history
   homeNotesExpanded: false,  // Home: whether the full bulletin board list is expanded past the initial preview
@@ -614,6 +615,32 @@ async function saveStats(eventId, data){
   state.statsCache[eventId] = data;
   if(state.allStatsCache) state.allStatsCache[eventId] = data; // keep shared cache in sync
   await storeSet('dg_stats_' + eventId, JSON.stringify(data), true);
+}
+// Per-event lineup bench: who is present but sitting out a given format. Two independent
+// lists so a player (ours or an opponent) can sit out Singles but still play Doubles, or
+// vice versa. Only meaningful when a specific event is selected on the Matchups page.
+async function loadBench(eventId){
+  if(state.benchCache[eventId]) return state.benchCache[eventId];
+  const raw = await storeGet('dg_bench_' + eventId, true);
+  const parsed = raw ? JSON.parse(raw) : {};
+  const data = { singles: Array.isArray(parsed.singles) ? parsed.singles : [], doubles: Array.isArray(parsed.doubles) ? parsed.doubles : [] };
+  state.benchCache[eventId] = data;
+  return data;
+}
+async function saveBench(eventId, data){
+  state.benchCache[eventId] = data;
+  await storeSet('dg_bench_' + eventId, JSON.stringify(data), true);
+}
+async function toggleBench(playerId, format){
+  const ms = state.matchupStateCache;
+  const eventId = ms && ms.eventIdByTeam[ms.currentTeamId];
+  if(!eventId){ showToast('Select an event first'); return; }
+  const bench = await loadBench(eventId);
+  const list = format === 'doubles' ? bench.doubles : bench.singles;
+  const i = list.indexOf(playerId);
+  if(i === -1) list.push(playerId); else list.splice(i, 1);
+  render();
+  saveBench(eventId, bench).catch(err=>console.error('Bench save failed', err));
 }
 // NOTE: team-level win/loss/score used to be manually entered and stored under
 // dg_teamresult_<eventId>. That's been replaced by computeTeamResult(), which
@@ -856,6 +883,7 @@ async function refreshAllData(){
   state.allRsvpCache = null;
   state.statsCache = {};
   state.allStatsCache = null;
+  state.benchCache = {};
   state.matchupStateCache = null;
   await Promise.all([loadPlayers(), loadEvents()]);
 }
@@ -3600,6 +3628,13 @@ async function renderMatchups(){
     ? activeTB.filter(p => !(eventRsvp[p.id] && eventRsvp[p.id].status === 'declined'))
     : activeTB;
 
+  // Per-event lineup bench (only when a specific event is selected). A player sitting out
+  // Singles still shows in the Doubles pool and vice versa.
+  const bench = selectedEventId ? await loadBench(selectedEventId) : { singles: [], doubles: [] };
+  const benchedSingles = new Set(bench.singles);
+  const benchedDoubles = new Set(bench.doubles);
+  const resolveMatchupPlayer = (id) => activeTB.find(p=>p.id===id) || (currentTeam ? currentTeam.players.find(p=>p.id===id) : null);
+
   const eventPillsHtml = linkedEvents.length ? `
     <div class="season-tabs">
       ${linkedEvents.map(e=>{
@@ -3622,8 +3657,8 @@ async function renderMatchups(){
   // ---- Singles (each opponent team keeps its own independent set of pairings) ----
   const singles = getSinglesBucket(ms);
   const usedOppIds = new Set(Object.values(singles));
-  const availableOpp = currentTeam.players.filter(p=>!usedOppIds.has(p.id));
-  const availableTB = eligibleTB.filter(p=>singles[p.id] === undefined);
+  const availableOpp = currentTeam.players.filter(p=>!usedOppIds.has(p.id) && !benchedSingles.has(p.id));
+  const availableTB = eligibleTB.filter(p=>singles[p.id] === undefined && !benchedSingles.has(p.id));
 
   const singlesConnector = (tbId, oppId, key) => {
     let statusEmoji = '';
@@ -3669,24 +3704,40 @@ async function renderMatchups(){
       </div>`;
   };
 
-  const renderOppMockupExpansion = (opp) => {
-    if(state.expandedMockupOppId !== opp.id) return '';
-    const suggestions = opp.suggestedMatchups || [];
-    const suggestionsHtml = suggestions.length ? suggestions.map((tbId, idx)=>{
-      const tb = state.players.find(p=>p.id===tbId);
-      if(!tb) return '';
-      const isPaired = singles[tbId] !== undefined;
-      const rankBadge = `<span class="suggest-rank">${idx+1}</span> `;
-      return `<button class="matchup-chip" style="margin:3px; ${isPaired ? 'opacity:0.45; cursor:not-allowed;' : ''}" ${isPaired ? 'disabled' : `onclick="quickPairSinglesFromSuggestion('${tbId}','${opp.id}')"`}>${rankBadge}${esc(tb.name)}${isPaired ? '<span class="sub">Already paired</span>' : ''}</button>`;
-    }).join('') : `<div style="font-size:12px; color:var(--ink-soft);">No suggested matchups set yet.</div>`;
-    return `
-      <div style="background:var(--chip-bg); border-radius:12px; padding:10px 12px; margin:4px 0 9px;">
-        ${opp.notes ? `<div style="font-size:12.5px; color:var(--ink); white-space:pre-wrap; line-height:1.5; margin-bottom:8px;">📝 ${esc(opp.notes)}</div>` : `<div style="font-size:12px; color:var(--ink-soft); margin-bottom:8px;">No scouting notes yet.</div>`}
-        <div style="font-size:11px; font-weight:800; color:var(--ink-soft); text-transform:uppercase; margin-bottom:6px;">Suggested Matchups</div>
-        <div style="display:flex; flex-wrap:wrap;">${suggestionsHtml}</div>
-        ${state.adminMode ? `<button class="btn btn-outline btn-sm" style="margin-top:8px;" onclick="openOppPlayerEditModal('${currentTeam.id}','${opp.id}')">✏️ Edit Notes &amp; Suggestions</button>` : ''}
-      </div>`;
+  const renderMatchupCard = (player, isOpponent, format) => {
+    if(state.expandedMatchupKey !== format + ':' + player.id) return '';
+    let inner = '';
+    if(isOpponent){
+      inner += player.notes
+        ? `<div style="font-size:12.5px; color:var(--ink); white-space:pre-wrap; line-height:1.5; margin-bottom:8px;">📝 ${esc(player.notes)}</div>`
+        : `<div style="font-size:12px; color:var(--ink-soft); margin-bottom:8px;">No scouting notes yet.</div>`;
+      if(format === 'singles'){
+        const suggestions = player.suggestedMatchups || [];
+        const suggestionsHtml = suggestions.length ? suggestions.map((tbId, idx)=>{
+          const tb = state.players.find(p=>p.id===tbId);
+          if(!tb) return '';
+          const isPaired = singles[tbId] !== undefined;
+          return `<button class="matchup-chip" style="margin:3px; ${isPaired ? 'opacity:0.45; cursor:not-allowed;' : ''}" ${isPaired ? 'disabled' : `onclick="quickPairSinglesFromSuggestion('${tbId}','${player.id}')"`}><span class="suggest-rank">${idx+1}</span> ${esc(tb.name)}${isPaired ? '<span class="sub">Already paired</span>' : ''}</button>`;
+        }).join('') : `<div style="font-size:12px; color:var(--ink-soft);">No suggested matchups set yet.</div>`;
+        inner += `<div style="font-size:11px; font-weight:800; color:var(--ink-soft); text-transform:uppercase; margin-bottom:6px;">Suggested Matchups</div>
+          <div style="display:flex; flex-wrap:wrap;">${suggestionsHtml}</div>
+          ${state.adminMode ? `<button class="btn btn-outline btn-sm" style="margin-top:8px;" onclick="openOppPlayerEditModal('${currentTeam.id}','${player.id}')">✏️ Edit Notes &amp; Suggestions</button>` : ''}`;
+      }
+    }
+    // Sit-out toggle, scoped to the section's format. Only available with an event selected.
+    const fmtLabel = format === 'doubles' ? 'Doubles' : 'Singles';
+    let benchBtn = '';
+    if(state.adminMode){
+      if(!selectedEventId){
+        benchBtn = `<div style="font-size:10.5px; color:var(--ink-soft); margin-top:${isOpponent ? '8' : '0'}px;">Select an event to set the lineup.</div>`;
+      } else {
+        const benched = (format === 'doubles' ? benchedDoubles : benchedSingles).has(player.id);
+        benchBtn = `<button class="btn ${benched ? 'btn-primary' : 'btn-outline'} btn-sm" style="width:100%; margin-top:${isOpponent ? '8' : '0'}px;" onclick="toggleBench('${player.id}','${format}')">${benched ? `↩️ Back in ${fmtLabel}` : `🪑 Sit out ${fmtLabel}`}</button>`;
+      }
+    }
+    return `<div style="background:var(--chip-bg); border-radius:12px; padding:10px 12px; margin:4px 0 9px;">${inner}${benchBtn}</div>`;
   };
+
 
   const singlesTbIds = Object.keys(singles);
   const pairedSinglesHtml = [...singlesTbIds].map(tbId=>{ // first matchup made stays on top; new ones build downward
@@ -3701,10 +3752,10 @@ async function renderMatchups(){
         <div class="matchup-paired-card" style="margin-bottom:0;">
           <button class="matchup-chip paired" style="margin:0; flex:1;" ${state.adminMode ? `onclick="tapSinglesTB('${tbId}')"` : 'disabled'}>${esc(tb.name)} ${genderBadgeHtml(tb)}${tbInfo ? `<span class="sub">${esc(tbInfo)}</span>` : ''}</button>
           ${singlesConnector(tbId, opp.id, resultKey)}
-          <button class="matchup-chip opp-paired" style="margin:0; flex:1;" ${state.adminMode ? `onmousedown="startOppLongPress('${opp.id}')" onmouseup="cancelOppLongPress()" onmouseleave="cancelOppLongPress()" ontouchstart="startOppLongPress('${opp.id}')" ontouchend="cancelOppLongPress()" ontouchmove="cancelOppLongPress()" onclick="handleOppChipClick(event, '${opp.id}')"` : 'disabled'}>${esc(opp.name)} ${genderBadgeHtml(opp)}${oppInfo ? `<span class="sub">${esc(oppInfo)}</span>` : ''}</button>
+          <button class="matchup-chip opp-paired" style="margin:0; flex:1;" ${state.adminMode ? `onmousedown="startMatchupLongPress('${opp.id}','singles')" onmouseup="cancelMatchupLongPress()" onmouseleave="cancelMatchupLongPress()" ontouchstart="startMatchupLongPress('${opp.id}','singles')" ontouchend="cancelMatchupLongPress()" ontouchmove="cancelMatchupLongPress()" onclick="matchupChipTap(event, 'singlesOpp', '${opp.id}')"` : 'disabled'}>${esc(opp.name)} ${genderBadgeHtml(opp)}${oppInfo ? `<span class="sub">${esc(oppInfo)}</span>` : ''}</button>
           ${state.adminMode ? `<button class="icon-btn" onclick="unpairSingles('${tbId}')">✕</button>` : ''}
         </div>
-        ${renderOppMockupExpansion(opp)}
+        ${renderMatchupCard(opp, true, 'singles')}
         ${singlesResultHtml(tbId, opp.id, resultKey)}
       </div>`;
   }).join('');
@@ -3712,21 +3763,21 @@ async function renderMatchups(){
   const tbSinglesChips = availableTB.length ? availableTB.map(p=>{
     const isArmed = state.armedSinglesTB === p.id;
     const info = compactPlayerInfoLine(p);
-    return `<button class="matchup-chip ${isArmed?'armed':''}" ${state.adminMode ? `onclick="tapSinglesTB('${p.id}')"` : 'disabled'}>${esc(p.name)} ${genderBadgeHtml(p)}${info ? `<span class="sub">${esc(info)}</span>` : ''}${isArmed ? `<span class="sub">Tap an opponent →</span>` : ''}</button>`;
+    return `<button class="matchup-chip ${isArmed?'armed':''}" ${state.adminMode ? `onmousedown="startMatchupLongPress('${p.id}','singles')" onmouseup="cancelMatchupLongPress()" onmouseleave="cancelMatchupLongPress()" ontouchstart="startMatchupLongPress('${p.id}','singles')" ontouchend="cancelMatchupLongPress()" ontouchmove="cancelMatchupLongPress()" onclick="matchupChipTap(event, 'singlesTB', '${p.id}')"` : 'disabled'}>${esc(p.name)} ${genderBadgeHtml(p)}${info ? `<span class="sub">${esc(info)}</span>` : ''}${isArmed ? `<span class="sub">Tap an opponent →</span>` : ''}</button>${renderMatchupCard(p, false, 'singles')}`;
   }).join('') : `<div style="font-size:12.5px; color:var(--ink-soft); text-align:center; padding:10px 0;">Everyone's matched up</div>`;
 
   const oppSinglesChips = availableOpp.length ? availableOpp.map(o=>{
     const isArmed = state.armedSinglesOpp === o.id;
     const info = compactPlayerInfoLine(o);
-    return `<button class="matchup-chip ${isArmed?'armed':''}" ${state.adminMode ? `onmousedown="startOppLongPress('${o.id}')" onmouseup="cancelOppLongPress()" onmouseleave="cancelOppLongPress()" ontouchstart="startOppLongPress('${o.id}')" ontouchend="cancelOppLongPress()" ontouchmove="cancelOppLongPress()" onclick="handleOppChipClick(event, '${o.id}')"` : 'disabled'}>${esc(o.name)} ${genderBadgeHtml(o)}${info ? `<span class="sub">${esc(info)}</span>` : ''}${isArmed ? `<span class="sub">← Tap a Two Buff player</span>` : ''}</button>${renderOppMockupExpansion(o)}`;
+    return `<button class="matchup-chip ${isArmed?'armed':''}" ${state.adminMode ? `onmousedown="startMatchupLongPress('${o.id}','singles')" onmouseup="cancelMatchupLongPress()" onmouseleave="cancelMatchupLongPress()" ontouchstart="startMatchupLongPress('${o.id}','singles')" ontouchend="cancelMatchupLongPress()" ontouchmove="cancelMatchupLongPress()" onclick="matchupChipTap(event, 'singlesOpp', '${o.id}')"` : 'disabled'}>${esc(o.name)} ${genderBadgeHtml(o)}${info ? `<span class="sub">${esc(info)}</span>` : ''}${isArmed ? `<span class="sub">← Tap a Two Buff player</span>` : ''}</button>${renderMatchupCard(o, true, 'singles')}`;
   }).join('') : `<div style="font-size:12.5px; color:var(--ink-soft); text-align:center; padding:10px 0;">${currentTeam.players.length ? 'All matched up' : 'No players on this roster yet'}</div>`;
 
   // ---- Doubles: now a real doubles-vs-doubles matchup (tap two on each side) ----
   const doubles = getDoublesBucket(ms);
   const pairedTBIds = new Set(doubles.flatMap(m=>m.tb));
   const pairedOppIds = new Set(doubles.flatMap(m=>m.opp));
-  const availableDoublesTB = eligibleTB.filter(p=>!pairedTBIds.has(p.id));
-  const availableDoublesOpp = currentTeam.players.filter(p=>!pairedOppIds.has(p.id));
+  const availableDoublesTB = eligibleTB.filter(p=>!pairedTBIds.has(p.id) && !benchedDoubles.has(p.id));
+  const availableDoublesOpp = currentTeam.players.filter(p=>!pairedOppIds.has(p.id) && !benchedDoubles.has(p.id));
 
   const doublesConnector = (m, key) => {
     let statusEmoji = '';
@@ -3811,19 +3862,39 @@ async function renderMatchups(){
   const doublesTBChips = availableDoublesTB.length ? availableDoublesTB.map(p=>{
     const isArmed = state.armedDoublesTBPair.includes(p.id);
     const info = compactPlayerInfoLine(p);
-    return `<button class="matchup-chip ${isArmed?'armed':''}" ${state.adminMode ? `onclick="tapDoublesTBMember('${p.id}')"` : 'disabled'}>${esc(p.name)} ${genderBadgeHtml(p)}${info ? `<span class="sub">${esc(info)}</span>` : ''}</button>`;
+    return `<button class="matchup-chip ${isArmed?'armed':''}" ${state.adminMode ? `onmousedown="startMatchupLongPress('${p.id}','doubles')" onmouseup="cancelMatchupLongPress()" onmouseleave="cancelMatchupLongPress()" ontouchstart="startMatchupLongPress('${p.id}','doubles')" ontouchend="cancelMatchupLongPress()" ontouchmove="cancelMatchupLongPress()" onclick="matchupChipTap(event, 'doublesTB', '${p.id}')"` : 'disabled'}>${esc(p.name)} ${genderBadgeHtml(p)}${info ? `<span class="sub">${esc(info)}</span>` : ''}</button>${renderMatchupCard(p, false, 'doubles')}`;
   }).join('') : `<div style="font-size:12.5px; color:var(--ink-soft); text-align:center; padding:10px 0;">Everyone's grouped up</div>`;
 
   const doublesOppChips = availableDoublesOpp.length ? availableDoublesOpp.map(o=>{
     const isArmed = state.armedDoublesOppPair.includes(o.id);
     const info = compactPlayerInfoLine(o);
-    return `<button class="matchup-chip ${isArmed?'armed':''}" ${state.adminMode ? `onclick="tapDoublesOppMember('${o.id}')"` : 'disabled'}>${esc(o.name)} ${genderBadgeHtml(o)}${info ? `<span class="sub">${esc(info)}</span>` : ''}</button>`;
+    return `<button class="matchup-chip ${isArmed?'armed':''}" ${state.adminMode ? `onmousedown="startMatchupLongPress('${o.id}','doubles')" onmouseup="cancelMatchupLongPress()" onmouseleave="cancelMatchupLongPress()" ontouchstart="startMatchupLongPress('${o.id}','doubles')" ontouchend="cancelMatchupLongPress()" ontouchmove="cancelMatchupLongPress()" onclick="matchupChipTap(event, 'doublesOpp', '${o.id}')"` : 'disabled'}>${esc(o.name)} ${genderBadgeHtml(o)}${info ? `<span class="sub">${esc(info)}</span>` : ''}</button>${renderMatchupCard(o, true, 'doubles')}`;
   }).join('') : `<div style="font-size:12.5px; color:var(--ink-soft); text-align:center; padding:10px 0;">${currentTeam.players.length ? 'All grouped up' : 'No players on this roster yet'}</div>`;
 
   const eventDetails = eventStats ? computeMatchDetailsFromData(eventStats) : null;
   const singlesScoreHtml = eventDetails ? renderScoreboard('Two Buff', eventDetails.mpUsPts, eventDetails.mpOppPts, currentTeam.name, false) : '';
   const doublesScoreHtml = eventDetails ? renderScoreboard('Two Buff', eventDetails.dbUsPts, eventDetails.dbOppPts, currentTeam.name, false) : '';
   const finalScoreHtml = eventDetails ? renderScoreboard('Two Buff', eventDetails.totalUsPts, eventDetails.totalOppPts, currentTeam.name, true) : '';
+
+  // "Not playing" sections: players present but benched from a given format. Tap to restore.
+  const benchSectionHtml = (format) => {
+    if(!selectedEventId) return '';
+    const ids = format === 'doubles' ? bench.doubles : bench.singles;
+    if(!ids.length) return '';
+    const fmtLabel = format === 'doubles' ? 'doubles' : 'singles';
+    const chips = ids.map(id=>{
+      const pl = resolveMatchupPlayer(id);
+      if(!pl) return '';
+      const isOpp = currentTeam.players.some(x=>x.id===id);
+      const sideTag = isOpp ? esc(currentTeam.name) : 'Two Buff';
+      return `<button class="matchup-chip" style="margin:0 0 6px; opacity:0.8;" ${state.adminMode ? `onclick="toggleBench('${id}','${format}')"` : 'disabled'}>${esc(pl.name)} ${genderBadgeHtml(pl)}<span class="sub">${sideTag} · tap to add back</span></button>`;
+    }).join('');
+    return `
+      <div style="margin-top:10px; padding:10px 12px; background:var(--chip-bg); border-radius:12px;">
+        <div style="font-size:11px; font-weight:800; color:var(--ink-soft); text-transform:uppercase; letter-spacing:0.3px; margin-bottom:8px;">🪑 Sitting out ${fmtLabel}</div>
+        ${chips}
+      </div>`;
+  };
 
   const adjustmentsHtml = eventDetails ? `
     <div class="stats-section-header">⚖️ Special / Penalty Points</div>
@@ -3863,6 +3934,7 @@ async function renderMatchups(){
         ${oppSinglesChips}
       </div>
     </div>
+    ${benchSectionHtml('singles')}
     ${singlesScoreHtml}
 
     <div class="stats-section-header">👥 Doubles</div>
@@ -3883,6 +3955,7 @@ async function renderMatchups(){
         ${doublesOppChips}
       </div>
     </div>
+    ${benchSectionHtml('doubles')}
     ${doublesScoreHtml}
 
     ${adjustmentsHtml}
@@ -3996,35 +4069,41 @@ async function tapSinglesOpp(oppId){
   state.armedSinglesOpp = oppId;
   render();
 }
-// Long-press support for opponent chips on the Matchups page: holding a chip expands
-// scouting notes + suggested matchups instead of arming it for pairing. A normal short
-// tap still goes through tapSinglesOpp exactly as before — the click that browsers fire
-// automatically after a touch/mouse release gets swallowed only when the press was long.
+// Long-press support for matchup chips. Holding a chip opens that player's card (scouting
+// notes/suggestions for opponents, plus a "sit out" toggle scoped to the section you're in),
+// instead of arming it for pairing. A normal short tap does the usual pairing action — the
+// click the browser fires after a touch release is swallowed only when the press was long.
 let _longPressTimer = null;
 let _longPressFired = false;
 const LONG_PRESS_MS = 550;
-function startOppLongPress(oppId){
+function startMatchupLongPress(playerId, format){
   _longPressFired = false;
   clearTimeout(_longPressTimer);
   _longPressTimer = setTimeout(()=>{
     _longPressFired = true;
-    toggleExpandMockupOpp(oppId);
+    toggleMatchupCard(playerId, format);
   }, LONG_PRESS_MS);
 }
-function cancelOppLongPress(){
+function cancelMatchupLongPress(){
   clearTimeout(_longPressTimer);
 }
-function handleOppChipClick(event, oppId){
+// Dispatches a short tap to the correct pairing action, or swallows the click if a
+// long-press just fired. kind: 'singlesTB' | 'singlesOpp' | 'doublesTB' | 'doublesOpp'.
+function matchupChipTap(event, kind, playerId){
   if(_longPressFired){
     _longPressFired = false;
     event.preventDefault();
     event.stopPropagation();
-    return; // swallow the click that follows a long-press release — don't also arm/pair
+    return;
   }
-  tapSinglesOpp(oppId);
+  if(kind === 'singlesTB') tapSinglesTB(playerId);
+  else if(kind === 'singlesOpp') tapSinglesOpp(playerId);
+  else if(kind === 'doublesTB') tapDoublesTBMember(playerId);
+  else if(kind === 'doublesOpp') tapDoublesOppMember(playerId);
 }
-function toggleExpandMockupOpp(oppId){
-  state.expandedMockupOppId = (state.expandedMockupOppId === oppId) ? null : oppId;
+function toggleMatchupCard(playerId, format){
+  const key = format + ':' + playerId;
+  state.expandedMatchupKey = (state.expandedMatchupKey === key) ? null : key;
   render();
 }
 // One-tap shortcut from a suggested-matchup chip. Only ever called on a player who is
@@ -4044,7 +4123,7 @@ async function quickPairSinglesFromSuggestion(tbId, oppId){
   singles[tbId] = oppId;
   state.armedSinglesTB = null;
   state.armedSinglesOpp = null;
-  state.expandedMockupOppId = null;
+  state.expandedMatchupKey = null;
   render();
   saveMatchupState(ms).catch(err=>console.error('Matchup save failed', err));
   showToast('Matched up!');
@@ -4764,6 +4843,7 @@ async function importBackup(file){
     }
     state.rsvpCache = {};
     state.statsCache = {};
+    state.benchCache = {};
     showToast('Backup restored');
     render();
   }catch(e){
