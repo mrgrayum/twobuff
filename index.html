@@ -423,6 +423,7 @@ const state = {
   statsCache: {},  // eventId -> {playerId: {matchplay:{played,result}, doubles:{played,result}}}
   benchCache: {},  // eventId -> {singles:[ids], doubles:[ids]} — who's present but sitting out each format
   loaded: false,
+  unlocked: false, // whether the PIN gate has been passed (via entry or a trusted device)
   selectedSeason: null,   // set on first render of the Events tab
   pastExpanded: {},       // season -> bool, whether the "past events" group is expanded
   statsScope: 'season',   // 'season' = current season only (default), 'all' = all-time
@@ -782,21 +783,78 @@ async function hardRefresh(){
   render();
   showToast('Data refreshed');
 }
-// Re-locks the app (back to the PIN gate) if it's been backgrounded for 90+ seconds.
-// Deliberate, using the Page Visibility API — not left up to whatever the phone's OS
-// happens to do with the underlying process while the app is out of view.
-const LOCK_GRACE_MS = 90 * 1000; // ~90 seconds
+// ---- Per-device unlock ("trust this device") ----
+// Entering a valid PIN trusts THIS device (browser) for a set window, so people aren't
+// re-prompted every time they open the app. Team and regular-admin unlocks last 30 days;
+// the super-admin unlock deliberately lasts only 1 hour, since it governs PIN changes and
+// other destructive settings and should stay inconvenient.
+//   Storage note: this trust is device-specific, so it must NOT live in the shared
+//   Firestore-backed window.storage (that's synced across everyone). We use localStorage,
+//   which is per-browser. If localStorage is unavailable (e.g. the artifact-preview sandbox),
+//   we transparently fall back to an in-memory record for the session; the real hosted app
+//   on GitHub Pages uses localStorage and persists across reloads.
+const TRUST_MS = { team: 30*24*60*60*1000, admin: 30*24*60*60*1000, super: 60*60*1000 };
+let _memoryTrust = null; // fallback when localStorage is blocked
+function writeDeviceTrust(level){
+  const rec = { level, expiresAt: Date.now() + (TRUST_MS[level] || TRUST_MS.team) };
+  _memoryTrust = rec;
+  try{ localStorage.setItem('dg_device_trust', JSON.stringify(rec)); }catch(e){}
+}
+function readDeviceTrust(){
+  let rec = null;
+  try{ const raw = localStorage.getItem('dg_device_trust'); if(raw) rec = JSON.parse(raw); }
+  catch(e){ /* blocked — fall back to the in-memory record */ }
+  if(!rec) rec = _memoryTrust;
+  if(!rec || typeof rec.expiresAt !== 'number' || Date.now() >= rec.expiresAt) return null;
+  return rec; // { level, expiresAt }
+}
+function clearDeviceTrust(){
+  _memoryTrust = null;
+  try{ localStorage.removeItem('dg_device_trust'); }catch(e){}
+}
+// Reveal the app for an already-trusted device, skipping the PIN gate. Returns whether it did.
+function applyTrustedUnlock(){
+  const trust = readDeviceTrust();
+  if(!trust) return false;
+  state.adminMode    = (trust.level === 'admin' || trust.level === 'super');
+  state.isSuperAdmin = (trust.level === 'super');
+  state.unlocked = true;
+  const gate = document.getElementById('appGate');
+  const main = document.getElementById('mainApp');
+  if(gate) gate.style.display = 'none';
+  if(main) main.style.visibility = 'visible';
+  const adminSwitch = document.getElementById('adminSwitch');
+  if(adminSwitch) adminSwitch.classList.toggle('on', state.adminMode);
+  return true;
+}
+
+// ---- Refresh on return, decoupled from the PIN ----
+// The old design re-locked the app after ~90s in the background, partly for security but
+// mostly so re-entering the PIN would force a data refresh. With unlocks now persisting per
+// device, that re-lock is gone; instead, simply returning to the app after a short absence
+// pulls fresh data. Firebase's free tier (50k reads/day) makes this a non-issue at this team's
+// size; the 10-second threshold only skips the pointless double-fetch when someone flips away
+// and straight back. On return we also re-check device trust, which enforces the super-admin
+// 1-hour window (team/admin trust lasts 30 days, so it isn't affected in practice).
+const REFRESH_AFTER_BG_MS = 10 * 1000; // 10 seconds
 let _backgroundedAt = null;
-document.addEventListener('visibilitychange', () => {
-  if(document.hidden){
-    _backgroundedAt = Date.now();
-  } else if(_backgroundedAt !== null){
-    const awayMs = Date.now() - _backgroundedAt;
-    _backgroundedAt = null;
-    if(awayMs >= LOCK_GRACE_MS && state.loaded) relockApp();
+document.addEventListener('visibilitychange', async () => {
+  if(document.hidden){ _backgroundedAt = Date.now(); return; }
+  if(_backgroundedAt === null) return;
+  const awayMs = Date.now() - _backgroundedAt;
+  _backgroundedAt = null;
+  if(!state.loaded || !state.unlocked) return;
+  if(!readDeviceTrust()){ relockApp(); return; } // trust window lapsed (super admin) — re-lock
+  if(awayMs >= REFRESH_AFTER_BG_MS){
+    await refreshAllData();
+    render();
   }
 });
+// Sends the app back to the PIN gate. Now only fires when a device's trust window has lapsed
+// (in practice, the super-admin 1-hour cap).
 function relockApp(){
+  clearDeviceTrust();
+  state.unlocked = false;
   state.adminMode = false;
   state.isSuperAdmin = false;
   closeModal();
@@ -816,8 +874,14 @@ async function init(){
   await Promise.all([loadPlayers(), loadEvents()]);
   state.loaded = true;
   render();
-  const gateInput = document.getElementById('app_pin_input');
-  if(gateInput) gateInput.focus();
+  if(applyTrustedUnlock()){
+    // This device is already trusted — skip the gate and make sure the data is current.
+    await refreshAllData();
+    render();
+  } else {
+    const gateInput = document.getElementById('app_pin_input');
+    if(gateInput) gateInput.focus();
+  }
   backfillDoublesPartnerEntries(); // one-time, self-guarding — runs quietly in the background
 }
 // ONE-TIME MIGRATION: before doubles results were mirrored to both partners, only the
@@ -885,27 +949,31 @@ async function getAppPin(){
 async function submitAppPin(){
   const entered = (document.getElementById('app_pin_input').value || '').trim();
   const [superPin, regularPin, teamPin] = await Promise.all([getSuperAdminPin(), getAdminPin(), getAppPin()]);
-  let matched = true;
+  let matched = true, level = null;
   if(entered === superPin){
     state.adminMode = true;
     state.isSuperAdmin = true;
+    level = 'super';
   } else if(entered === regularPin){
     state.adminMode = true;
     state.isSuperAdmin = false;
+    level = 'admin';
   } else if(entered === teamPin){
     state.adminMode = false;
     state.isSuperAdmin = false;
+    level = 'team';
   } else {
     matched = false;
   }
   if(matched){
+    // Trust this device so we don't re-prompt: 30 days for team/admin, 1 hour for super admin.
+    writeDeviceTrust(level);
+    state.unlocked = true;
     document.getElementById('adminSwitch').classList.toggle('on', state.adminMode);
     document.getElementById('appGate').style.display = 'none';
     document.getElementById('mainApp').style.visibility = 'visible';
     if(state.adminMode) showToast(state.isSuperAdmin ? 'Super admin unlocked' : 'Admin mode unlocked');
-    // Entering the PIN is the one moment this app is guaranteed to fetch fresh data —
-    // this is what makes the 90s auto re-lock actually meaningful, rather than just
-    // re-asking for the same PIN while showing the exact same stale data underneath.
+    // Unlocking is also a natural moment to pull fresh data.
     await refreshAllData();
     render();
   } else {
@@ -944,6 +1012,17 @@ function toggleAdmin(){
     render();
     return;
   }
+  // If this device is already trusted at an admin level, honor it without re-prompting —
+  // consistent with the persisted unlock, so toggling admin back on isn't more work than a reload.
+  const trust = readDeviceTrust();
+  if(trust && (trust.level === 'admin' || trust.level === 'super')){
+    state.adminMode = true;
+    state.isSuperAdmin = (trust.level === 'super');
+    document.getElementById('adminSwitch').classList.add('on');
+    showToast(state.isSuperAdmin ? 'Super admin unlocked' : 'Admin mode unlocked');
+    render();
+    return;
+  }
   openAdminPinModal();
 }
 
@@ -979,6 +1058,8 @@ async function submitAdminPin(){
   if(entered === superPin){
     state.adminMode = true;
     state.isSuperAdmin = true;
+    writeDeviceTrust('super'); // 1-hour window for super admin
+    state.unlocked = true;
     document.getElementById('adminSwitch').classList.add('on');
     closeModal();
     showToast('Super admin unlocked');
@@ -986,6 +1067,8 @@ async function submitAdminPin(){
   } else if(entered === regularPin){
     state.adminMode = true;
     state.isSuperAdmin = false;
+    writeDeviceTrust('admin'); // 30-day window for admin
+    state.unlocked = true;
     document.getElementById('adminSwitch').classList.add('on');
     closeModal();
     showToast('Admin mode unlocked');
