@@ -242,6 +242,7 @@
   .divider{height:1px; background:var(--line); margin:14px 0;}
   .home-badge{background:#FBE4D8; color:var(--orange-dark); font-size:10.5px; font-weight:800; padding:3px 8px; border-radius:8px; text-transform:uppercase; letter-spacing:0.3px;}
   .venue-badge{background:var(--chip-bg); color:var(--ink-soft); font-size:10.5px; font-weight:800; padding:3px 8px; border-radius:8px; text-transform:uppercase; letter-spacing:0.3px;}
+  .suggest-rank{display:inline-flex; align-items:center; justify-content:center; min-width:16px; height:16px; padding:0 4px; border-radius:8px; background:var(--forest); color:#fff; font-size:10px; font-weight:800; vertical-align:middle;}
   .toast{
     position:fixed; bottom:96px; left:50%; transform:translateX(-50%); background:var(--forest-dark); color:#fff;
     padding:10px 18px; border-radius:20px; font-size:13px; font-weight:700; z-index:110; box-shadow:var(--shadow);
@@ -288,7 +289,13 @@
   .matchup-chip{
     display:block; width:100%; text-align:left; background:#fff; border:2px solid var(--line); border-radius:12px;
     padding:10px 12px; margin-bottom:8px; font-size:13.5px; font-weight:700; color:var(--ink); cursor:pointer;
+    -webkit-user-select:none; user-select:none; -webkit-touch-callout:none;
   }
+  .chip-expand-btn{
+    flex-shrink:0; width:38px; align-self:stretch; background:#fff; border:2px solid var(--line); border-radius:12px;
+    font-size:13px; font-weight:800; color:var(--ink-soft); cursor:pointer; -webkit-user-select:none; user-select:none; -webkit-touch-callout:none;
+  }
+  .chip-expand-btn.open{background:var(--chip-bg); color:var(--forest); border-color:var(--forest);}
   .matchup-chip.armed{background:var(--orange); border-color:var(--orange); color:#fff;}
   .matchup-chip.paired{background:#E1E8F5; border-color:var(--forest); color:var(--forest);}
   .matchup-chip .sub{display:block; font-size:10.5px; font-weight:700; opacity:0.8; margin-top:2px;}
@@ -3283,6 +3290,25 @@ function selectSeg(el){
 function toggleSegMulti(el){
   el.classList.toggle('seg-sel');
 }
+// Suggested-matchup ranking: preserves the ORDER the admin taps players, so first tap =
+// first choice, etc. The old multi-select read DOM order (always roster order), which
+// couldn't express preference — this ordered array fixes that.
+let _suggestEditOrder = [];
+function renderSuggestPickerRow(){
+  const container = document.getElementById('opp_edit_suggestedRow');
+  if(!container) return;
+  container.innerHTML = state.players.map(p=>{
+    const rank = _suggestEditOrder.indexOf(p.id);
+    const sel = rank !== -1;
+    return `<div class="seg-btn ${sel ? 'seg-sel':''}" data-v="${p.id}" onclick="toggleSuggestedPick('${p.id}')">${sel ? `<span class="suggest-rank">${rank+1}</span> ` : ''}${esc(p.name)}</div>`;
+  }).join('');
+}
+function toggleSuggestedPick(playerId){
+  const i = _suggestEditOrder.indexOf(playerId);
+  if(i === -1) _suggestEditOrder.push(playerId); // append as next-lowest preference
+  else _suggestEditOrder.splice(i, 1);           // remove; the rest renumber automatically
+  renderSuggestPickerRow();
+}
 function renderPlayerBaselineFields(prefix, p){
   const rank = (p && p.skillRank) ? p.skillRank : 5;
   return `
@@ -3643,11 +3669,12 @@ async function renderMatchups(){
   const renderOppMockupExpansion = (opp) => {
     if(state.expandedMockupOppId !== opp.id) return '';
     const suggestions = opp.suggestedMatchups || [];
-    const suggestionsHtml = suggestions.length ? suggestions.map(tbId=>{
+    const suggestionsHtml = suggestions.length ? suggestions.map((tbId, idx)=>{
       const tb = state.players.find(p=>p.id===tbId);
       if(!tb) return '';
       const isPaired = singles[tbId] !== undefined;
-      return `<button class="matchup-chip" style="margin:3px; ${isPaired ? 'opacity:0.45; cursor:not-allowed;' : ''}" ${isPaired ? 'disabled' : `onclick="quickPairSinglesFromSuggestion('${tbId}','${opp.id}')"`}>${esc(tb.name)}${isPaired ? '<span class="sub">Already paired</span>' : ''}</button>`;
+      const rankBadge = `<span class="suggest-rank">${idx+1}</span> `;
+      return `<button class="matchup-chip" style="margin:3px; ${isPaired ? 'opacity:0.45; cursor:not-allowed;' : ''}" ${isPaired ? 'disabled' : `onclick="quickPairSinglesFromSuggestion('${tbId}','${opp.id}')"`}>${rankBadge}${esc(tb.name)}${isPaired ? '<span class="sub">Already paired</span>' : ''}</button>`;
     }).join('') : `<div style="font-size:12px; color:var(--ink-soft);">No suggested matchups set yet.</div>`;
     return `
       <div style="background:var(--chip-bg); border-radius:12px; padding:10px 12px; margin:4px 0 9px;">
@@ -3672,6 +3699,7 @@ async function renderMatchups(){
           <button class="matchup-chip paired" style="margin:0; flex:1;" ${state.adminMode ? `onclick="tapSinglesTB('${tbId}')"` : 'disabled'}>${esc(tb.name)} ${genderBadgeHtml(tb)}${tbInfo ? `<span class="sub">${esc(tbInfo)}</span>` : ''}</button>
           ${singlesConnector(tbId, opp.id, resultKey)}
           <button class="matchup-chip opp-paired" style="margin:0; flex:1;" ${state.adminMode ? `onmousedown="startOppLongPress('${opp.id}')" onmouseup="cancelOppLongPress()" onmouseleave="cancelOppLongPress()" ontouchstart="startOppLongPress('${opp.id}')" ontouchend="cancelOppLongPress()" ontouchmove="cancelOppLongPress()" onclick="handleOppChipClick(event, '${opp.id}')"` : 'disabled'}>${esc(opp.name)} ${genderBadgeHtml(opp)}${oppInfo ? `<span class="sub">${esc(oppInfo)}</span>` : ''}</button>
+          ${state.adminMode ? `<button class="chip-expand-btn ${state.expandedMockupOppId===opp.id?'open':''}" onclick="event.stopPropagation(); toggleExpandMockupOpp('${opp.id}')" aria-label="Notes & suggestions">${state.expandedMockupOppId===opp.id ? '▲' : '▼'}</button>` : ''}
           ${state.adminMode ? `<button class="icon-btn" onclick="unpairSingles('${tbId}')">✕</button>` : ''}
         </div>
         ${renderOppMockupExpansion(opp)}
@@ -3688,7 +3716,10 @@ async function renderMatchups(){
   const oppSinglesChips = availableOpp.length ? availableOpp.map(o=>{
     const isArmed = state.armedSinglesOpp === o.id;
     const info = compactPlayerInfoLine(o);
-    return `<button class="matchup-chip ${isArmed?'armed':''}" ${state.adminMode ? `onmousedown="startOppLongPress('${o.id}')" onmouseup="cancelOppLongPress()" onmouseleave="cancelOppLongPress()" ontouchstart="startOppLongPress('${o.id}')" ontouchend="cancelOppLongPress()" ontouchmove="cancelOppLongPress()" onclick="handleOppChipClick(event, '${o.id}')"` : 'disabled'}>${esc(o.name)} ${genderBadgeHtml(o)}${info ? `<span class="sub">${esc(info)}</span>` : ''}${isArmed ? `<span class="sub">← Tap a Two Buff player</span>` : ''}</button>${renderOppMockupExpansion(o)}`;
+    const isOpen = state.expandedMockupOppId === o.id;
+    const chip = `<button class="matchup-chip ${isArmed?'armed':''}" style="margin:0; flex:1;" ${state.adminMode ? `onmousedown="startOppLongPress('${o.id}')" onmouseup="cancelOppLongPress()" onmouseleave="cancelOppLongPress()" ontouchstart="startOppLongPress('${o.id}')" ontouchend="cancelOppLongPress()" ontouchmove="cancelOppLongPress()" onclick="handleOppChipClick(event, '${o.id}')"` : 'disabled'}>${esc(o.name)} ${genderBadgeHtml(o)}${info ? `<span class="sub">${esc(info)}</span>` : ''}${isArmed ? `<span class="sub">← Tap a Two Buff player</span>` : ''}</button>`;
+    const chevron = state.adminMode ? `<button class="chip-expand-btn ${isOpen?'open':''}" onclick="event.stopPropagation(); toggleExpandMockupOpp('${o.id}')" aria-label="Notes & suggestions">${isOpen ? '▲' : '▼'}</button>` : '';
+    return `<div style="display:flex; gap:4px; align-items:stretch; margin-bottom:8px;">${chip}${chevron}</div>${renderOppMockupExpansion(o)}`;
   }).join('') : `<div style="font-size:12.5px; color:var(--ink-soft); text-align:center; padding:10px 0;">${currentTeam.players.length ? 'All matched up' : 'No players on this roster yet'}</div>`;
 
   // ---- Doubles: now a real doubles-vs-doubles matchup (tap two on each side) ----
@@ -4353,6 +4384,7 @@ function openOppPlayerEditModal(teamId, playerId){
     const team = teams.find(t=>t.id===teamId);
     const player = team && team.players.find(p=>p.id===playerId);
     if(!player) return;
+    _suggestEditOrder = [...(player.suggestedMatchups || [])]; // seed ranking from saved order
     const modal = document.getElementById('modalRoot');
     modal.innerHTML = `
       <div class="overlay" onclick="closeModalIfBackdrop(event)">
@@ -4374,9 +4406,13 @@ function openOppPlayerEditModal(teamId, playerId){
           <div class="divider"></div>
           <div class="field">
             <label>Suggested Two Buff Matchups (optional)</label>
-            <div style="font-size:11.5px; color:var(--ink-soft); margin-bottom:8px;">Players who match up well against this opponent — shown as quick-pair shortcuts on the Matchups page.</div>
+            <div style="font-size:11.5px; color:var(--ink-soft); margin-bottom:8px;">Tap in order of preference — 1st tap is your top choice. Shown ranked as quick-pair shortcuts on the Matchups page.</div>
             <div class="seg-row" id="opp_edit_suggestedRow" style="flex-wrap:wrap;">
-              ${state.players.map(p=>`<div class="seg-btn ${(player.suggestedMatchups||[]).includes(p.id) ? 'seg-sel':''}" data-v="${p.id}" onclick="toggleSegMulti(this)">${esc(p.name)}</div>`).join('')}
+              ${state.players.map(p=>{
+                const rank = _suggestEditOrder.indexOf(p.id);
+                const sel = rank !== -1;
+                return `<div class="seg-btn ${sel ? 'seg-sel':''}" data-v="${p.id}" onclick="toggleSuggestedPick('${p.id}')">${sel ? `<span class="suggest-rank">${rank+1}</span> ` : ''}${esc(p.name)}</div>`;
+              }).join('')}
             </div>
           </div>
           <div class="btn-row">
@@ -4398,8 +4434,7 @@ async function saveOppPlayerProfile(teamId, playerId){
   player.name = name;
   player.gender = genderBtn ? genderBtn.dataset.v : null;
   Object.assign(player, readPlayerBaselineFields('opp_edit'));
-  const suggestedEls = document.querySelectorAll('#opp_edit_suggestedRow .seg-sel');
-  player.suggestedMatchups = Array.from(suggestedEls).map(el=>el.dataset.v);
+  player.suggestedMatchups = [..._suggestEditOrder]; // preserve preference order
   await saveOppTeams(teams);
   closeModal();
   showToast('Player updated');
