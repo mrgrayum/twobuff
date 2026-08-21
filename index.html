@@ -3398,7 +3398,7 @@ function genderBadgeHtml(p){
 }
 function renderPlayerProfileSummary(p){
   const bits = [];
-  if(p.skillRank) bits.push(`⭐ Skill ${p.skillRank}/10`);
+  if(state.adminMode && p.skillRank) bits.push(`⭐ Skill ${p.skillRank}/10`); // admin-only
   if(p.pdgaRating) bits.push(`PDGA ${p.pdgaRating}`);
   if(p.throwHand) bits.push(p.throwHand === 'forehand' ? 'Forehand' : 'Backhand');
   if(p.handedness) bits.push(p.handedness === 'right' ? 'Righty' : 'Lefty');
@@ -3700,7 +3700,7 @@ async function performDeleteNote(id){
 /* ============================= MOCK MATCHUPS ============================= */
 function compactPlayerInfoLine(p){
   const bits = [];
-  if(p.skillRank) bits.push(`Skill ${p.skillRank}`);
+  if(state.adminMode && p.skillRank) bits.push(`Skill ${p.skillRank}`); // admin-only
   if(p.pdgaRating) bits.push(`PDGA ${p.pdgaRating}`);
   if(p.throwHand) bits.push(p.throwHand === 'forehand' ? 'FH' : 'BH');
   if(p.handedness) bits.push(p.handedness === 'right' ? 'R' : 'L');
