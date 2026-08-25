@@ -3407,6 +3407,79 @@ function renderPlayerProfileSummary(p){
   const notesLine = p.notes ? `<div style="font-size:12.5px; color:var(--ink); white-space:pre-wrap; padding:6px 2px 2px; line-height:1.5;">📝 ${esc(p.notes)}</div>` : '';
   return summaryLine + notesLine;
 }
+function csvEscape(val){
+  const s = (val===null || val===undefined) ? '' : String(val);
+  if(/[",\n]/.test(s)) return '"' + s.replace(/"/g,'""') + '"';
+  return s;
+}
+function downloadCSV(filename, rows){
+  const csv = rows.map(r => r.map(csvEscape).join(',')).join('\r\n');
+  const blob = new Blob(['\uFEFF' + csv], {type:'text/csv;charset=utf-8;'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(()=>URL.revokeObjectURL(url), 1000);
+}
+function exportTeamRosterCSV(){
+  const header = ['Name','Gender','Status','Phone','Email','Skill Rank','PDGA Rating','Throw Hand','Handedness','Age','Notes'];
+  const rows = [header];
+  const sorted = [...state.players].sort((a,b)=>a.name.localeCompare(b.name));
+  sorted.forEach(p=>{
+    rows.push([
+      p.name || '',
+      p.gender || '',
+      p.active===false ? 'Inactive' : 'Active',
+      p.phone || '',
+      p.email || '',
+      p.skillRank != null ? p.skillRank : '',
+      p.pdgaRating != null ? p.pdgaRating : '',
+      p.throwHand || '',
+      p.handedness || '',
+      p.age != null ? p.age : '',
+      p.notes || ''
+    ]);
+  });
+  downloadCSV('two-buff-roster.csv', rows);
+  showToast('Roster downloaded');
+}
+async function exportOpponentRostersCSV(){
+  const teams = await loadOppTeams();
+  const header = ['Team','Player Name','Gender','Skill Rank','PDGA Rating','Throw Hand','Handedness','Age','Notes','Suggested Two Buff Matchups'];
+  const rows = [header];
+  if(teams.length === 0){
+    showToast('No opponent teams to export');
+    return;
+  }
+  teams.forEach(t=>{
+    if(!t.players || t.players.length === 0){
+      rows.push([t.name,'','','','','','','','','']);
+      return;
+    }
+    t.players.forEach(p=>{
+      const suggested = (p.suggestedMatchups || [])
+        .map(id => { const tb = state.players.find(pl=>pl.id===id); return tb ? tb.name : ''; })
+        .filter(Boolean).join('; ');
+      rows.push([
+        t.name,
+        p.name || '',
+        p.gender || '',
+        p.skillRank != null ? p.skillRank : '',
+        p.pdgaRating != null ? p.pdgaRating : '',
+        p.throwHand || '',
+        p.handedness || '',
+        p.age != null ? p.age : '',
+        p.notes || '',
+        suggested
+      ]);
+    });
+  });
+  downloadCSV('opponent-rosters.csv', rows);
+  showToast('Opponent rosters downloaded');
+}
 async function renderTeam(){
   const sorted = [...state.players].sort((a,b)=>a.name.localeCompare(b.name));
   let rows = '';
@@ -3420,7 +3493,7 @@ async function renderTeam(){
     <button class="btn btn-ghost btn-sm" style="width:auto; margin-bottom:12px;" onclick="setView('home')">← Back to Home</button>
     <div class="page-title">Team</div>
     <div class="page-sub">${sorted.filter(p=>p.active!==false).length} active player${sorted.length===1?'':'s'}</div>
-    ${state.adminMode ? `<div class="fab-row"><button class="btn btn-orange btn-sm" onclick="openPlayerModal()">+ Add Player</button></div>` : ''}
+    ${state.adminMode ? `<div class="fab-row" style="gap:8px;"><button class="btn btn-ghost btn-sm" onclick="exportTeamRosterCSV()">⬇️ Export CSV</button><button class="btn btn-orange btn-sm" onclick="openPlayerModal()">+ Add Player</button></div>` : ''}
     ${rows}
   `;
 }
@@ -4550,7 +4623,7 @@ async function renderTeamsPage(){
     <button class="btn btn-ghost btn-sm" style="width:auto; margin-bottom:12px;" onclick="setView('home')">← Back to Home</button>
     <div class="page-title">Opponent Teams</div>
     <div class="page-sub">Rosters, notes, and head-to-head history against each opponent.</div>
-    ${state.adminMode ? `<div class="fab-row"><button class="btn btn-orange btn-sm" onclick="openTeamEditModal()">+ Add Team</button></div>` : ''}
+    ${state.adminMode ? `<div class="fab-row" style="gap:8px;"><button class="btn btn-ghost btn-sm" onclick="exportOpponentRostersCSV()">⬇️ Export CSV</button><button class="btn btn-orange btn-sm" onclick="openTeamEditModal()">+ Add Team</button></div>` : ''}
     ${body}
   `;
 }
