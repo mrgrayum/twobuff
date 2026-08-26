@@ -3413,6 +3413,15 @@ function renderPlayerProfileSummary(p){
 // who they played, that opponent's team, and the result. Independent of the
 // app's own live match-tracking (RSVP/stats/results), which only covers
 // matches actually logged going forward inside the app itself.
+// Builds the "(Team · PDGA 959 · Rank 6.5)" context shown next to each opponent
+// in Season History. PDGA and Power Rank are only included when we actually
+// have them — most opponents will show team only, some will show all three.
+function opponentContextLine(h){
+  const parts = [h.opponentTeam];
+  if(h.opponentPdga) parts.push(`PDGA ${h.opponentPdga}`);
+  if(h.opponentPowerRank != null) parts.push(`Rank ${Number(h.opponentPowerRank).toFixed(1)}`);
+  return parts.join(' · ');
+}
 function renderSeasonHistory(p){
   if(!p.matchHistory || p.matchHistory.length === 0) return '';
   const record = p.matchHistory.reduce((acc,h)=>{ acc[h.result]=(acc[h.result]||0)+1; return acc; }, {});
@@ -3422,7 +3431,7 @@ function renderSeasonHistory(p){
     const bg = h.result==='W' ? '#E1E8F5' : h.result==='L' ? '#F5D9D6' : 'var(--chip-bg)';
     return `
       <div style="display:flex; justify-content:space-between; align-items:center; padding:5px 0; border-top:1px solid var(--line); font-size:12px;">
-        <span>vs ${esc(h.opponent)} <span style="color:var(--ink-soft); font-size:11px;">(${esc(h.opponentTeam)})</span></span>
+        <span>vs ${esc(h.opponent)} <span style="color:var(--ink-soft); font-size:11px;">(${esc(opponentContextLine(h))})</span></span>
         <span class="pill" style="background:${bg}; color:${color}; font-size:10px; font-weight:800;">${h.result}</span>
       </div>`;
   }).join('');
@@ -3446,7 +3455,7 @@ function renderSeasonHistoryDropdown(p){
     const bg = h.result==='W' ? '#E1E8F5' : h.result==='L' ? '#F5D9D6' : 'var(--chip-bg)';
     return `
       <div style="display:flex; justify-content:space-between; align-items:center; padding:5px 0; border-top:1px solid var(--line); font-size:12px;">
-        <span>vs ${esc(h.opponent)} <span style="color:var(--ink-soft); font-size:11px;">(${esc(h.opponentTeam)})</span></span>
+        <span>vs ${esc(h.opponent)} <span style="color:var(--ink-soft); font-size:11px;">(${esc(opponentContextLine(h))})</span></span>
         <span class="pill" style="background:${bg}; color:${color}; font-size:10px; font-weight:800;">${h.result}</span>
       </div>`;
   }).join('');
