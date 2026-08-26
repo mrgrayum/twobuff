@@ -3398,7 +3398,7 @@ function genderBadgeHtml(p){
 }
 function renderPlayerProfileSummary(p){
   const bits = [];
-  if(state.adminMode && p.skillRank) bits.push(`⭐ Skill ${p.skillRank}/10`); // admin-only
+  if(state.adminMode && p.skillRank) bits.push(`⭐ Skill ${Number(p.skillRank).toFixed(1)}/10`); // admin-only
   if(p.pdgaRating) bits.push(`PDGA ${p.pdgaRating}`);
   if(p.throwHand) bits.push(p.throwHand === 'forehand' ? 'Forehand' : 'Backhand');
   if(p.handedness) bits.push(p.handedness === 'right' ? 'Righty' : 'Lefty');
@@ -3525,15 +3525,16 @@ function toggleSuggestedPick(playerId){
   renderSuggestPickerRow();
 }
 function renderPlayerBaselineFields(prefix, p){
-  const rank = (p && p.skillRank) ? p.skillRank : 5;
+  const rank = (p && p.skillRank != null) ? p.skillRank : 5;
+  const rankDisplay = Number(rank).toFixed(1);
   return `
     <div class="field">
       <label>Skill Rank (1–10)</label>
       <div style="display:flex; align-items:center; gap:10px;">
-        <input type="range" id="${prefix}_skillRank" min="1" max="10" value="${rank}" style="flex:1;" oninput="document.getElementById('${prefix}_skillRankVal').textContent=this.value">
-        <span id="${prefix}_skillRankVal" style="font-size:15px; font-weight:800; color:var(--forest-dark); width:20px; text-align:right;">${rank}</span>
+        <input type="range" id="${prefix}_skillRank" min="1" max="10" step="0.1" value="${rank}" style="flex:1;" oninput="document.getElementById('${prefix}_skillRankVal').textContent=parseFloat(this.value).toFixed(1)">
+        <span id="${prefix}_skillRankVal" style="font-size:15px; font-weight:800; color:var(--forest-dark); width:32px; text-align:right;">${rankDisplay}</span>
       </div>
-      <div style="font-size:11px; color:var(--ink-soft); margin-top:4px;">A general sense of their ability — useful before season stats build up. Leave alone for a neutral 5.</div>
+      <div style="font-size:11px; color:var(--ink-soft); margin-top:4px;">A general sense of their ability — useful before season stats build up, or to reflect a power-rankings score. Leave alone for a neutral 5.0.</div>
     </div>
     <div class="field">
       <label>PDGA Rating (600–1100, optional)</label>
@@ -3564,7 +3565,7 @@ function renderPlayerBaselineFields(prefix, p){
 }
 function readPlayerBaselineFields(prefix){
   const skillRankEl = document.getElementById(prefix + '_skillRank');
-  const skillRank = skillRankEl ? Number(skillRankEl.value) : 5;
+  const skillRank = skillRankEl ? Math.round(Number(skillRankEl.value) * 10) / 10 : 5;
   const pdgaVal = document.getElementById(prefix + '_pdga').value.trim();
   const pdgaRating = pdgaVal ? Math.max(600, Math.min(1100, Number(pdgaVal))) : null;
   const throwBtn = document.querySelector('#' + prefix + '_throwHandRow .seg-sel');
@@ -3773,7 +3774,7 @@ async function performDeleteNote(id){
 /* ============================= MOCK MATCHUPS ============================= */
 function compactPlayerInfoLine(p){
   const bits = [];
-  if(state.adminMode && p.skillRank) bits.push(`Skill ${p.skillRank}`); // admin-only
+  if(state.adminMode && p.skillRank) bits.push(`Skill ${Number(p.skillRank).toFixed(1)}`); // admin-only
   if(p.pdgaRating) bits.push(`PDGA ${p.pdgaRating}`);
   if(p.throwHand) bits.push(p.throwHand === 'forehand' ? 'FH' : 'BH');
   if(p.handedness) bits.push(p.handedness === 'right' ? 'R' : 'L');
