@@ -3405,7 +3405,31 @@ function renderPlayerProfileSummary(p){
   if(p.age) bits.push(`Age ${p.age}`);
   const summaryLine = bits.length ? `<div style="display:flex; flex-wrap:wrap; gap:6px; padding:8px 2px 2px;">${bits.map(b=>`<span class="pill pill-gray">${esc(b)}</span>`).join('')}</div>` : '';
   const notesLine = p.notes ? `<div style="font-size:12.5px; color:var(--ink); white-space:pre-wrap; padding:6px 2px 2px; line-height:1.5;">📝 ${esc(p.notes)}</div>` : '';
-  return summaryLine + notesLine;
+  const historyLine = renderSeasonHistory(p);
+  return summaryLine + notesLine + historyLine;
+}
+// Season History: real match-by-match results pulled from the season data —
+// who they played, that opponent's team, and the result. Independent of the
+// app's own live match-tracking (RSVP/stats/results), which only covers
+// matches actually logged going forward inside the app itself.
+function renderSeasonHistory(p){
+  if(!p.matchHistory || p.matchHistory.length === 0) return '';
+  const record = p.matchHistory.reduce((acc,h)=>{ acc[h.result]=(acc[h.result]||0)+1; return acc; }, {});
+  const recordLine = `${record.W||0}-${record.L||0}${record.T ? `-${record.T}` : ''}`;
+  const rows = p.matchHistory.map(h => {
+    const color = h.result==='W' ? 'var(--forest)' : h.result==='L' ? 'var(--red)' : 'var(--ink-soft)';
+    const bg = h.result==='W' ? '#E1E8F5' : h.result==='L' ? '#F5D9D6' : 'var(--chip-bg)';
+    return `
+      <div style="display:flex; justify-content:space-between; align-items:center; padding:5px 0; border-top:1px solid var(--line); font-size:12px;">
+        <span>vs ${esc(h.opponent)} <span style="color:var(--ink-soft); font-size:11px;">(${esc(h.opponentTeam)})</span></span>
+        <span class="pill" style="background:${bg}; color:${color}; font-size:10px; font-weight:800;">${h.result}</span>
+      </div>`;
+  }).join('');
+  return `
+    <div style="margin-top:10px;">
+      <div style="font-size:10.5px; font-weight:800; color:var(--ink-soft); text-transform:uppercase; letter-spacing:0.3px; margin-bottom:2px;">Season History (${recordLine})</div>
+      ${rows}
+    </div>`;
 }
 function csvEscape(val){
   const s = (val===null || val===undefined) ? '' : String(val);
