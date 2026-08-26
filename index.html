@@ -435,6 +435,7 @@ const state = {
   groupFormat: 'doubles',  // Matchups: 'singles' (1v1 stroke), 'doubles' (2v2), or 'triples' (3v3) — set via long-press
   expandedMockupResultKey: null, // Matchups: which matchup's Won/Lost/quality section is expanded
   expandedMatchupKey: null, // Matchups: '<format>:<playerId>' — which player's card is open and in which section (singles/doubles)
+  expandedMatchupHistoryId: null, // Matchups: which player's Season History dropdown is open inside their card
   expandedOppTeamId: null,   // Teams page: which opponent team is expanded to show its roster
   expandedOppPlayerId: null, // Teams page: which opponent player is expanded to show notes + history
   homeNotesExpanded: false,  // Home: whether the full bulletin board list is expanded past the initial preview
@@ -3431,6 +3432,37 @@ function renderSeasonHistory(p){
       ${rows}
     </div>`;
 }
+// Collapsible variant for the Matchups page — sits inside the card that already
+// opens on long-press (renderMatchupCard). Doesn't touch the long-press mechanic
+// at all; it's just an extra toggle *within* that existing card. Scrollable since
+// well-established players can have 10+ logged matches.
+function renderSeasonHistoryDropdown(p){
+  if(!p.matchHistory || p.matchHistory.length === 0) return '';
+  const record = p.matchHistory.reduce((acc,h)=>{ acc[h.result]=(acc[h.result]||0)+1; return acc; }, {});
+  const recordLine = `${record.W||0}-${record.L||0}${record.T ? `-${record.T}` : ''}`;
+  const isOpen = state.expandedMatchupHistoryId === p.id;
+  const rows = p.matchHistory.map(h => {
+    const color = h.result==='W' ? 'var(--forest)' : h.result==='L' ? 'var(--red)' : 'var(--ink-soft)';
+    const bg = h.result==='W' ? '#E1E8F5' : h.result==='L' ? '#F5D9D6' : 'var(--chip-bg)';
+    return `
+      <div style="display:flex; justify-content:space-between; align-items:center; padding:5px 0; border-top:1px solid var(--line); font-size:12px;">
+        <span>vs ${esc(h.opponent)} <span style="color:var(--ink-soft); font-size:11px;">(${esc(h.opponentTeam)})</span></span>
+        <span class="pill" style="background:${bg}; color:${color}; font-size:10px; font-weight:800;">${h.result}</span>
+      </div>`;
+  }).join('');
+  return `
+    <div style="margin-top:8px; ${isOpen ? 'border-top:1px solid var(--line); padding-top:8px;' : ''}">
+      <button class="btn btn-ghost btn-sm" style="width:100%; display:flex; align-items:center; justify-content:space-between;" onclick="event.stopPropagation(); toggleMatchupHistory('${p.id}')">
+        <span>📊 Season History (${recordLine})</span>
+        <span>${isOpen ? '▲' : '▼'}</span>
+      </button>
+      ${isOpen ? `<div style="max-height:220px; overflow-y:auto; margin-top:2px;">${rows}</div>` : ''}
+    </div>`;
+}
+function toggleMatchupHistory(id){
+  state.expandedMatchupHistoryId = (state.expandedMatchupHistoryId === id) ? null : id;
+  render();
+}
 function csvEscape(val){
   const s = (val===null || val===undefined) ? '' : String(val);
   if(/[",\n]/.test(s)) return '"' + s.replace(/"/g,'""') + '"';
@@ -3945,6 +3977,7 @@ async function renderMatchups(){
           ${state.adminMode ? `<button class="btn btn-outline btn-sm" style="margin-top:8px;" onclick="openOppPlayerEditModal('${currentTeam.id}','${player.id}')">✏️ Edit Notes &amp; Suggestions</button>` : ''}`;
       }
     }
+    inner += renderSeasonHistoryDropdown(player); // applies to both Two Buff players and opponents alike
     // Sit-out toggle, scoped to the section's format. Only available with an event
     // selected AND when the player isn't already paired in that format — benching is a
     // "who's playing" decision made before matchups are formed.
