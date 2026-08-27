@@ -273,6 +273,11 @@
     font-weight:800; font-size:13px; color:var(--ink-soft); cursor:pointer; white-space:nowrap;
   }
   .season-tab.active{background:var(--forest); border-color:var(--forest); color:#fff;}
+  .season-tab-sm{
+    flex-shrink:0; padding:5px 11px; border-radius:14px; border:2px solid var(--line); background:#fff;
+    font-weight:800; font-size:11px; color:var(--ink-soft); cursor:pointer; white-space:nowrap;
+  }
+  .season-tab-sm.active{background:var(--forest); border-color:var(--forest); color:#fff;}
   .season-tab-wrap{position:relative; flex-shrink:0;}
   .season-tab-remove{
     position:absolute; top:-7px; right:-7px; width:19px; height:19px; border-radius:50%;
@@ -428,7 +433,7 @@ const state = {
   pastExpanded: {},       // season -> bool, whether the "past events" group is expanded
   statsScope: 'season',   // 'season' = current season only (default), 'all' = all-time
   expandedPlayerId: null, // Team tab: which player card is expanded to show their event history
-  expandedPlayerCardScope: 'season', // Stats page: season-vs-all-time filter for the ONE currently-expanded player card, independent of the page-wide pills
+  expandedPlayerCardScope: 'all', // Stats page: season-string or 'all' filter for the ONE currently-expanded player card, independent of the page-wide pills
   armedSinglesTB: null,    // Matchups: Two Buff player currently selected, awaiting an opponent tap
   armedSinglesOpp: null,   // Matchups: opponent player currently selected, awaiting a Two Buff tap
   armedDoublesTBPair: [],  // Matchups: Two Buff players being grouped (size depends on groupFormat)
@@ -437,6 +442,7 @@ const state = {
   expandedMockupResultKey: null, // Matchups: which matchup's Won/Lost/quality section is expanded
   expandedMatchupKey: null, // Matchups: '<format>:<playerId>' — which player's card is open and in which section (singles/doubles)
   expandedMatchupHistoryId: null, // Matchups: which player's Season History dropdown is open inside their card
+  expandedMatchupHistoryScope: 'all', // Matchups: season filter for the currently-open Season History dropdown
   expandedOppTeamId: null,   // Teams page: which opponent team is expanded to show its roster
   expandedOppPlayerId: null, // Teams page: which opponent player is expanded to show notes + history
   homeNotesExpanded: false,  // Home: whether the full bulletin board list is expanded past the initial preview
@@ -2218,6 +2224,152 @@ async function getPlayerEventHistory(playerId){
   history.sort((a,b)=> b.event.date.localeCompare(a.event.date));
   return history;
 }
+// Pure, synchronous core shared by both the Stats page (async wrapper, fresh data) and
+// the Matchups page (sync wrapper, reads from already-loaded caches) — takes
+// already-resolved opponent rosters and stats data so it never needs to fetch anything
+// itself. Builds two lists (singles, doubles) for one player, filtered to one season
+// (or 'all'), merging the historical archive (matchHistory, singles-only, imported from
+// past seasons) with live in-app results (dg_stats_, both formats, this season forward).
+// For opponents, dg_stats_ never has an entry keyed by their own id — results are only
+// ever recorded keyed by our own player — so their singles results are reconstructed by
+// scanning every event for any entry that names them and flipping the result to their
+// side. Opponent-side doubles are reconstructed the same way — their partner's name,
+// team, and flipped score are all resolved from our own recorded entry.
+function buildHistoryRows(player, isOpponent, scope, oppTeamsList, statsMap){
+  const resolveOppContext = (oppId, fallbackName) => {
+    for(const t of oppTeamsList){
+      const found = (t.players || []).find(pl => pl.id === oppId);
+      if(found) return { name: found.name, team: t.name, pdga: found.pdgaRating || null, rank: found.skillRank != null ? found.skillRank : null };
+    }
+    return { name: fallbackName || 'Unknown', team: null, pdga: null, rank: null };
+  };
+  const resultStyle = (result) => ({
+    color: result==='W' ? 'var(--forest)' : result==='T' ? '#8A6112' : 'var(--red)',
+    bg: result==='W' ? '#E1E8F5' : result==='T' ? '#FBEFD8' : '#F5D9D6'
+  });
+  const rowHtml = (nameLabel, identifier, subLabel, result) => {
+    const { color, bg } = resultStyle(result);
+    return `
+      <div style="display:flex; justify-content:space-between; align-items:center; padding:6px 0; border-top:1px solid var(--line); font-size:12px;">
+        <span>${nameLabel} ${identifier ? `<span style="color:var(--ink-soft); font-size:11px;">(${esc(identifier)})</span>` : ''}<span style="color:var(--ink-soft); font-size:10.5px; display:block;">${esc(subLabel)}</span></span>
+        <span class="pill" style="background:${bg}; color:${color}; font-size:10px; font-weight:800; white-space:nowrap;">${result}</span>
+      </div>`;
+  };
+  const matchScope = (season) => scope === 'all' || season === scope;
+
+  // ---- SINGLES: historical archive + live ----
+  let singlesRows = [];
+  (player.matchHistory || []).filter(h => (h.type||'singles')==='singles').forEach(h=>{
+    if(!matchScope(h.season)) return;
+    const identifier = [h.opponentTeam, h.opponentPdga?`PDGA ${h.opponentPdga}`:null, h.opponentPowerRank!=null?`Rank ${Number(h.opponentPowerRank).toFixed(1)}`:null].filter(Boolean).join(' · ');
+    singlesRows.push({ sortKey: h.season||'', html: rowHtml(`vs ${esc(h.opponent)}`, identifier, h.event, h.result), result: h.result });
+  });
+  Object.keys(statsMap).forEach(eventId=>{
+    const ev = state.events.find(e=>e.id===eventId);
+    if(!ev) return;
+    const season = effectiveSeason(ev);
+    if(!matchScope(season)) return;
+    const d = fmtDate(ev.date);
+    const data = statsMap[eventId];
+    if(isOpponent){
+      Object.keys(data).forEach(tbId=>{
+        if(tbId === '__adjustments') return;
+        const s = data[tbId];
+        if(!s.matchplay || !s.matchplay.played || s.matchplay.opponentPlayerId !== player.id) return;
+        const tb = state.players.find(p=>p.id===tbId);
+        const oppResult = s.matchplay.result === 'W' ? 'L' : s.matchplay.result === 'L' ? 'W' : 'T';
+        singlesRows.push({ sortKey: ev.date, html: rowHtml(`vs ${esc(tb ? tb.name : 'Two Buff player')}`, '2Buff', `${esc(ev.name)} · ${d.mon} ${d.day}`, oppResult), result: oppResult });
+      });
+    } else {
+      const s = data[player.id];
+      if(s && s.matchplay && s.matchplay.played){
+        const ctx = resolveOppContext(s.matchplay.opponentPlayerId, s.matchplay.opponentName);
+        const identifier = [ctx.team, ctx.pdga?`PDGA ${ctx.pdga}`:null, ctx.rank!=null?`Rank ${Number(ctx.rank).toFixed(1)}`:null].filter(Boolean).join(' · ');
+        singlesRows.push({ sortKey: ev.date, html: rowHtml(`vs ${esc(ctx.name)}`, identifier, `${esc(ev.name)} · ${d.mon} ${d.day}`, s.matchplay.result), result: s.matchplay.result });
+      }
+    }
+  });
+  singlesRows.sort((a,b)=> (b.sortKey||'').localeCompare(a.sortKey||''));
+  const sRec = singlesRows.reduce((acc,r)=>{ acc[r.result]=(acc[r.result]||0)+1; return acc; }, {});
+  const singlesRecordLine = `${sRec.W||0}-${sRec.L||0}${sRec.T?`-${sRec.T}`:''}`;
+
+  // ---- DOUBLES: live only (historical archive is singles-only) ----
+  let doublesRows = [];
+  Object.keys(statsMap).forEach(eventId=>{
+    const ev = state.events.find(e=>e.id===eventId);
+    if(!ev) return;
+    const season = effectiveSeason(ev);
+    if(!matchScope(season)) return;
+    const d = fmtDate(ev.date);
+    const data = statsMap[eventId];
+
+    if(!isOpponent){
+      const s = data[player.id];
+      if(!s || !s.doubles || !s.doubles.played) return;
+      const e = normalizeGroupEntry(s.doubles);
+      const oppContexts = (e.oppIds||[]).map((id,i)=>resolveOppContext(id, (e.oppNames||[])[i]));
+      const oppNamesJoined = oppContexts.map(c=>c.name).join(' & ') || 'Unknown opponents';
+      const team = oppContexts.find(c=>c.team)?.team;
+      const partners = (e.partnerNames||[]).filter(Boolean).join(' & ');
+      const scoreText = formatDoublesScore(e);
+      const identifier = [team, scoreText].filter(Boolean).join(' · ');
+      const nameLabel = esc((partners?`w/ ${partners} `:'') + 'vs ' + oppNamesJoined);
+      doublesRows.push({ sortKey: ev.date, html: rowHtml(nameLabel, identifier, `${groupFormatLabel(e.format)} · ${esc(ev.name)} · ${d.mon} ${d.day}`, e.result), result: e.result });
+    } else {
+      // Same reconstruction idea as opponent singles: dg_stats_ only ever stores a
+      // doubles entry keyed by our own players, with the opponent pair referenced
+      // inside it. Scan every one of our players' doubles entries in this event for
+      // any that name this specific opponent, then flip perspective — their side's
+      // "opponent" is our TB pairing, their partner is the other name in oppIds, and
+      // the score/result both flip. Every TB partner on our side carries an identical
+      // duplicated copy of the same entry, so a signature (the sorted oppIds) is
+      // tracked per event to avoid counting the same real match twice.
+      const seenSignatures = new Set();
+      Object.keys(data).forEach(tbId=>{
+        if(tbId === '__adjustments') return;
+        const s = data[tbId];
+        if(!s.doubles || !s.doubles.played) return;
+        const e = normalizeGroupEntry(s.doubles);
+        if(!(e.oppIds||[]).includes(player.id)) return;
+        const signature = [...(e.oppIds||[])].sort().join(',');
+        if(seenSignatures.has(signature)) return;
+        seenSignatures.add(signature);
+
+        const tb = state.players.find(p=>p.id===tbId);
+        const tbSideNames = [tb ? tb.name : 'Two Buff player', ...(e.partnerNames||[])].filter(Boolean).join(' & ');
+        const partnerNames = (e.oppIds||[]).filter(id=>id!==player.id).map(id=>{
+          for(const t of oppTeamsList){
+            const found = (t.players||[]).find(pl=>pl.id===id);
+            if(found) return found.name;
+          }
+          return null;
+        }).filter(Boolean);
+        const partners = partnerNames.join(' & ');
+        const oppResult = e.result === 'W' ? 'L' : e.result === 'L' ? 'W' : 'T';
+        const flippedScore = formatDoublesScore({ ourScore: e.oppScore, oppScore: e.ourScore, playoffHoles: e.playoffHoles });
+        const identifier = ['2Buff', flippedScore].filter(Boolean).join(' · ');
+        const nameLabel = esc((partners?`w/ ${partners} `:'') + 'vs ' + tbSideNames);
+        doublesRows.push({ sortKey: ev.date, html: rowHtml(nameLabel, identifier, `${groupFormatLabel(e.format)} · ${esc(ev.name)} · ${d.mon} ${d.day}`, oppResult), result: oppResult });
+      });
+    }
+  });
+  doublesRows.sort((a,b)=> (b.sortKey||'').localeCompare(a.sortKey||''));
+  const dRec = doublesRows.reduce((acc,r)=>{ acc[r.result]=(acc[r.result]||0)+1; return acc; }, {});
+  const doublesRecordLine = `${dRec.W||0}-${dRec.L||0}${dRec.T?`-${dRec.T}`:''}`;
+
+  return { singlesRows, doublesRows, singlesRecordLine, doublesRecordLine };
+}
+// Every distinct season we have any data for, newest first, for building season-pill
+// selectors. Pulls from both the historical archive (matchHistory, tagged at import
+// time — our own roster already carries the same season tags as every opponent, since
+// they were imported from the same source files) and live events — so it stays correct
+// automatically as new seasons get added, with no hardcoded season list to maintain.
+function getAvailableSeasons(){
+  const seasons = new Set();
+  state.players.forEach(p => (p.matchHistory||[]).forEach(h => { if(h.season) seasons.add(h.season); }));
+  state.events.forEach(e => seasons.add(effectiveSeason(e)));
+  return [...seasons].sort().reverse();
+}
 function toggleExpandTeamEvent(eventId){
   state.expandedTeamEventId = (state.expandedTeamEventId === eventId) ? null : eventId;
   render();
@@ -3306,101 +3458,40 @@ async function getOpponentPlayerHistory(oppPlayerId){
 function toggleExpandPlayer(id){
   const opening = state.expandedPlayerId !== id;
   state.expandedPlayerId = opening ? id : null;
-  if(opening) state.expandedPlayerCardScope = state.statsScope || 'season'; // sensible default; overridable per-card from here
+  if(opening) state.expandedPlayerCardScope = getAvailableSeasons()[0] || 'all'; // default to the most recent season; overridable per-card from here
   render();
+}
+async function renderPlayerHistoryHtml(playerId){
+  const player = state.players.find(p=>p.id===playerId);
+  if(!player) return '';
+  const [oppTeamsList, statsMap] = await Promise.all([loadOppTeams(), getAllStatsData()]);
+  const seasons = getAvailableSeasons();
+  const scope = state.expandedPlayerCardScope || (seasons[0] || 'all');
+  const { singlesRows, doublesRows, singlesRecordLine, doublesRecordLine } = buildHistoryRows(player, false, scope, oppTeamsList, statsMap);
+
+  const pillsHtml = `
+    <div class="season-tabs" style="margin-bottom:10px;">
+      ${seasons.map(s=>`<button class="season-tab-sm ${scope===s?'active':''}" onclick="event.stopPropagation(); setPlayerCardScope('${s}')">${esc(s)}</button>`).join('')}
+      <button class="season-tab-sm ${scope==='all'?'active':''}" onclick="event.stopPropagation(); setPlayerCardScope('all')">All-Time</button>
+    </div>`;
+  const scopeLabel = scope==='all' ? 'all-time' : scope;
+  const singlesSection = `
+    <div style="margin-top:6px;">
+      <div style="font-size:10.5px; font-weight:800; color:var(--ink-soft); text-transform:uppercase; letter-spacing:0.3px; margin-bottom:2px;">Singles History (${singlesRecordLine})</div>
+      ${singlesRows.map(r=>r.html).join('') || `<div style="font-size:12px; color:var(--ink-soft); padding:6px 2px;">No singles results for ${esc(scopeLabel)}.</div>`}
+    </div>`;
+  const doublesSection = `
+    <div style="margin-top:14px;">
+      <div style="font-size:10.5px; font-weight:800; color:var(--ink-soft); text-transform:uppercase; letter-spacing:0.3px; margin-bottom:2px;">Doubles History (${doublesRecordLine})</div>
+      ${doublesRows.map(r=>r.html).join('') || `<div style="font-size:12px; color:var(--ink-soft); padding:6px 2px;">No doubles results for ${esc(scopeLabel)}.</div>`}
+    </div>`;
+
+  return pillsHtml + singlesSection + doublesSection +
+    `<button class="btn btn-outline btn-sm" style="width:100%; margin-top:12px;" onclick="event.stopPropagation(); sharePlayerCard('${playerId}')">⬇️ Share Image</button>`;
 }
 function setPlayerCardScope(scope){
   state.expandedPlayerCardScope = scope;
   render();
-}
-async function renderPlayerHistoryHtml(playerId){
-  const scope = state.expandedPlayerCardScope || 'season';
-  const currentSeason = inferSeason(todayISO());
-  const fullHistory = await getPlayerEventHistory(playerId);
-  const history = scope === 'all' ? fullHistory : fullHistory.filter(h => effectiveSeason(h.event) === currentSeason);
-
-  const oppTeamsForHistory = await loadOppTeams();
-  // Finds a live opponent player's current team/PDGA/Power Rank by id, searching every
-  // opponent roster. Falls back gracefully to just a name if the player record can't be
-  // found (e.g. removed from the roster since the match was played).
-  const resolveOppContext = (oppId, fallbackName) => {
-    for(const t of oppTeamsForHistory){
-      const found = (t.players || []).find(pl => pl.id === oppId);
-      if(found) return { name: found.name, team: t.name, pdga: found.pdgaRating || null, rank: found.skillRank != null ? found.skillRank : null };
-    }
-    return { name: fallbackName || 'Unknown', team: null, pdga: null, rank: null };
-  };
-  const contextLabel = (ctx) => {
-    const parts = [];
-    if(ctx.team) parts.push(ctx.team);
-    if(ctx.pdga) parts.push(`PDGA ${ctx.pdga}`);
-    if(ctx.rank != null) parts.push(`Rank ${Number(ctx.rank).toFixed(1)}`);
-    return parts.join(' · ');
-  };
-  const resultStyle = (result) => ({
-    color: result==='W' ? 'var(--forest)' : result==='T' ? '#8A6112' : 'var(--red)',
-    bg: result==='W' ? '#E1E8F5' : result==='T' ? '#FBEFD8' : '#F5D9D6'
-  });
-
-  const scopeToggle = `
-    <div class="season-tabs" style="margin-bottom:10px;">
-      <button class="season-tab ${scope==='season'?'active':''}" onclick="event.stopPropagation(); setPlayerCardScope('season')">${esc(currentSeason)} · Current</button>
-      <button class="season-tab ${scope==='all'?'active':''}" onclick="event.stopPropagation(); setPlayerCardScope('all')">All-Time</button>
-    </div>`;
-
-  if(history.length === 0){
-    return scopeToggle + `<div style="font-size:12.5px; color:var(--ink-soft); padding:10px 2px 2px;">No recorded results${scope==='season' ? ' for ' + esc(currentSeason) : ''}.</div>`;
-  }
-
-  // ---- Singles ----
-  const singlesEntries = history.filter(h => h.matchplay);
-  const singlesRecord = singlesEntries.reduce((acc,h)=>{ acc[h.matchplay.result]=(acc[h.matchplay.result]||0)+1; return acc; }, {});
-  const singlesRecordLine = `${singlesRecord.W||0}-${singlesRecord.L||0}${singlesRecord.T ? `-${singlesRecord.T}` : ''}`;
-  const singlesRows = singlesEntries.map(h=>{
-    const ctx = resolveOppContext(h.matchplay.opponentPlayerId, h.matchplay.opponentName);
-    const { color, bg } = resultStyle(h.matchplay.result);
-    const d = fmtDate(h.event.date);
-    const label = contextLabel(ctx);
-    return `
-      <div style="display:flex; justify-content:space-between; align-items:center; padding:6px 0; border-top:1px solid var(--line); font-size:12px;">
-        <span>vs ${esc(ctx.name)} ${label ? `<span style="color:var(--ink-soft); font-size:11px;">(${esc(label)})</span>` : ''}<span style="color:var(--ink-soft); font-size:10.5px; display:block;">${d.mon} ${d.day}</span></span>
-        <span class="pill" style="background:${bg}; color:${color}; font-size:10px; font-weight:800; white-space:nowrap;">${h.matchplay.result}</span>
-      </div>`;
-  }).join('');
-  const singlesSection = `
-    <div style="margin-top:6px;">
-      <div style="font-size:10.5px; font-weight:800; color:var(--ink-soft); text-transform:uppercase; letter-spacing:0.3px; margin-bottom:2px;">Singles History (${singlesRecordLine})</div>
-      ${singlesRows || `<div style="font-size:12px; color:var(--ink-soft); padding:6px 2px;">No singles results${scope==='season' ? ' this season' : ''}.</div>`}
-    </div>`;
-
-  // ---- Doubles (also covers stroke-singles / triples group formats) ----
-  const doublesEntries = history.filter(h => h.doubles);
-  const doublesRecord = doublesEntries.reduce((acc,h)=>{ const r=normalizeGroupEntry(h.doubles).result; acc[r]=(acc[r]||0)+1; return acc; }, {});
-  const doublesRecordLine = `${doublesRecord.W||0}-${doublesRecord.L||0}${doublesRecord.T ? `-${doublesRecord.T}` : ''}`;
-  const doublesRows = doublesEntries.map(h=>{
-    const e = normalizeGroupEntry(h.doubles);
-    const oppContexts = (e.oppIds || []).map((id,i) => resolveOppContext(id, (e.oppNames||[])[i]));
-    const oppNamesJoined = oppContexts.map(c=>c.name).join(' & ') || 'Unknown opponents';
-    const team = oppContexts.find(c=>c.team)?.team; // opponents in one matchup are always the same team
-    const partners = (e.partnerNames || []).filter(Boolean).join(' & ');
-    const { color, bg } = resultStyle(e.result);
-    const d = fmtDate(h.event.date);
-    const scoreText = formatDoublesScore(e);
-    const subBits = [team, scoreText].filter(Boolean).join(' · ');
-    return `
-      <div style="display:flex; justify-content:space-between; align-items:center; padding:6px 0; border-top:1px solid var(--line); font-size:12px;">
-        <span>${partners ? `w/ ${esc(partners)} ` : ''}vs ${esc(oppNamesJoined)} ${subBits ? `<span style="color:var(--ink-soft); font-size:11px;">(${esc(subBits)})</span>` : ''}<span style="color:var(--ink-soft); font-size:10.5px; display:block;">${groupFormatLabel(e.format)} · ${d.mon} ${d.day}</span></span>
-        <span class="pill" style="background:${bg}; color:${color}; font-size:10px; font-weight:800; white-space:nowrap;">${e.result}</span>
-      </div>`;
-  }).join('');
-  const doublesSection = `
-    <div style="margin-top:14px;">
-      <div style="font-size:10.5px; font-weight:800; color:var(--ink-soft); text-transform:uppercase; letter-spacing:0.3px; margin-bottom:2px;">Doubles History (${doublesRecordLine})</div>
-      ${doublesRows || `<div style="font-size:12px; color:var(--ink-soft); padding:6px 2px;">No doubles results${scope==='season' ? ' this season' : ''}.</div>`}
-    </div>`;
-
-  return scopeToggle + singlesSection + doublesSection +
-    `<button class="btn btn-outline btn-sm" style="width:100%; margin-top:12px;" onclick="event.stopPropagation(); sharePlayerCard('${playerId}')">⬇️ Share Image</button>`;
 }
 async function teamCardFor(p){
   const expanded = state.expandedPlayerId === p.id;
@@ -3441,7 +3532,8 @@ function genderBadgeHtml(p){
   if(!p.gender) return '';
   return `<span class="gender-badge ${p.gender==='F' ? 'g-f':'g-m'}">${p.gender}</span>`;
 }
-function renderPlayerProfileSummary(p){
+function renderPlayerProfileSummary(p, includeHistory){
+  if(includeHistory === undefined) includeHistory = true; // Team/Opponent roster pages keep the plain historical Season History; Stats page passes false since it has its own season-filterable view
   const bits = [];
   if(state.adminMode && p.skillRank) bits.push(`⭐ Skill ${Number(p.skillRank).toFixed(1)}/10`); // admin-only
   if(p.pdgaRating) bits.push(`PDGA ${p.pdgaRating}`);
@@ -3450,13 +3542,14 @@ function renderPlayerProfileSummary(p){
   if(p.age) bits.push(`Age ${p.age}`);
   const summaryLine = bits.length ? `<div style="display:flex; flex-wrap:wrap; gap:6px; padding:8px 2px 2px;">${bits.map(b=>`<span class="pill pill-gray">${esc(b)}</span>`).join('')}</div>` : '';
   const notesLine = p.notes ? `<div style="font-size:12.5px; color:var(--ink); white-space:pre-wrap; padding:6px 2px 2px; line-height:1.5;">📝 ${esc(p.notes)}</div>` : '';
-  const historyLine = renderSeasonHistory(p);
+  const historyLine = includeHistory ? renderSeasonHistory(p) : '';
   return summaryLine + notesLine + historyLine;
 }
-// Season History: real match-by-match results pulled from the season data —
-// who they played, that opponent's team, and the result. Independent of the
-// app's own live match-tracking (RSVP/stats/results), which only covers
-// matches actually logged going forward inside the app itself.
+// Season History: real match-by-match results pulled from the historical archive —
+// who they played, that opponent's team, and the result. Used on the Team and Opponent
+// Teams pages. The Stats page and Matchups page use the newer season-filterable,
+// singles/doubles-split view (buildHistoryRows) instead, which also merges in live
+// results — this plain version only ever shows the archive as originally imported.
 // Builds the "(Team · PDGA 959 · Rank 6.5)" context shown next to each opponent
 // in Season History. PDGA and Power Rank are only included when we actually
 // have them — most opponents will show team only, some will show all three.
@@ -3485,35 +3578,60 @@ function renderSeasonHistory(p){
       ${rows}
     </div>`;
 }
-// Collapsible variant for the Matchups page — sits inside the card that already
-// opens on long-press (renderMatchupCard). Doesn't touch the long-press mechanic
-// at all; it's just an extra toggle *within* that existing card. Scrollable since
-// well-established players can have 10+ logged matches.
-function renderSeasonHistoryDropdown(p){
-  if(!p.matchHistory || p.matchHistory.length === 0) return '';
-  const record = p.matchHistory.reduce((acc,h)=>{ acc[h.result]=(acc[h.result]||0)+1; return acc; }, {});
-  const recordLine = `${record.W||0}-${record.L||0}${record.T ? `-${record.T}` : ''}`;
-  const isOpen = state.expandedMatchupHistoryId === p.id;
-  const rows = p.matchHistory.map(h => {
-    const color = h.result==='W' ? 'var(--forest)' : h.result==='L' ? 'var(--red)' : 'var(--ink-soft)';
-    const bg = h.result==='W' ? '#E1E8F5' : h.result==='L' ? '#F5D9D6' : 'var(--chip-bg)';
-    return `
-      <div style="display:flex; justify-content:space-between; align-items:center; padding:5px 0; border-top:1px solid var(--line); font-size:12px;">
-        <span>vs ${esc(h.opponent)} <span style="color:var(--ink-soft); font-size:11px;">(${esc(opponentContextLine(h))})</span></span>
-        <span class="pill" style="background:${bg}; color:${color}; font-size:10px; font-weight:800;">${h.result}</span>
+// Collapsible variant for the Matchups page — sits inside the card that already opens
+// on long-press (renderMatchupCard). Doesn't touch the long-press mechanic at all; it's
+// just an extra toggle *within* that existing card. Season-filterable and split into
+// Singles/Doubles like the Stats page, via the same shared buildHistoryRows core — but
+// reads synchronously from already-loaded caches (oppTeamsList passed in, stats from
+// state.allStatsCache) rather than awaiting anything, since this renders inside a
+// synchronous template-literal chain that can't easily be made async.
+function renderSeasonHistoryDropdown(player, isOpponent, oppTeamsList){
+  const isOpen = state.expandedMatchupHistoryId === player.id;
+  const statsMap = state.allStatsCache || {};
+  const allTime = buildHistoryRows(player, isOpponent, 'all', oppTeamsList, statsMap);
+  if(allTime.singlesRows.length === 0 && allTime.doublesRows.length === 0) return '';
+  const combined = [...allTime.singlesRows, ...allTime.doublesRows];
+  const rec = combined.reduce((acc,r)=>{ acc[r.result]=(acc[r.result]||0)+1; return acc; }, {});
+  const totalRecord = `${rec.W||0}-${rec.L||0}${rec.T?`-${rec.T}`:''}`;
+
+  let expandedHtml = '';
+  if(isOpen){
+    const seasons = getAvailableSeasons();
+    const scope = state.expandedMatchupHistoryScope || 'all';
+    const data = scope === 'all' ? allTime : buildHistoryRows(player, isOpponent, scope, oppTeamsList, statsMap);
+    const pillsHtml = `
+      <div class="season-tabs" style="margin:6px 0 8px;">
+        ${seasons.map(s=>`<button class="season-tab-sm ${scope===s?'active':''}" onclick="event.stopPropagation(); setMatchupHistoryScope('${s}')">${esc(s)}</button>`).join('')}
+        <button class="season-tab-sm ${scope==='all'?'active':''}" onclick="event.stopPropagation(); setMatchupHistoryScope('all')">All-Time</button>
       </div>`;
-  }).join('');
+    const scopeLabel = scope==='all' ? 'all-time' : scope;
+    expandedHtml = `
+      <div style="max-height:280px; overflow-y:auto; margin-top:2px;">
+        ${pillsHtml}
+        <div style="font-size:10.5px; font-weight:800; color:var(--ink-soft); text-transform:uppercase; letter-spacing:0.3px; margin-bottom:2px;">Singles (${data.singlesRecordLine})</div>
+        ${data.singlesRows.map(r=>r.html).join('') || `<div style="font-size:12px; color:var(--ink-soft); padding:4px 2px;">No singles results for ${esc(scopeLabel)}.</div>`}
+        <div style="font-size:10.5px; font-weight:800; color:var(--ink-soft); text-transform:uppercase; letter-spacing:0.3px; margin:10px 0 2px;">Doubles (${data.doublesRecordLine})</div>
+        ${data.doublesRows.map(r=>r.html).join('') || `<div style="font-size:12px; color:var(--ink-soft); padding:4px 2px;">No doubles results for ${esc(scopeLabel)}.</div>`}
+      </div>`;
+  }
+
   return `
     <div style="margin-top:8px; ${isOpen ? 'border-top:1px solid var(--line); padding-top:8px;' : ''}">
-      <button class="btn btn-ghost btn-sm" style="width:100%; display:flex; align-items:center; justify-content:space-between;" onclick="event.stopPropagation(); toggleMatchupHistory('${p.id}')">
-        <span>📊 Season History (${recordLine})</span>
+      <button class="btn btn-ghost btn-sm" style="width:100%; display:flex; align-items:center; justify-content:space-between;" onclick="event.stopPropagation(); toggleMatchupHistory('${player.id}')">
+        <span>📊 Season History (${totalRecord})</span>
         <span>${isOpen ? '▲' : '▼'}</span>
       </button>
-      ${isOpen ? `<div style="max-height:220px; overflow-y:auto; margin-top:2px;">${rows}</div>` : ''}
+      ${expandedHtml}
     </div>`;
 }
 function toggleMatchupHistory(id){
-  state.expandedMatchupHistoryId = (state.expandedMatchupHistoryId === id) ? null : id;
+  const opening = state.expandedMatchupHistoryId !== id;
+  state.expandedMatchupHistoryId = opening ? id : null;
+  if(opening) state.expandedMatchupHistoryScope = 'all'; // default to full history when opening a different player's dropdown
+  render();
+}
+function setMatchupHistoryScope(scope){
+  state.expandedMatchupHistoryScope = scope;
   render();
 }
 function csvEscape(val){
@@ -3893,7 +4011,8 @@ function compactPlayerInfoLine(p){
 async function renderMatchups(){
   const [teams, ms] = await Promise.all([
     loadOppTeams(),
-    state.matchupStateCache ? Promise.resolve(state.matchupStateCache) : loadMatchupState()
+    state.matchupStateCache ? Promise.resolve(state.matchupStateCache) : loadMatchupState(),
+    getAllStatsData() // pre-fetched so the Season History dropdown can read state.allStatsCache synchronously below
   ]);
   state.matchupStateCache = ms; // reused by tap handlers so every tap doesn't re-fetch over the network
   const activeTB = state.players.filter(p=>p.active !== false);
@@ -4030,7 +4149,7 @@ async function renderMatchups(){
           ${state.adminMode ? `<button class="btn btn-outline btn-sm" style="margin-top:8px;" onclick="openOppPlayerEditModal('${currentTeam.id}','${player.id}')">✏️ Edit Notes &amp; Suggestions</button>` : ''}`;
       }
     }
-    inner += renderSeasonHistoryDropdown(player); // applies to both Two Buff players and opponents alike
+    inner += renderSeasonHistoryDropdown(player, isOpponent, teams); // applies to both Two Buff players and opponents alike
     // Sit-out toggle, scoped to the section's format. Only available with an event
     // selected AND when the player isn't already paired in that format — benching is a
     // "who's playing" decision made before matchups are formed.
@@ -4586,11 +4705,9 @@ async function clearSinglesResultIfExists(eventId, tbId){
   const stats = await loadStats(eventId);
   const cur = stats[tbId];
   if(cur && cur.matchplay && cur.matchplay.played){
-    const oppId = cur.matchplay.opponentPlayerId;
     cur.matchplay = blankResultEntry('matchplay');
     render();
     saveStats(eventId, stats).catch(err=>console.error('Result clear failed', err));
-    if(oppId) syncSinglesMatchHistory(eventId, tbId, oppId, null).catch(err=>console.error('Match history sync failed', err));
   }
 }
 async function clearDoublesResultIfExists(eventId, tbId){
@@ -4608,46 +4725,6 @@ async function clearDoublesResultIfExists(eventId, tbId){
     saveStats(eventId, stats).catch(err=>console.error('Result clear failed', err));
   }
 }
-// Keeps Season History in sync with live singles results recorded during the season.
-// Writes a matching entry to BOTH players' matchHistory (their own result, and the
-// mirrored result on the opponent's side), pulling PDGA/Power Rank fresh from each
-// player's current live record — so this never goes stale the way a one-time import
-// would. Tagged with a stable liveMatchKey so re-recording or clearing a result finds
-// and replaces the same entry instead of leaving duplicates behind.
-// Pass result=null to clear (used when a result is toggled off or a matchup is unpaired).
-async function syncSinglesMatchHistory(eventId, tbId, oppId, result){
-  try{
-    const ev = state.events.find(e=>e.id===eventId);
-    const eventLabel = ev ? ev.name : 'Event';
-    const liveKey = 'live:' + eventId + ':' + tbId + ':' + oppId;
-
-    const tb = state.players.find(p=>p.id===tbId);
-    const teams = await loadOppTeams();
-    const team = teams.find(t=>t.id === (state.matchupStateCache && state.matchupStateCache.currentTeamId));
-    const opp = team && team.players.find(p=>p.id===oppId);
-    if(!tb || !opp || !team) return;
-
-    tb.matchHistory = (tb.matchHistory || []).filter(h => h.liveMatchKey !== liveKey);
-    opp.matchHistory = (opp.matchHistory || []).filter(h => h.liveMatchKey !== liveKey);
-
-    if(result){
-      const oppResult = result === 'W' ? 'L' : result === 'L' ? 'W' : 'T';
-      tb.matchHistory.push({
-        opponent: opp.name, opponentTeam: team.name, result, event: eventLabel, week: null,
-        opponentPdga: opp.pdgaRating || null, opponentPowerRank: opp.skillRank != null ? opp.skillRank : null,
-        liveMatchKey: liveKey
-      });
-      opp.matchHistory.push({
-        opponent: tb.name, opponentTeam: '2Buff', result: oppResult, event: eventLabel, week: null,
-        opponentPdga: tb.pdgaRating || null, opponentPowerRank: tb.skillRank != null ? tb.skillRank : null,
-        liveMatchKey: liveKey
-      });
-    }
-
-    await savePlayers();
-    await saveOppTeams(teams);
-  } catch(err){ console.error('syncSinglesMatchHistory failed', err); }
-}
 async function recordSinglesResult(eventId, tbId, oppId, result){
   const teams = await loadOppTeams();
   const team = teams.find(t=>t.id === (state.matchupStateCache && state.matchupStateCache.currentTeamId));
@@ -4656,17 +4733,14 @@ async function recordSinglesResult(eventId, tbId, oppId, result){
   const stats = await loadStats(eventId);
   const cur = stats[tbId] || {};
   const existing = cur.matchplay || blankResultEntry('matchplay');
-  let finalResult = result;
   if(existing.played && existing.result === result){
     cur.matchplay = blankResultEntry('matchplay'); // tap again to clear
-    finalResult = null;
   } else {
     cur.matchplay = {played:true, result, powerRank: existing.powerRank || 5, opponentPlayerId: oppId, opponentName: oppName, marginUp: existing.marginUp ?? null, holesRemaining: existing.holesRemaining ?? null};
   }
   stats[tbId] = cur;
   render();
   saveStats(eventId, stats).catch(err=>console.error('Result save failed', err));
-  syncSinglesMatchHistory(eventId, tbId, oppId, finalResult).catch(err=>console.error('Match history sync failed', err));
 }
 async function recordGroupResult(eventId, tbIds, oppIds, format, result){
   const teams = await loadOppTeams();
@@ -5169,7 +5243,7 @@ async function renderStats(){
           <div class="rec" style="color:${hasMp ? 'var(--forest-dark)':'var(--ink-soft)'};">${hasMp ? r.mpW+'-'+r.mpL+'-'+r.mpT : '—'}<span class="sub">Singles</span></div>
           <div class="rec" style="color:${hasDb ? 'var(--forest-dark)':'var(--ink-soft)'};">${hasDb ? r.dbW+'-'+r.dbL+'-'+r.dbT : '—'}<span class="sub">Doubles</span></div>
         </div>
-        ${expanded ? `<div onclick="event.stopPropagation()">${renderPlayerProfileSummary(p)}${historyHtml}</div>` : ''}
+        ${expanded ? `<div onclick="event.stopPropagation()">${renderPlayerProfileSummary(p, false)}${historyHtml}</div>` : ''}
       </div>`;
   }));
   const rows = rowCards.join('');
