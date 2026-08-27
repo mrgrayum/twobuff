@@ -3589,7 +3589,10 @@ function renderSeasonHistoryDropdown(player, isOpponent, oppTeamsList){
   const isOpen = state.expandedMatchupHistoryId === player.id;
   const statsMap = state.allStatsCache || {};
   const allTime = buildHistoryRows(player, isOpponent, 'all', oppTeamsList, statsMap);
-  if(allTime.singlesRows.length === 0 && allTime.doublesRows.length === 0) return '';
+  // Previously this returned '' (hiding the whole Season History section) whenever a player
+  // had zero recorded matches — which made the dropdown look "missing" rather than just empty.
+  // Now it always renders, matching the Team/Opponents roster views, which show a
+  // "No recorded results" message instead of hiding the section entirely.
   const combined = [...allTime.singlesRows, ...allTime.doublesRows];
   const rec = combined.reduce((acc,r)=>{ acc[r.result]=(acc[r.result]||0)+1; return acc; }, {});
   const totalRecord = `${rec.W||0}-${rec.L||0}${rec.T?`-${rec.T}`:''}`;
@@ -3675,7 +3678,7 @@ function exportTeamRosterCSV(){
 }
 async function exportOpponentRostersCSV(){
   const teams = await loadOppTeams();
-  const header = ['Team','Player Name','Gender','Skill Rank','PDGA Rating','Throw Hand','Handedness','Age','Notes','Suggested Two Buff Matchups'];
+  const header = ['Team','Player Name','Status','Gender','Skill Rank','PDGA Rating','Throw Hand','Handedness','Age','Notes','Suggested Two Buff Matchups'];
   const rows = [header];
   if(teams.length === 0){
     showToast('No opponent teams to export');
@@ -3683,7 +3686,7 @@ async function exportOpponentRostersCSV(){
   }
   teams.forEach(t=>{
     if(!t.players || t.players.length === 0){
-      rows.push([t.name,'','','','','','','','','']);
+      rows.push([t.name,'','','','','','','','','','']);
       return;
     }
     t.players.forEach(p=>{
@@ -3693,6 +3696,7 @@ async function exportOpponentRostersCSV(){
       rows.push([
         t.name,
         p.name || '',
+        p.active===false ? 'Paused' : 'Active',
         p.gender || '',
         p.skillRank != null ? p.skillRank : '',
         p.pdgaRating != null ? p.pdgaRating : '',
@@ -4079,7 +4083,7 @@ async function renderMatchups(){
   // ---- Singles (each opponent team keeps its own independent set of pairings) ----
   const singles = getSinglesBucket(ms);
   const usedOppIds = new Set(Object.values(singles));
-  const availableOpp = currentTeam.players.filter(p=>!usedOppIds.has(p.id) && !benchedSingles.has(p.id));
+  const availableOpp = currentTeam.players.filter(p=>p.active !== false && !usedOppIds.has(p.id) && !benchedSingles.has(p.id));
   const availableTB = eligibleTB.filter(p=>singles[p.id] === undefined && !benchedSingles.has(p.id));
 
   const singlesConnector = (tbId, oppId, key) => {
@@ -4211,7 +4215,7 @@ async function renderMatchups(){
   const pairedTBIds = new Set(doubles.flatMap(m=>m.tb));
   const pairedOppIds = new Set(doubles.flatMap(m=>m.opp));
   const availableDoublesTB = eligibleTB.filter(p=>!pairedTBIds.has(p.id) && !benchedDoubles.has(p.id));
-  const availableDoublesOpp = currentTeam.players.filter(p=>!pairedOppIds.has(p.id) && !benchedDoubles.has(p.id));
+  const availableDoublesOpp = currentTeam.players.filter(p=>p.active !== false && !pairedOppIds.has(p.id) && !benchedDoubles.has(p.id));
 
   const doublesConnector = (m, key) => {
     let statusEmoji = '';
@@ -4916,9 +4920,14 @@ async function oppPlayerRowFor(team, p){
         }).join('');
     detailHtml = `
       <div style="padding:10px 2px 2px;">
+        <div style="font-size:12px; color:var(--ink-soft);">${p.active===false ? 'Paused' : 'Active'}</div>
         ${renderPlayerProfileSummary(p)}
         ${p.notes ? '' : '<div style="font-size:12.5px; color:var(--ink-soft); padding:8px 2px 2px;">No notes yet.</div>'}
-        ${state.adminMode ? `<button class="btn btn-ghost btn-sm" style="margin-top:10px;" onclick="event.stopPropagation(); openOppPlayerEditModal('${team.id}','${p.id}')">✏️ Edit Player</button>` : ''}
+        ${state.adminMode ? `
+          <div class="btn-row" style="margin-top:10px;">
+            <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation(); openOppPlayerEditModal('${team.id}','${p.id}')">✏️ Edit Player</button>
+            <button class="btn ${p.active===false ? 'btn-primary' : 'btn-outline'} btn-sm" onclick="event.stopPropagation(); toggleOppPlayerActive('${team.id}','${p.id}')">${p.active===false ? '↩️ Resume' : '⏸️ Pause'}</button>
+          </div>` : ''}
         <div style="font-size:10.5px; font-weight:800; color:var(--ink-soft); text-transform:uppercase; letter-spacing:0.3px; margin:12px 0 2px;">Head-to-Head vs Two Buff</div>
         ${historyHtml}
       </div>`;
@@ -4926,13 +4935,23 @@ async function oppPlayerRowFor(team, p){
   return `
     <div style="${expanded
         ? 'background:var(--chip-bg); border:1px solid var(--line); border-radius:14px; padding:12px; margin:8px 0; cursor:pointer;'
-        : 'border-top:1px solid var(--line); padding:9px 2px; cursor:pointer;'}" onclick="toggleExpandOppPlayer('${p.id}')">
+        : 'border-top:1px solid var(--line); padding:9px 2px; cursor:pointer;'}${p.active===false ? ' opacity:0.55;' : ''}" onclick="toggleExpandOppPlayer('${p.id}')">
       <div style="display:flex; justify-content:space-between; align-items:center;">
-        <span style="font-size:13.5px; font-weight:700; display:inline-flex; align-items:center; gap:6px;">${esc(p.name)}${genderBadgeHtml(p)}${p.notes ? ' 📝' : ''}</span>
+        <span style="font-size:13.5px; font-weight:700; display:inline-flex; align-items:center; gap:6px;">${esc(p.name)}${genderBadgeHtml(p)}${p.notes ? ' 📝' : ''}${p.active===false ? ' <span class="pill pill-gray" style="font-size:9.5px;">Paused</span>' : ''}</span>
         <span style="font-size:11px; color:var(--ink-soft);">${expanded ? '▲' : '▼'}</span>
       </div>
       ${detailHtml}
     </div>`;
+}
+async function toggleOppPlayerActive(teamId, playerId){
+  const teams = await loadOppTeams();
+  const team = teams.find(t=>t.id===teamId);
+  const p = team && team.players.find(pl=>pl.id===playerId);
+  if(!p) return;
+  p.active = p.active===false ? true : false;
+  await saveOppTeams(teams);
+  render();
+  showToast(p.active===false ? 'Player paused' : 'Player resumed');
 }
 function toggleExpandOppTeam(id){
   state.expandedOppTeamId = (state.expandedOppTeamId === id) ? null : id;
