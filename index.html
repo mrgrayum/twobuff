@@ -428,6 +428,7 @@ const state = {
   pastExpanded: {},       // season -> bool, whether the "past events" group is expanded
   statsScope: 'season',   // 'season' = current season only (default), 'all' = all-time
   expandedPlayerId: null, // Team tab: which player card is expanded to show their event history
+  expandedPlayerCardScope: 'season', // Stats page: season-vs-all-time filter for the ONE currently-expanded player card, independent of the page-wide pills
   armedSinglesTB: null,    // Matchups: Two Buff player currently selected, awaiting an opponent tap
   armedSinglesOpp: null,   // Matchups: opponent player currently selected, awaiting a Two Buff tap
   armedDoublesTBPair: [],  // Matchups: Two Buff players being grouped (size depends on groupFormat)
@@ -3303,60 +3304,103 @@ async function getOpponentPlayerHistory(oppPlayerId){
   return history;
 }
 function toggleExpandPlayer(id){
-  state.expandedPlayerId = (state.expandedPlayerId === id) ? null : id;
+  const opening = state.expandedPlayerId !== id;
+  state.expandedPlayerId = opening ? id : null;
+  if(opening) state.expandedPlayerCardScope = state.statsScope || 'season'; // sensible default; overridable per-card from here
+  render();
+}
+function setPlayerCardScope(scope){
+  state.expandedPlayerCardScope = scope;
   render();
 }
 async function renderPlayerHistoryHtml(playerId){
-  const history = await getPlayerEventHistory(playerId);
-  if(history.length === 0){
-    return `<div style="font-size:12.5px; color:var(--ink-soft); padding:10px 2px 2px;">No recorded results yet.</div>`;
-  }
+  const scope = state.expandedPlayerCardScope || 'season';
+  const currentSeason = inferSeason(todayISO());
+  const fullHistory = await getPlayerEventHistory(playerId);
+  const history = scope === 'all' ? fullHistory : fullHistory.filter(h => effectiveSeason(h.event) === currentSeason);
+
   const oppTeamsForHistory = await loadOppTeams();
-  const resultPill = (label, entry) => {
-    if(!entry) return '';
-    const color = entry.result==='W' ? 'var(--forest)' : entry.result==='T' ? '#8A6112' : 'var(--red)';
-    const bg = entry.result==='W' ? '#E1E8F5' : entry.result==='T' ? '#FBEFD8' : '#F5D9D6';
-    let detail = '';
-    let displayLabel = label;
-    if(label === 'Doubles'){
-      const e = normalizeGroupEntry(entry);
-      displayLabel = groupFormatLabel(e.format); // true format: Stroke Singles / Doubles / Triples
-      const opps = (e.oppNames || []).filter(Boolean).map(abbrevName).join(' & ');
-      const partners = (e.partnerNames || []).filter(Boolean).map(abbrevName).join(' & ');
-      const bits = [];
-      if(partners) bits.push('w/ ' + esc(partners));
-      if(opps) bits.push('vs ' + esc(opps));
-      const scoreText = formatDoublesScore(e);
-      if(scoreText) bits.push(esc(scoreText));
-      detail = bits.length ? ' · ' + bits.join(' ') : '';
-    } else {
-      const bits = [];
-      if(entry.opponentName) bits.push('vs ' + esc(abbrevName(entry.opponentName)));
-      const scoreText = formatMatchplayMargin(entry);
-      if(scoreText) bits.push(esc(scoreText));
-      detail = bits.length ? ' · ' + bits.join(' ') : '';
+  // Finds a live opponent player's current team/PDGA/Power Rank by id, searching every
+  // opponent roster. Falls back gracefully to just a name if the player record can't be
+  // found (e.g. removed from the roster since the match was played).
+  const resolveOppContext = (oppId, fallbackName) => {
+    for(const t of oppTeamsForHistory){
+      const found = (t.players || []).find(pl => pl.id === oppId);
+      if(found) return { name: found.name, team: t.name, pdga: found.pdgaRating || null, rank: found.skillRank != null ? found.skillRank : null };
     }
-    return `<span class="pill pill-hist" style="background:${bg}; color:${color};">${displayLabel} ${entry.result}${detail}</span>`;
+    return { name: fallbackName || 'Unknown', team: null, pdga: null, rank: null };
   };
-  return history.map(h=>{
+  const contextLabel = (ctx) => {
+    const parts = [];
+    if(ctx.team) parts.push(ctx.team);
+    if(ctx.pdga) parts.push(`PDGA ${ctx.pdga}`);
+    if(ctx.rank != null) parts.push(`Rank ${Number(ctx.rank).toFixed(1)}`);
+    return parts.join(' · ');
+  };
+  const resultStyle = (result) => ({
+    color: result==='W' ? 'var(--forest)' : result==='T' ? '#8A6112' : 'var(--red)',
+    bg: result==='W' ? '#E1E8F5' : result==='T' ? '#FBEFD8' : '#F5D9D6'
+  });
+
+  const scopeToggle = `
+    <div class="season-tabs" style="margin-bottom:10px;">
+      <button class="season-tab ${scope==='season'?'active':''}" onclick="event.stopPropagation(); setPlayerCardScope('season')">${esc(currentSeason)} · Current</button>
+      <button class="season-tab ${scope==='all'?'active':''}" onclick="event.stopPropagation(); setPlayerCardScope('all')">All-Time</button>
+    </div>`;
+
+  if(history.length === 0){
+    return scopeToggle + `<div style="font-size:12.5px; color:var(--ink-soft); padding:10px 2px 2px;">No recorded results${scope==='season' ? ' for ' + esc(currentSeason) : ''}.</div>`;
+  }
+
+  // ---- Singles ----
+  const singlesEntries = history.filter(h => h.matchplay);
+  const singlesRecord = singlesEntries.reduce((acc,h)=>{ acc[h.matchplay.result]=(acc[h.matchplay.result]||0)+1; return acc; }, {});
+  const singlesRecordLine = `${singlesRecord.W||0}-${singlesRecord.L||0}${singlesRecord.T ? `-${singlesRecord.T}` : ''}`;
+  const singlesRows = singlesEntries.map(h=>{
+    const ctx = resolveOppContext(h.matchplay.opponentPlayerId, h.matchplay.opponentName);
+    const { color, bg } = resultStyle(h.matchplay.result);
     const d = fmtDate(h.event.date);
-    let oppLabel = 'Opponent';
-    if(h.event.opponentTeamId){
-      const t = oppTeamsForHistory.find(x=>x.id===h.event.opponentTeamId);
-      if(t) oppLabel = t.name;
-    } else if(h.event.opponentName){
-      oppLabel = h.event.opponentName;
-    }
-    const matchupTitle = formatMatchupTitle(h.event, oppLabel);
+    const label = contextLabel(ctx);
     return `
-      <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px; padding:9px 2px; border-top:1px solid var(--line);">
-        <div style="flex:0 1 auto; white-space:nowrap;">
-          <div style="font-size:13px; font-weight:800;">${esc(matchupTitle)}</div>
-          <div style="font-size:10.5px; color:var(--ink-soft); font-weight:700;">${d.mon} ${d.day}</div>
-        </div>
-        <div style="flex:1 1 auto; display:flex; flex-direction:column; align-items:flex-end; gap:5px; min-width:0;">${resultPill('Singles', h.matchplay)}${resultPill('Doubles', h.doubles)}</div>
+      <div style="display:flex; justify-content:space-between; align-items:center; padding:6px 0; border-top:1px solid var(--line); font-size:12px;">
+        <span>vs ${esc(ctx.name)} ${label ? `<span style="color:var(--ink-soft); font-size:11px;">(${esc(label)})</span>` : ''}<span style="color:var(--ink-soft); font-size:10.5px; display:block;">${d.mon} ${d.day}</span></span>
+        <span class="pill" style="background:${bg}; color:${color}; font-size:10px; font-weight:800; white-space:nowrap;">${h.matchplay.result}</span>
       </div>`;
-  }).join('') + `<button class="btn btn-outline btn-sm" style="width:100%; margin-top:12px;" onclick="event.stopPropagation(); sharePlayerCard('${playerId}')">⬇️ Share Image</button>`;
+  }).join('');
+  const singlesSection = `
+    <div style="margin-top:6px;">
+      <div style="font-size:10.5px; font-weight:800; color:var(--ink-soft); text-transform:uppercase; letter-spacing:0.3px; margin-bottom:2px;">Singles History (${singlesRecordLine})</div>
+      ${singlesRows || `<div style="font-size:12px; color:var(--ink-soft); padding:6px 2px;">No singles results${scope==='season' ? ' this season' : ''}.</div>`}
+    </div>`;
+
+  // ---- Doubles (also covers stroke-singles / triples group formats) ----
+  const doublesEntries = history.filter(h => h.doubles);
+  const doublesRecord = doublesEntries.reduce((acc,h)=>{ const r=normalizeGroupEntry(h.doubles).result; acc[r]=(acc[r]||0)+1; return acc; }, {});
+  const doublesRecordLine = `${doublesRecord.W||0}-${doublesRecord.L||0}${doublesRecord.T ? `-${doublesRecord.T}` : ''}`;
+  const doublesRows = doublesEntries.map(h=>{
+    const e = normalizeGroupEntry(h.doubles);
+    const oppContexts = (e.oppIds || []).map((id,i) => resolveOppContext(id, (e.oppNames||[])[i]));
+    const oppNamesJoined = oppContexts.map(c=>c.name).join(' & ') || 'Unknown opponents';
+    const team = oppContexts.find(c=>c.team)?.team; // opponents in one matchup are always the same team
+    const partners = (e.partnerNames || []).filter(Boolean).join(' & ');
+    const { color, bg } = resultStyle(e.result);
+    const d = fmtDate(h.event.date);
+    const scoreText = formatDoublesScore(e);
+    const subBits = [team, scoreText].filter(Boolean).join(' · ');
+    return `
+      <div style="display:flex; justify-content:space-between; align-items:center; padding:6px 0; border-top:1px solid var(--line); font-size:12px;">
+        <span>${partners ? `w/ ${esc(partners)} ` : ''}vs ${esc(oppNamesJoined)} ${subBits ? `<span style="color:var(--ink-soft); font-size:11px;">(${esc(subBits)})</span>` : ''}<span style="color:var(--ink-soft); font-size:10.5px; display:block;">${groupFormatLabel(e.format)} · ${d.mon} ${d.day}</span></span>
+        <span class="pill" style="background:${bg}; color:${color}; font-size:10px; font-weight:800; white-space:nowrap;">${e.result}</span>
+      </div>`;
+  }).join('');
+  const doublesSection = `
+    <div style="margin-top:14px;">
+      <div style="font-size:10.5px; font-weight:800; color:var(--ink-soft); text-transform:uppercase; letter-spacing:0.3px; margin-bottom:2px;">Doubles History (${doublesRecordLine})</div>
+      ${doublesRows || `<div style="font-size:12px; color:var(--ink-soft); padding:6px 2px;">No doubles results${scope==='season' ? ' this season' : ''}.</div>`}
+    </div>`;
+
+  return scopeToggle + singlesSection + doublesSection +
+    `<button class="btn btn-outline btn-sm" style="width:100%; margin-top:12px;" onclick="event.stopPropagation(); sharePlayerCard('${playerId}')">⬇️ Share Image</button>`;
 }
 async function teamCardFor(p){
   const expanded = state.expandedPlayerId === p.id;
@@ -4542,9 +4586,11 @@ async function clearSinglesResultIfExists(eventId, tbId){
   const stats = await loadStats(eventId);
   const cur = stats[tbId];
   if(cur && cur.matchplay && cur.matchplay.played){
+    const oppId = cur.matchplay.opponentPlayerId;
     cur.matchplay = blankResultEntry('matchplay');
     render();
     saveStats(eventId, stats).catch(err=>console.error('Result clear failed', err));
+    if(oppId) syncSinglesMatchHistory(eventId, tbId, oppId, null).catch(err=>console.error('Match history sync failed', err));
   }
 }
 async function clearDoublesResultIfExists(eventId, tbId){
@@ -4562,6 +4608,46 @@ async function clearDoublesResultIfExists(eventId, tbId){
     saveStats(eventId, stats).catch(err=>console.error('Result clear failed', err));
   }
 }
+// Keeps Season History in sync with live singles results recorded during the season.
+// Writes a matching entry to BOTH players' matchHistory (their own result, and the
+// mirrored result on the opponent's side), pulling PDGA/Power Rank fresh from each
+// player's current live record — so this never goes stale the way a one-time import
+// would. Tagged with a stable liveMatchKey so re-recording or clearing a result finds
+// and replaces the same entry instead of leaving duplicates behind.
+// Pass result=null to clear (used when a result is toggled off or a matchup is unpaired).
+async function syncSinglesMatchHistory(eventId, tbId, oppId, result){
+  try{
+    const ev = state.events.find(e=>e.id===eventId);
+    const eventLabel = ev ? ev.name : 'Event';
+    const liveKey = 'live:' + eventId + ':' + tbId + ':' + oppId;
+
+    const tb = state.players.find(p=>p.id===tbId);
+    const teams = await loadOppTeams();
+    const team = teams.find(t=>t.id === (state.matchupStateCache && state.matchupStateCache.currentTeamId));
+    const opp = team && team.players.find(p=>p.id===oppId);
+    if(!tb || !opp || !team) return;
+
+    tb.matchHistory = (tb.matchHistory || []).filter(h => h.liveMatchKey !== liveKey);
+    opp.matchHistory = (opp.matchHistory || []).filter(h => h.liveMatchKey !== liveKey);
+
+    if(result){
+      const oppResult = result === 'W' ? 'L' : result === 'L' ? 'W' : 'T';
+      tb.matchHistory.push({
+        opponent: opp.name, opponentTeam: team.name, result, event: eventLabel, week: null,
+        opponentPdga: opp.pdgaRating || null, opponentPowerRank: opp.skillRank != null ? opp.skillRank : null,
+        liveMatchKey: liveKey
+      });
+      opp.matchHistory.push({
+        opponent: tb.name, opponentTeam: '2Buff', result: oppResult, event: eventLabel, week: null,
+        opponentPdga: tb.pdgaRating || null, opponentPowerRank: tb.skillRank != null ? tb.skillRank : null,
+        liveMatchKey: liveKey
+      });
+    }
+
+    await savePlayers();
+    await saveOppTeams(teams);
+  } catch(err){ console.error('syncSinglesMatchHistory failed', err); }
+}
 async function recordSinglesResult(eventId, tbId, oppId, result){
   const teams = await loadOppTeams();
   const team = teams.find(t=>t.id === (state.matchupStateCache && state.matchupStateCache.currentTeamId));
@@ -4570,14 +4656,17 @@ async function recordSinglesResult(eventId, tbId, oppId, result){
   const stats = await loadStats(eventId);
   const cur = stats[tbId] || {};
   const existing = cur.matchplay || blankResultEntry('matchplay');
+  let finalResult = result;
   if(existing.played && existing.result === result){
     cur.matchplay = blankResultEntry('matchplay'); // tap again to clear
+    finalResult = null;
   } else {
     cur.matchplay = {played:true, result, powerRank: existing.powerRank || 5, opponentPlayerId: oppId, opponentName: oppName, marginUp: existing.marginUp ?? null, holesRemaining: existing.holesRemaining ?? null};
   }
   stats[tbId] = cur;
   render();
   saveStats(eventId, stats).catch(err=>console.error('Result save failed', err));
+  syncSinglesMatchHistory(eventId, tbId, oppId, finalResult).catch(err=>console.error('Match history sync failed', err));
 }
 async function recordGroupResult(eventId, tbIds, oppIds, format, result){
   const teams = await loadOppTeams();
