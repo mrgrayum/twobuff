@@ -431,7 +431,7 @@ const state = {
   unlocked: false, // whether the PIN gate has been passed (via entry or a trusted device)
   selectedSeason: null,   // set on first render of the Events tab
   pastExpanded: {},       // season -> bool, whether the "past events" group is expanded
-  statsScope: 'season',   // 'season' = current season only (default), 'all' = all-time
+  // statsScope removed — the Stats page's top-level Team Record now always shows the current season only.
   expandedPlayerId: null, // Team tab: which player card is expanded to show their event history
   expandedPlayerCardScope: 'all', // Stats page: season-string or 'all' filter for the ONE currently-expanded player card, independent of the page-wide pills
   armedSinglesTB: null,    // Matchups: Two Buff player currently selected, awaiting an opponent tap
@@ -2419,7 +2419,7 @@ function computeMatchDetailsFromData(stats){
 }
 async function getTeamRecordData(){
   const currentSeason = inferSeason(todayISO());
-  const scope = state.statsScope || 'season';
+  const scope = 'season'; // Team Record is always current-season-only now, per design
   const seasonByEvent = {};
   state.events.forEach(e=>{ seasonByEvent[e.id] = effectiveSeason(e); });
 
@@ -5101,7 +5101,6 @@ async function performDeleteTeam(teamId){
 async function renderStats(){
   const FINALS_MIN_EVENTS = 3;
   const currentSeason = inferSeason(todayISO());
-  if(state.statsScope === undefined) state.statsScope = 'season'; // 'season' = current season only, 'all' = all-time
 
   // Map every known eventId -> its season, so stats keys (which are only keyed by eventId) can be filtered.
   const seasonByEvent = {};
@@ -5119,7 +5118,7 @@ async function renderStats(){
       const allData = await getAllStatsData();
       Object.keys(allData).forEach(eventId=>{
         const eventSeason = seasonByEvent[eventId]; // undefined if the event was deleted
-        if(state.statsScope === 'season' && eventSeason !== currentSeason) return;
+        if(eventSeason !== currentSeason) return; // Team Record and this page's quick-summary rows are current-season-only
         const data = allData[eventId];
 
         // Player-level aggregation (win/loss records, power score)
@@ -5216,7 +5215,7 @@ async function renderStats(){
       </div>
       <button class="btn btn-outline btn-sm" style="width:100%; margin-top:10px;" onclick="shareTeamRecordCard()">⬇️ Share Image</button>
     </div>
-    ${teamEventsHtml ? teamEventsHtml : `<div class="card empty" style="padding:20px;"><p style="margin:0; font-size:13px;">No team results recorded yet${state.statsScope==='season' ? ' for ' + esc(currentSeason) : ''}.</p></div>`}
+    ${teamEventsHtml ? teamEventsHtml : `<div class="card empty" style="padding:20px;"><p style="margin:0; font-size:13px;">No team results recorded yet for ${esc(currentSeason)}.</p></div>`}
   `;
 
   const sortedPlayers = [...state.players].sort((a,b)=> record[b.id].powerScore - record[a.id].powerScore);
@@ -5249,25 +5248,16 @@ async function renderStats(){
   const rows = rowCards.join('');
 
   return `
-    <div class="page-title">Season Stats</div>
-    <div class="season-tabs">
-      <button class="season-tab ${state.statsScope==='season'?'active':''}" onclick="setStatsScope('season')">${esc(currentSeason)} · Current</button>
-      <button class="season-tab ${state.statsScope==='all'?'active':''}" onclick="setStatsScope('all')">All-Time</button>
-    </div>
     ${teamRecordSection}
     <div class="stats-section-header">👤 Player Stats</div>
     <div class="stats-header-row">
       <div>Player</div><div style="text-align:center;">Singles W-L</div><div style="text-align:center;">Doubles W-L</div>
     </div>
-    ${rows || `<div class="card empty"><span class="em">🏆</span><p>No results recorded yet${state.statsScope==='season' ? ' for ' + esc(currentSeason) : ''}. Enter results from an event page in Admin mode.</p></div>`}
+    ${rows || `<div class="card empty"><span class="em">🏆</span><p>No results recorded yet for ${esc(currentSeason)}. Enter results from an event page in Admin mode.</p></div>`}
     <div class="card" style="background:var(--chip-bg); border:none; box-shadow:none; margin-top:6px;">
-      <div style="font-size:12.5px; color:var(--ink-soft); line-height:1.5;">${state.statsScope==='season' ? `Showing <strong>${esc(currentSeason)}</strong> only — switch to All-Time above to see career totals across every season. ` : ''}Players are ranked using their win-loss record, weighted behind the scenes by the quality of competition they faced — a loss to a strong opponent won't hurt someone's ranking, and a win over a weak one won't boost it. <strong style="color:var(--orange-dark);">🏁 Finals Qualified</strong> means a recorded result at ${FINALS_MIN_EVENTS}+ different events — just being confirmed doesn't count. Stats are optional per player — someone who only plays doubles just shows a dash for Singles.</div>
+      <div style="font-size:12.5px; color:var(--ink-soft); line-height:1.5;">Showing <strong>${esc(currentSeason)}</strong> only. Players are ranked using their win-loss record, weighted behind the scenes by the quality of competition they faced — a loss to a strong opponent won't hurt someone's ranking, and a win over a weak one won't boost it. <strong style="color:var(--orange-dark);">🏁 Finals Qualified</strong> means a recorded result at ${FINALS_MIN_EVENTS}+ different events — just being confirmed doesn't count. Stats are optional per player — someone who only plays doubles just shows a dash for Singles.</div>
     </div>
   `;
-}
-function setStatsScope(scope){
-  state.statsScope = scope;
-  render();
 }
 
 /* ============================= BACKUP / RESTORE ============================= */
