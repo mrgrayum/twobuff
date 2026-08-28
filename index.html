@@ -4188,11 +4188,12 @@ async function renderMatchups(){
     return `
       <div style="margin-bottom:9px;">
         <div class="matchup-paired-card" style="margin-bottom:0;">
-          <button class="matchup-chip paired" style="margin:0; flex:1;" ${state.adminMode ? `onclick="tapSinglesTB('${tbId}')"` : 'disabled'}>${esc(tb.name)} ${genderBadgeHtml(tb)}${tbInfo ? `<span class="sub">${esc(tbInfo)}</span>` : ''}</button>
+          <button class="matchup-chip paired" style="margin:0; flex:1;" ${state.adminMode ? `onmousedown="startMatchupLongPress('${tbId}','singles')" onmouseup="cancelMatchupLongPress()" onmouseleave="cancelMatchupLongPress()" ontouchstart="startMatchupLongPress('${tbId}','singles')" ontouchend="cancelMatchupLongPress()" ontouchmove="cancelMatchupLongPress()" onclick="matchupChipTap(event, 'singlesTB', '${tbId}')"` : 'disabled'}>${esc(tb.name)} ${genderBadgeHtml(tb)}${tbInfo ? `<span class="sub">${esc(tbInfo)}</span>` : ''}</button>
           ${singlesConnector(tbId, opp.id, resultKey)}
           <button class="matchup-chip opp-paired" style="margin:0; flex:1;" ${state.adminMode ? `onmousedown="startMatchupLongPress('${opp.id}','singles')" onmouseup="cancelMatchupLongPress()" onmouseleave="cancelMatchupLongPress()" ontouchstart="startMatchupLongPress('${opp.id}','singles')" ontouchend="cancelMatchupLongPress()" ontouchmove="cancelMatchupLongPress()" onclick="matchupChipTap(event, 'singlesOpp', '${opp.id}')"` : 'disabled'}>${esc(opp.name)} ${genderBadgeHtml(opp)}${oppInfo ? `<span class="sub">${esc(oppInfo)}</span>` : ''}</button>
           ${state.adminMode ? `<button class="icon-btn" onclick="unpairSingles('${tbId}')">✕</button>` : ''}
         </div>
+        ${renderMatchupCard(tb, false, 'singles')}
         ${renderMatchupCard(opp, true, 'singles')}
         ${singlesResultHtml(tbId, opp.id, resultKey)}
       </div>`;
