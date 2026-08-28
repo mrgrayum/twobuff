@@ -2250,9 +2250,9 @@ function buildHistoryRows(player, isOpponent, scope, oppTeamsList, statsMap){
   const rowHtml = (nameLabel, identifier, subLabel, result) => {
     const { color, bg } = resultStyle(result);
     return `
-      <div style="display:flex; justify-content:space-between; align-items:center; padding:6px 0; border-top:1px solid var(--line); font-size:12px;">
+      <div style="display:flex; align-items:center; gap:8px; padding:6px 0; border-top:1px solid var(--line); font-size:12px;">
+        <span class="pill" style="background:${bg}; color:${color}; font-size:10px; font-weight:800; white-space:nowrap; flex-shrink:0;">${result}</span>
         <span>${nameLabel} ${identifier ? `<span style="color:var(--ink-soft); font-size:11px;">(${esc(identifier)})</span>` : ''}<span style="color:var(--ink-soft); font-size:10.5px; display:block;">${esc(subLabel)}</span></span>
-        <span class="pill" style="background:${bg}; color:${color}; font-size:10px; font-weight:800; white-space:nowrap;">${result}</span>
       </div>`;
   };
   const matchScope = (season) => scope === 'all' || season === scope;
@@ -2516,9 +2516,9 @@ async function renderEventMatchBreakdown(eventId){
     const shortOpp = abbrevNameLabel(oppLabel);
     return `
       <div style="padding:7px 0; border-top:1px solid var(--line);">
-        <div style="display:flex; justify-content:space-between; align-items:center; gap:6px;">
-          <div style="font-size:11.5px; font-weight:700; line-height:1.3;">${fmtTag || ''}${ourStar ? starSpan : ''}${esc(shortLabel)}<br><span style="color:var(--ink-soft); font-weight:700;">vs ${oppStar ? starSpan : ''}${esc(shortOpp)}</span>${scoreText ? `<br><span style="color:var(--ink-soft); font-weight:700;">${esc(scoreText)}</span>` : ''}</div>
+        <div style="display:flex; align-items:center; gap:8px;">
           <span class="pill" style="background:${bg}; color:${color}; flex-shrink:0;">${result}</span>
+          <div style="font-size:11.5px; font-weight:700; line-height:1.3;">${fmtTag || ''}${ourStar ? starSpan : ''}${esc(shortLabel)}<br><span style="color:var(--ink-soft); font-weight:700;">vs ${oppStar ? starSpan : ''}${esc(shortOpp)}</span>${scoreText ? `<br><span style="color:var(--ink-soft); font-weight:700;">${esc(scoreText)}</span>` : ''}</div>
         </div>
       </div>`;
   };
@@ -3234,9 +3234,11 @@ async function sharePlayerCard(playerId, scopeArg){
     const pillBg = result==='W' ? '#E1E8F5' : result==='T' ? '#FBEFD8' : '#F5D9D6';
     const pillLabel = result || '—';
 
+    // Result pill sits to the LEFT of the matchup info, so it's the first thing
+    // your eye lands on — matches the on-screen history rows.
     ctx.font = `800 10px ${FONT}`;
     const pillW = ctx.measureText(pillLabel).width + 16;
-    const pillH = 20, pillX = W - marginX - pillW, pillY = rowTop + 6;
+    const pillH = 20, pillX = marginX, pillY = rowTop + 6;
     ctx.fillStyle = pillBg;
     ctxRoundRect(ctx, pillX, pillY, pillW, pillH, 10);
     ctx.fill();
@@ -3245,9 +3247,10 @@ async function sharePlayerCard(playerId, scopeArg){
     ctx.fillText(pillLabel, pillX + pillW/2, pillY + 14);
     ctx.textAlign = 'left';
 
+    const textX = pillX + pillW + 10;
     ctx.font = `800 13.5px ${FONT}`;
     ctx.fillStyle = '#0E1B2E';
-    ctx.fillText(ctxTruncateText(ctx, r.raw.title, (pillX - 10) - marginX), marginX, rowTop + 19);
+    ctx.fillText(ctxTruncateText(ctx, r.raw.title, (W - marginX) - textX), textX, rowTop + 19);
 
     const metaParts = [];
     if(r.raw.formatLabel) metaParts.push(r.raw.formatLabel.toUpperCase());
@@ -3256,7 +3259,7 @@ async function sharePlayerCard(playerId, scopeArg){
     if(r.raw.subLabel) metaParts.push(r.raw.subLabel);
     ctx.font = `600 10.5px ${FONT}`;
     ctx.fillStyle = '#5C6B84';
-    ctx.fillText(ctxTruncateText(ctx, metaParts.join('  ·  '), contentW), marginX, rowTop + 35);
+    ctx.fillText(ctxTruncateText(ctx, metaParts.join('  ·  '), (W - marginX) - textX), textX, rowTop + 35);
   };
 
   const drawSection = (title, subtitle, accent, capped) => {
@@ -3408,41 +3411,42 @@ async function shareTeamRecordCard(){
       const evPct = (te.ourScore!=null && te.oppScore!=null && (te.ourScore+te.oppScore)>0)
         ? `${((te.ourScore/(te.ourScore+te.oppScore))*100).toFixed(1)}% PTS` : null;
 
-      ctx.textAlign = 'left';
-      ctx.font = `800 14px ${FONT}`;
-      ctx.fillStyle = '#0E1B2E';
-      ctx.fillText(ctxTruncateText(ctx, matchupTitle, contentW*0.48), marginX, y+24);
-
-      ctx.font = `600 11px ${FONT}`;
-      ctx.fillStyle = '#5C6B84';
-      ctx.fillText(`${d.mon} ${d.day}`, marginX, y+40);
-
+      // Result badge sits to the LEFT of the matchup title, same as everywhere else.
       const resultColor = te.result==='W' ? '#12294D' : te.result==='T' ? '#8A6112' : '#C4453B';
       const resultBg = te.result==='W' ? '#E1E8F5' : te.result==='T' ? '#FBEFD8' : '#F5D9D6';
       const resultLabel = te.result==='W' ? 'WIN' : te.result==='T' ? 'TIE' : 'LOSS';
+
+      ctx.textAlign = 'center';
+      ctx.font = `800 12px ${FONT}`;
+      const badgeW = ctx.measureText(resultLabel).width + 20;
+      const badgeX = marginX;
+      ctx.fillStyle = resultBg;
+      ctxRoundRect(ctx, badgeX, y+10, badgeW, 20, 10);
+      ctx.fill();
+      ctx.fillStyle = resultColor;
+      ctx.fillText(resultLabel, badgeX + badgeW/2, y+24);
+      ctx.textAlign = 'left';
+
+      const titleX = badgeX + badgeW + 12;
+      ctx.font = `800 14px ${FONT}`;
+      ctx.fillStyle = '#0E1B2E';
+      ctx.fillText(ctxTruncateText(ctx, matchupTitle, contentW*0.48 - (titleX - marginX)), titleX, y+24);
+
+      ctx.font = `600 11px ${FONT}`;
+      ctx.fillStyle = '#5C6B84';
+      ctx.fillText(`${d.mon} ${d.day}`, titleX, y+40);
 
       ctx.textAlign = 'right';
       ctx.font = `800 15px ${FONT}`;
       const scoreStr = `${te.ourScore} – ${te.oppScore}`;
       ctx.fillStyle = '#12294D';
       ctx.fillText(scoreStr, W-marginX, y+24);
-      const scoreW = ctx.measureText(scoreStr).width;
 
       if(evPct){
         ctx.font = `700 10.5px ${FONT}`;
         ctx.fillStyle = '#5C6B84';
         ctx.fillText(evPct, W-marginX, y+40);
       }
-
-      ctx.font = `800 12px ${FONT}`;
-      const badgeW = ctx.measureText(resultLabel).width + 20;
-      const badgeX = W - marginX - scoreW - 14 - badgeW;
-      ctx.fillStyle = resultBg;
-      ctxRoundRect(ctx, badgeX, y+10, badgeW, 20, 10);
-      ctx.fill();
-      ctx.fillStyle = resultColor;
-      ctx.textAlign = 'center';
-      ctx.fillText(resultLabel, badgeX + badgeW/2, y+24);
       ctx.textAlign = 'left';
 
       y += rowH;
@@ -3610,9 +3614,9 @@ function renderSeasonHistory(p){
     const color = h.result==='W' ? 'var(--forest)' : h.result==='L' ? 'var(--red)' : 'var(--ink-soft)';
     const bg = h.result==='W' ? '#E1E8F5' : h.result==='L' ? '#F5D9D6' : 'var(--chip-bg)';
     return `
-      <div style="display:flex; justify-content:space-between; align-items:center; padding:5px 0; border-top:1px solid var(--line); font-size:12px;">
+      <div style="display:flex; align-items:center; gap:8px; padding:5px 0; border-top:1px solid var(--line); font-size:12px;">
+        <span class="pill" style="background:${bg}; color:${color}; font-size:10px; font-weight:800; flex-shrink:0;">${h.result}</span>
         <span>vs ${esc(h.opponent)} <span style="color:var(--ink-soft); font-size:11px;">(${esc(opponentContextLine(h))})</span></span>
-        <span class="pill" style="background:${bg}; color:${color}; font-size:10px; font-weight:800;">${h.result}</span>
       </div>`;
   }).join('');
   return `
@@ -4954,12 +4958,12 @@ async function oppPlayerRowFor(team, p){
           const bg = opponentWon ? '#E1E8F5' : '#F5D9D6';
           const ourSide = h.partnerName ? `${esc(h.ourPlayerName)} &amp; ${esc(h.partnerName)}` : esc(h.ourPlayerName);
           return `
-            <div style="display:flex; justify-content:space-between; align-items:center; padding:7px 0; border-top:1px solid var(--line);">
+            <div style="display:flex; align-items:center; gap:8px; padding:7px 0; border-top:1px solid var(--line);">
+              <span class="pill" style="background:${bg}; color:${color}; flex-shrink:0;">${opponentWon ? 'W' : 'L'}</span>
               <div>
                 <div style="font-size:12.5px; font-weight:800;">${label} ${ourSide}</div>
                 <div style="font-size:10px; color:var(--ink-soft); font-weight:700;">${esc(h.event.name)} · ${d.mon} ${d.day} · ${h.kind==='matchplay'?'Singles':'Doubles'}</div>
               </div>
-              <span class="pill" style="background:${bg}; color:${color};">${opponentWon ? 'W' : 'L'}</span>
             </div>`;
         }).join('');
     detailHtml = `
@@ -5251,16 +5255,16 @@ async function renderStats(){
     }
     return `
       <div class="player-stat-card" onclick="toggleExpandTeamEvent('${te.event.id}')">
-        <div class="row-grid" style="grid-template-columns: 1.6fr 0.8fr 0.9fr;">
+        <div class="row-grid" style="grid-template-columns: 0.7fr 1.5fr 0.9fr;">
+          <div style="text-align:center;">
+            <span class="pill" style="background:${bg}; color:${color};">${label}</span>
+          </div>
           <div>
             <div style="display:flex; align-items:center; gap:6px;">
               <span class="pname" style="font-size:13.5px;">${esc(formatMatchupTitle(te.event, oppLabelForCard))}</span>
               <span style="font-size:10px; color:var(--ink-soft);">${expanded ? '▲' : '▼'}</span>
             </div>
             <div style="font-size:10.5px; color:var(--ink-soft); font-weight:700;">${d.mon} ${d.day}</div>
-          </div>
-          <div style="text-align:center;">
-            <span class="pill" style="background:${bg}; color:${color};">${label}</span>
           </div>
           <div class="rec" style="color:${color};">${(te.ourScore!=null && te.oppScore!=null) ? te.ourScore+'–'+te.oppScore : '—'}<span class="sub">${evPct} PTS</span></div>
         </div>
