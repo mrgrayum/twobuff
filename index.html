@@ -2258,11 +2258,15 @@ function buildHistoryRows(player, isOpponent, scope, oppTeamsList, statsMap){
   const matchScope = (season) => scope === 'all' || season === scope;
 
   // ---- SINGLES: historical archive + live ----
+  // Each row also carries a `raw` copy of its plain-text fields (no HTML escaping/
+  // markup) so canvas-based renderers (the share images) can draw the exact same
+  // data as this HTML list without re-deriving it or parsing HTML back out.
   let singlesRows = [];
   (player.matchHistory || []).filter(h => (h.type||'singles')==='singles').forEach(h=>{
     if(!matchScope(h.season)) return;
     const identifier = [h.opponentTeam, h.opponentPdga?`PDGA ${h.opponentPdga}`:null, h.opponentPowerRank!=null?`Rank ${Number(h.opponentPowerRank).toFixed(1)}`:null].filter(Boolean).join(' · ');
-    singlesRows.push({ sortKey: h.season||'', html: rowHtml(`vs ${esc(h.opponent)}`, identifier, h.event, h.result), result: h.result });
+    singlesRows.push({ sortKey: h.season||'', html: rowHtml(`vs ${esc(h.opponent)}`, identifier, h.event, h.result), result: h.result,
+      raw: { title: `vs ${h.opponent}`, identifier, subLabel: h.event, scoreLabel: null, formatLabel: null } });
   });
   Object.keys(statsMap).forEach(eventId=>{
     const ev = state.events.find(e=>e.id===eventId);
@@ -2278,14 +2282,18 @@ function buildHistoryRows(player, isOpponent, scope, oppTeamsList, statsMap){
         if(!s.matchplay || !s.matchplay.played || s.matchplay.opponentPlayerId !== player.id) return;
         const tb = state.players.find(p=>p.id===tbId);
         const oppResult = s.matchplay.result === 'W' ? 'L' : s.matchplay.result === 'L' ? 'W' : 'T';
-        singlesRows.push({ sortKey: ev.date, html: rowHtml(`vs ${esc(tb ? tb.name : 'Two Buff player')}`, '2Buff', `${esc(ev.name)} · ${d.mon} ${d.day}`, oppResult), result: oppResult });
+        const tbName = tb ? tb.name : 'Two Buff player';
+        singlesRows.push({ sortKey: ev.date, html: rowHtml(`vs ${esc(tbName)}`, '2Buff', `${esc(ev.name)} · ${d.mon} ${d.day}`, oppResult), result: oppResult,
+          raw: { title: `vs ${tbName}`, identifier: '2Buff', subLabel: `${ev.name} · ${d.mon} ${d.day}`, scoreLabel: null, formatLabel: null } });
       });
     } else {
       const s = data[player.id];
       if(s && s.matchplay && s.matchplay.played){
         const ctx = resolveOppContext(s.matchplay.opponentPlayerId, s.matchplay.opponentName);
         const identifier = [ctx.team, ctx.pdga?`PDGA ${ctx.pdga}`:null, ctx.rank!=null?`Rank ${Number(ctx.rank).toFixed(1)}`:null].filter(Boolean).join(' · ');
-        singlesRows.push({ sortKey: ev.date, html: rowHtml(`vs ${esc(ctx.name)}`, identifier, `${esc(ev.name)} · ${d.mon} ${d.day}`, s.matchplay.result), result: s.matchplay.result });
+        const margin = formatMatchplayMargin(s.matchplay);
+        singlesRows.push({ sortKey: ev.date, html: rowHtml(`vs ${esc(ctx.name)}`, identifier, `${esc(ev.name)} · ${d.mon} ${d.day}`, s.matchplay.result), result: s.matchplay.result,
+          raw: { title: `vs ${ctx.name}`, identifier, subLabel: `${ev.name} · ${d.mon} ${d.day}`, scoreLabel: margin || null, formatLabel: null } });
       }
     }
   });
@@ -2297,9 +2305,11 @@ function buildHistoryRows(player, isOpponent, scope, oppTeamsList, statsMap){
   let doublesRows = [];
   (player.matchHistory || []).filter(h => h.type === 'doubles').forEach(h=>{
     if(!matchScope(h.season)) return;
-    const nameLabel = esc((h.partner ? `w/ ${h.partner} ` : '') + 'vs ' + h.opponent);
+    const nameLabelRaw = (h.partner ? `w/ ${h.partner} ` : '') + 'vs ' + h.opponent;
+    const nameLabel = esc(nameLabelRaw);
     const identifier = h.opponentTeam || '';
-    doublesRows.push({ sortKey: h.season||'', html: rowHtml(nameLabel, identifier, h.event, h.result), result: h.result });
+    doublesRows.push({ sortKey: h.season||'', html: rowHtml(nameLabel, identifier, h.event, h.result), result: h.result,
+      raw: { title: nameLabelRaw, identifier, subLabel: h.event, scoreLabel: null, formatLabel: null } });
   });
   Object.keys(statsMap).forEach(eventId=>{
     const ev = state.events.find(e=>e.id===eventId);
@@ -2319,8 +2329,11 @@ function buildHistoryRows(player, isOpponent, scope, oppTeamsList, statsMap){
       const partners = (e.partnerNames||[]).filter(Boolean).join(' & ');
       const scoreText = formatDoublesScore(e);
       const identifier = [team, scoreText].filter(Boolean).join(' · ');
-      const nameLabel = esc((partners?`w/ ${partners} `:'') + 'vs ' + oppNamesJoined);
-      doublesRows.push({ sortKey: ev.date, html: rowHtml(nameLabel, identifier, `${groupFormatLabel(e.format)} · ${esc(ev.name)} · ${d.mon} ${d.day}`, e.result), result: e.result });
+      const nameLabelRaw = (partners?`w/ ${partners} `:'') + 'vs ' + oppNamesJoined;
+      const nameLabel = esc(nameLabelRaw);
+      doublesRows.push({ sortKey: ev.date, html: rowHtml(nameLabel, identifier, `${groupFormatLabel(e.format)} · ${esc(ev.name)} · ${d.mon} ${d.day}`, e.result), result: e.result,
+        raw: { title: nameLabelRaw, identifier: [team, scoreText].filter(Boolean).join(' · '), subLabel: `${ev.name} · ${d.mon} ${d.day}`, scoreLabel: scoreText || null,
+          formatLabel: (e.format && e.format !== 'doubles') ? groupFormatLabel(e.format) : null } });
     } else {
       // Same reconstruction idea as opponent singles: dg_stats_ only ever stores a
       // doubles entry keyed by our own players, with the opponent pair referenced
@@ -2354,8 +2367,11 @@ function buildHistoryRows(player, isOpponent, scope, oppTeamsList, statsMap){
         const oppResult = e.result === 'W' ? 'L' : e.result === 'L' ? 'W' : 'T';
         const flippedScore = formatDoublesScore({ ourScore: e.oppScore, oppScore: e.ourScore, playoffHoles: e.playoffHoles });
         const identifier = ['2Buff', flippedScore].filter(Boolean).join(' · ');
-        const nameLabel = esc((partners?`w/ ${partners} `:'') + 'vs ' + tbSideNames);
-        doublesRows.push({ sortKey: ev.date, html: rowHtml(nameLabel, identifier, `${groupFormatLabel(e.format)} · ${esc(ev.name)} · ${d.mon} ${d.day}`, oppResult), result: oppResult });
+        const nameLabelRaw = (partners?`w/ ${partners} `:'') + 'vs ' + tbSideNames;
+        const nameLabel = esc(nameLabelRaw);
+        doublesRows.push({ sortKey: ev.date, html: rowHtml(nameLabel, identifier, `${groupFormatLabel(e.format)} · ${esc(ev.name)} · ${d.mon} ${d.day}`, oppResult), result: oppResult,
+          raw: { title: nameLabelRaw, identifier, subLabel: `${ev.name} · ${d.mon} ${d.day}`, scoreLabel: flippedScore || null,
+            formatLabel: (e.format && e.format !== 'doubles') ? groupFormatLabel(e.format) : null } });
       });
     }
   });
@@ -2653,13 +2669,13 @@ async function shareEventCard(eventId){
   ctx.scale(scale, scale);
 
   // ---- 4. Background ----
-  ctx.fillStyle = '#F4F1EA';
+  ctx.fillStyle = '#F4F6FA';
   ctx.fillRect(0, 0, W, totalH);
 
   // ---- 5. Header: gradient band, logo watermark, title, date ----
   const headerGrad = ctx.createLinearGradient(0, 0, W, headerH);
-  headerGrad.addColorStop(0, '#0F2240');
-  headerGrad.addColorStop(1, '#1B3A66');
+  headerGrad.addColorStop(0, '#0A1830');
+  headerGrad.addColorStop(1, '#12294D');
   ctx.fillStyle = headerGrad;
   ctx.fillRect(0, 0, W, headerH);
 
@@ -2820,13 +2836,13 @@ async function shareEventCard(eventId){
     ctx.font = `800 ${fontSize}px ${FONT}`;
     if(isOurWin){
       const slotW = ourW + 10;
-      ctx.fillStyle = '#DCEFE3';
+      ctx.fillStyle = '#E1E8F5';
       ctxRoundRect(ctx, ourRightEdge - slotW, rowTop - 11, slotW, 20, 6);
       ctx.fill();
-      ctx.fillStyle = '#1E7A46';
+      ctx.fillStyle = '#12294D';
       ctx.fillText(ourText, ourRightEdge - 5, rowTop + 4);
     } else {
-      ctx.fillStyle = '#2B2620';
+      ctx.fillStyle = '#0E1B2E';
       ctx.fillText(ourText, ourRightEdge, rowTop + 4);
     }
     if(r.ourIsHot){
@@ -2838,20 +2854,20 @@ async function shareEventCard(eventId){
 
     ctx.textAlign = 'center';
     ctx.font = `700 ${fontSize}px ${FONT}`;
-    ctx.fillStyle = isTie ? '#8A6112' : '#8C8478';
+    ctx.fillStyle = isTie ? '#8A6112' : '#5C6B84';
     ctx.fillText(centerLabel, colCenterX, rowTop + 4);
 
     ctx.textAlign = 'left';
     ctx.font = `800 ${fontSize}px ${FONT}`;
     if(isOppWin){
       const slotW = oppW + 10;
-      ctx.fillStyle = '#DCEFE3';
+      ctx.fillStyle = '#E1E8F5';
       ctxRoundRect(ctx, oppLeftEdge, rowTop - 11, slotW, 20, 6);
       ctx.fill();
-      ctx.fillStyle = '#1E7A46';
+      ctx.fillStyle = '#12294D';
       ctx.fillText(oppText, oppLeftEdge + 5, rowTop + 4);
     } else {
-      ctx.fillStyle = '#2B2620';
+      ctx.fillStyle = '#0E1B2E';
       ctx.fillText(oppText, oppLeftEdge, rowTop + 4);
     }
     if(r.oppIsHot){
@@ -2868,12 +2884,12 @@ async function shareEventCard(eventId){
   // it's unambiguous which side is which, repeated for every side-by-side column.
   const drawColumnHeader = (x, w) => {
     ctx.font = `800 10px ${FONT}`;
-    ctx.fillStyle = '#8C8478';
+    ctx.fillStyle = '#5C6B84';
     ctx.textAlign = 'center';
     ctx.fillText('TWO BUFF', x + w*0.25, y + colHeaderH - 8);
     ctx.fillText(ctxTruncateText(ctx, opponentLabel.toUpperCase(), w*0.42), x + w*0.75, y + colHeaderH - 8);
     ctx.textAlign = 'left';
-    ctx.strokeStyle = '#D8D2C4';
+    ctx.strokeStyle = '#DFE4EE';
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(x, y + colHeaderH);
@@ -2893,7 +2909,7 @@ async function shareEventCard(eventId){
     ctx.fillStyle = '#12294D';
     ctx.font = `800 14px ${FONT}`;
     ctx.fillText(title.toUpperCase(), marginX + 18, y+21);
-    ctx.fillStyle = '#8C8478';
+    ctx.fillStyle = '#5C6B84';
     ctx.font = `700 12px ${FONT}`;
     ctx.textAlign = 'right';
     ctx.fillText(subtitle, W-marginX, y+21);
@@ -2901,7 +2917,7 @@ async function shareEventCard(eventId){
     y += sectionHeaderH;
 
     if(rows.length === 0){
-      ctx.fillStyle = '#8C8478';
+      ctx.fillStyle = '#5C6B84';
       ctx.font = `600 13px ${FONT}`;
       ctx.textAlign = 'center';
       ctx.fillText('No results recorded.', CENTER_X, y+28);
@@ -2913,7 +2929,7 @@ async function shareEventCard(eventId){
       const gap = 14;
       const halfContentW = contentW / 2;
       rows.forEach(r=>{
-        ctx.strokeStyle = '#E4DFD3';
+        ctx.strokeStyle = '#DFE4EE';
         ctx.lineWidth = 1;
         ctx.beginPath();
         ctx.moveTo(marginX, y);
@@ -2925,6 +2941,16 @@ async function shareEventCard(eventId){
         const isOppWin = r.result === 'L';
         const isTie = r.result === 'T';
         const centerLabel = r.scoreLabel || (isTie ? 'TIE' : '—');
+
+        // A format tag (e.g. "TRIPLES · 3 PTS") for any group format other than
+        // plain doubles, since the points a win is worth differs by format.
+        if(r.formatLabel){
+          ctx.font = `800 8px ${FONT}`;
+          ctx.fillStyle = '#5C6B84';
+          ctx.textAlign = 'center';
+          ctx.fillText(r.formatLabel.toUpperCase(), CENTER_X, y + 11);
+          ctx.textAlign = 'left';
+        }
 
         // The full score summary — e.g. "4 UP · 2 to play" — is one indivisible
         // piece of text, drawn dead-center on the card first.
@@ -2941,13 +2967,13 @@ async function shareEventCard(eventId){
         ctx.font = `800 ${ourFit.fontSize}px ${FONT}`;
         if(isOurWin){
           const slotW = ourFit.w + 16;
-          ctx.fillStyle = '#DCEFE3';
+          ctx.fillStyle = '#E1E8F5';
           ctxRoundRect(ctx, ourRightEdge - slotW, midY - 15, slotW, 28, 8);
           ctx.fill();
-          ctx.fillStyle = '#1E7A46';
+          ctx.fillStyle = '#12294D';
           ctx.fillText(ourFit.text, ourRightEdge - 8, midY + 5);
         } else {
-          ctx.fillStyle = '#2B2620';
+          ctx.fillStyle = '#0E1B2E';
           ctx.fillText(ourFit.text, ourRightEdge, midY + 5);
         }
         if(r.ourIsHot){
@@ -2959,20 +2985,20 @@ async function shareEventCard(eventId){
 
         ctx.textAlign = 'center';
         ctx.font = `700 12px ${FONT}`;
-        ctx.fillStyle = isTie ? '#8A6112' : '#8C8478';
+        ctx.fillStyle = isTie ? '#8A6112' : '#5C6B84';
         ctx.fillText(centerLabel, CENTER_X, midY + 4);
 
         ctx.textAlign = 'left';
         ctx.font = `800 ${oppFit.fontSize}px ${FONT}`;
         if(isOppWin){
           const slotW = oppFit.w + 16;
-          ctx.fillStyle = '#DCEFE3';
+          ctx.fillStyle = '#E1E8F5';
           ctxRoundRect(ctx, oppLeftEdge, midY - 15, slotW, 28, 8);
           ctx.fill();
-          ctx.fillStyle = '#1E7A46';
+          ctx.fillStyle = '#12294D';
           ctx.fillText(oppFit.text, oppLeftEdge + 8, midY + 5);
         } else {
-          ctx.fillStyle = '#2B2620';
+          ctx.fillStyle = '#0E1B2E';
           ctx.fillText(oppFit.text, oppLeftEdge, midY + 5);
         }
         if(r.oppIsHot){
@@ -3006,7 +3032,7 @@ async function shareEventCard(eventId){
         colRows.forEach((r,i)=>{
           const rowTop = sectionTopY + i*layout.rh + layout.rh/2;
           if(i > 0){
-            ctx.strokeStyle = '#E4DFD3';
+            ctx.strokeStyle = '#DFE4EE';
             ctx.lineWidth = 1;
             ctx.beginPath();
             ctx.moveTo(colX, sectionTopY + i*layout.rh - 3);
@@ -3020,7 +3046,7 @@ async function shareEventCard(eventId){
     }
 
     ctx.save();
-    ctx.shadowColor = 'rgba(43,38,32,0.08)';
+    ctx.shadowColor = 'rgba(14,27,46,0.08)';
     ctx.shadowBlur = 8;
     ctx.shadowOffsetY = 2;
     ctx.fillStyle = '#FFFFFF';
@@ -3051,7 +3077,8 @@ async function shareEventCard(eventId){
   const doublesRowsData = doubles.map(d=>({
     ourLabel: d.ourSide, oppLabel: d.opponentName, scoreLabel: formatDoublesScore(d), result: d.result,
     ourIsHot: d.ourScore != null && d.ourScore === hotRoundValue,
-    oppIsHot: d.oppScore != null && d.oppScore === hotRoundValue
+    oppIsHot: d.oppScore != null && d.oppScore === hotRoundValue,
+    formatLabel: (d.format && d.format !== 'doubles') ? `${groupFormatLabel(d.format)} · ${groupFormatWinPoints(d.format)} pt${groupFormatWinPoints(d.format)>1?'s':''}` : null
   }));
   const anyHotRound = hotRoundValue !== Infinity;
 
@@ -3072,7 +3099,7 @@ async function shareEventCard(eventId){
     y += sectionHeaderH;
 
     adjustments.forEach(a=>{
-      ctx.strokeStyle = '#E4DFD3';
+      ctx.strokeStyle = '#DFE4EE';
       ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.moveTo(marginX, y);
@@ -3086,7 +3113,7 @@ async function shareEventCard(eventId){
       ctx.fillText(ctxTruncateText(ctx, `${ptsText} pts — ${teamName}`, contentW), marginX, y+20);
       if(a.note){
         ctx.font = `600 11px ${FONT}`;
-        ctx.fillStyle = '#8C8478';
+        ctx.fillStyle = '#5C6B84';
         ctx.fillText(ctxTruncateText(ctx, a.note, contentW), marginX, y+36);
         y += adjRowH;
       } else {
@@ -3116,52 +3143,36 @@ async function shareEventCard(eventId){
     setTimeout(()=>URL.revokeObjectURL(url), 2000);
   }, 'image/png');
 }
-async function sharePlayerCard(playerId){
+// Shares exactly the season currently selected via the pill buttons on the player's
+// expanded stats card (or 'all' for All-Time) — same buildHistoryRows core the
+// on-screen list uses, so the image always matches what's actually in view,
+// including opponent team/PDGA/rank context and doubles format tags.
+async function sharePlayerCard(playerId, scopeArg){
   const player = state.players.find(p=>p.id===playerId);
   if(!player){ showToast('Player not found'); return; }
-  const history = await getPlayerEventHistory(playerId); // already sorted most-recent-first
+  const seasons = getAvailableSeasons();
+  const scope = scopeArg || state.expandedPlayerCardScope || (seasons[0] || 'all');
+  const scopeLabel = scope === 'all' ? 'all-time' : scope;
   showToast('Generating image…');
 
   const logoEl = document.querySelector('.brand-mark img');
-  const logoImg = await loadImageAsync(logoEl ? logoEl.src : null);
-  const oppTeams = await loadOppTeams();
+  const [logoImg, oppTeamsList, statsMap] = await Promise.all([
+    loadImageAsync(logoEl ? logoEl.src : null), loadOppTeams(), getAllStatsData()
+  ]);
+  const { singlesRows, doublesRows, singlesRecordLine, doublesRecordLine } = buildHistoryRows(player, false, scope, oppTeamsList, statsMap);
 
-  let mpW=0, mpL=0, mpT=0, dbW=0, dbL=0, dbT=0;
-  history.forEach(h=>{
-    if(h.matchplay){
-      if(h.matchplay.result==='W') mpW++;
-      else if(h.matchplay.result==='L') mpL++;
-      else if(h.matchplay.result==='T') mpT++;
-    }
-    if(h.doubles){
-      if(h.doubles.result==='W') dbW++;
-      else if(h.doubles.result==='L') dbL++;
-      else if(h.doubles.result==='T') dbT++;
-    }
-  });
-
-  const scale = 2, marginX = 60, cardRadius = 20;
-  const FONT = '-apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif';
-  const headerH = 128, naturalRowH = 66, maxRowH = 92, listTopPad = 16, bottomPad = 24;
-  const minTotalH = 560; // guarantees enough width for the name and event details even with few events
-  const rowCount = Math.max(history.length, 1);
-  let rowH = naturalRowH;
-  let totalH = headerH + listTopPad + rowCount*rowH + bottomPad;
-  let extraBottomPad = 0;
-  if(totalH < minTotalH){
-    // Grow rows a bit for breathing room, but cap it — stretching a 1-row card to fill
-    // 560px of height would leave a huge dead zone inside that single row. Whatever's
-    // still short after a reasonable row size gets absorbed as clean bottom padding.
-    const available = minTotalH - headerH - listTopPad - bottomPad;
-    rowH = Math.min(available / rowCount, maxRowH);
-    totalH = headerH + listTopPad + rowCount*rowH + bottomPad;
-    if(totalH < minTotalH){
-      extraBottomPad = minTotalH - totalH;
-      totalH = minTotalH;
-    }
-  }
-  const W = totalH; // square card — width always matches the (possibly stretched/padded) height
+  const W = 720, scale = 2, marginX = 60, cardRadius = 20;
+  const CENTER_X = W / 2;
   const contentW = W - marginX*2;
+  const FONT = '-apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif';
+
+  const headerH = 148, sectionHeaderH = 34, rowH = 44, emptyRowH = 40, overflowRowH = 22, gapAfterSection = 20, bottomPad = 24;
+  const MAX_ROWS = 8; // per section — keeps an All-Time card with a long history shareable-sized; older results are summarized instead of dropped
+  const capRows = (rows) => ({ shown: rows.slice(0, MAX_ROWS), overflow: Math.max(0, rows.length - MAX_ROWS) });
+  const singlesCapped = capRows(singlesRows);
+  const doublesCapped = capRows(doublesRows);
+  const sectionH = (capped) => capped.shown.length === 0 ? emptyRowH : capped.shown.length*rowH + (capped.overflow ? overflowRowH : 0);
+  const totalH = headerH + (sectionHeaderH + sectionH(singlesCapped)) + gapAfterSection + (sectionHeaderH + sectionH(doublesCapped)) + bottomPad;
 
   const draw = document.createElement('canvas');
   draw.width = W*scale;
@@ -3169,20 +3180,20 @@ async function sharePlayerCard(playerId){
   const ctx = draw.getContext('2d');
   ctx.scale(scale, scale);
 
-  ctx.fillStyle = '#F4F1EA';
+  ctx.fillStyle = '#F4F6FA';
   ctx.fillRect(0, 0, W, totalH);
 
-  // ---- Header: player name instead of a matchup, plus their overall record ----
+  // ---- Header: player name, gold accent, selected scope, and the record for that scope ----
   const headerGrad = ctx.createLinearGradient(0, 0, W, headerH);
-  headerGrad.addColorStop(0, '#0F2240');
-  headerGrad.addColorStop(1, '#1B3A66');
+  headerGrad.addColorStop(0, '#0A1830');
+  headerGrad.addColorStop(1, '#12294D');
   ctx.fillStyle = headerGrad;
   ctx.fillRect(0, 0, W, headerH);
 
   if(logoImg){
     ctx.save();
     ctx.globalAlpha = 0.16;
-    const logoSize = W * 0.34; // proportional, since this card's width varies by player unlike the fixed-width event/team cards
+    const logoSize = 200;
     ctx.drawImage(logoImg, W - logoSize*0.62, -logoSize*0.28, logoSize, logoSize);
     ctx.restore();
   }
@@ -3194,81 +3205,98 @@ async function sharePlayerCard(playerId){
   ctx.fillStyle = '#FFCB57';
   ctx.fillRect(marginX, 65, 42, 4);
 
+  ctx.fillStyle = '#FFC94A';
+  ctx.font = `800 12px ${FONT}`;
+  ctx.fillText((scope === 'all' ? 'All-Time Record' : `${scope} Season`).toUpperCase(), marginX, 88);
+
   ctx.fillStyle = '#B8C4D9';
   ctx.font = `600 14px ${FONT}`;
   const summaryParts = [];
-  if(mpW+mpL+mpT > 0) summaryParts.push(`Singles ${mpW}-${mpL}-${mpT}`);
-  if(dbW+dbL+dbT > 0) summaryParts.push(`Doubles ${dbW}-${dbL}-${dbT}`);
-  ctx.fillText(summaryParts.length ? summaryParts.join('    ·    ') : 'No results recorded yet', marginX, 90);
+  if(singlesRows.length) summaryParts.push(`Singles ${singlesRecordLine}`);
+  if(doublesRows.length) summaryParts.push(`Doubles ${doublesRecordLine}`);
+  ctx.fillText(summaryParts.length ? summaryParts.join('    ·    ') : 'No results recorded yet', marginX, 114);
 
-  let y = headerH + listTopPad;
+  let y = headerH;
 
-  if(history.length === 0){
+  // ---- One row: opponent/pairing on top with the result pill, opponent context
+  // (team, PDGA, skill rank), score/margin, and event+date underneath. Mirrors the
+  // exact fields buildHistoryRows resolves for the on-screen list. ----
+  const drawRow = (rowTop, r) => {
+    ctx.strokeStyle = '#DFE4EE';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(marginX, rowTop);
+    ctx.lineTo(W-marginX, rowTop);
+    ctx.stroke();
+
+    const result = r.result;
+    const pillColor = result==='W' ? '#12294D' : result==='T' ? '#8A6112' : '#C4453B';
+    const pillBg = result==='W' ? '#E1E8F5' : result==='T' ? '#FBEFD8' : '#F5D9D6';
+    const pillLabel = result || '—';
+
+    ctx.font = `800 10px ${FONT}`;
+    const pillW = ctx.measureText(pillLabel).width + 16;
+    const pillH = 20, pillX = W - marginX - pillW, pillY = rowTop + 6;
+    ctx.fillStyle = pillBg;
+    ctxRoundRect(ctx, pillX, pillY, pillW, pillH, 10);
+    ctx.fill();
+    ctx.fillStyle = pillColor;
     ctx.textAlign = 'center';
-    ctx.fillStyle = '#8C8478';
-    ctx.font = `600 13px ${FONT}`;
-    ctx.fillText('No recorded results yet.', W/2, y+28);
+    ctx.fillText(pillLabel, pillX + pillW/2, pillY + 14);
     ctx.textAlign = 'left';
-    y += rowH;
-  } else {
-    const resultColor = (r) => r==='W' ? '#1E7A46' : r==='T' ? '#8A6112' : '#B3352E';
-    history.forEach(h=>{
-      ctx.strokeStyle = '#E4DFD3';
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(marginX, y);
-      ctx.lineTo(W-marginX, y);
-      ctx.stroke();
 
-      let oppLabel = 'Opponent';
-      if(h.event.opponentTeamId){
-        const t = oppTeams.find(x=>x.id===h.event.opponentTeamId);
-        if(t) oppLabel = t.name;
-      } else if(h.event.opponentName){
-        oppLabel = h.event.opponentName;
-      }
-      const matchupTitle = formatMatchupTitle(h.event, oppLabel);
-      const d = fmtDate(h.event.date);
+    ctx.font = `800 13.5px ${FONT}`;
+    ctx.fillStyle = '#0E1B2E';
+    ctx.fillText(ctxTruncateText(ctx, r.raw.title, (pillX - 10) - marginX), marginX, rowTop + 19);
 
+    const metaParts = [];
+    if(r.raw.formatLabel) metaParts.push(r.raw.formatLabel.toUpperCase());
+    if(r.raw.identifier) metaParts.push(r.raw.identifier);
+    if(r.raw.scoreLabel) metaParts.push(r.raw.scoreLabel);
+    if(r.raw.subLabel) metaParts.push(r.raw.subLabel);
+    ctx.font = `600 10.5px ${FONT}`;
+    ctx.fillStyle = '#5C6B84';
+    ctx.fillText(ctxTruncateText(ctx, metaParts.join('  ·  '), contentW), marginX, rowTop + 35);
+  };
+
+  const drawSection = (title, subtitle, accent, capped) => {
+    ctx.textAlign = 'left';
+    ctx.fillStyle = accent;
+    ctxRoundRect(ctx, marginX, y+11, 10, 10, 3);
+    ctx.fill();
+    ctx.fillStyle = '#12294D';
+    ctx.font = `800 14px ${FONT}`;
+    ctx.fillText(title.toUpperCase(), marginX + 18, y+21);
+    ctx.fillStyle = '#5C6B84';
+    ctx.font = `700 12px ${FONT}`;
+    ctx.textAlign = 'right';
+    ctx.fillText(subtitle, W-marginX, y+21);
+    ctx.textAlign = 'left';
+    y += sectionHeaderH;
+
+    if(capped.shown.length === 0){
+      ctx.fillStyle = '#5C6B84';
+      ctx.font = `600 13px ${FONT}`;
+      ctx.textAlign = 'center';
+      ctx.fillText(`No ${title.toLowerCase()} results for ${scopeLabel}.`, CENTER_X, y+24);
       ctx.textAlign = 'left';
-      ctx.font = `800 14.5px ${FONT}`;
-      ctx.fillStyle = '#2B2620';
-      ctx.fillText(ctxTruncateText(ctx, matchupTitle, contentW*0.62), marginX, y+22);
-
-      ctx.textAlign = 'right';
-      ctx.font = `600 11px ${FONT}`;
-      ctx.fillStyle = '#8C8478';
-      ctx.fillText(`${d.mon} ${d.day}`, W-marginX, y+22);
-      ctx.textAlign = 'left';
-
-      let lineY = y + 42;
-      if(h.matchplay){
-        const m = h.matchplay;
-        ctx.font = `700 12px ${FONT}`;
-        ctx.fillStyle = resultColor(m.result);
-        let text = `Singles ${m.result} · vs ${m.opponentName || 'Unknown'}`;
-        const margin = formatMatchplayMargin(m);
-        if(margin) text += ` · ${margin}`;
-        ctx.fillText(ctxTruncateText(ctx, text, contentW), marginX, lineY);
-        lineY += 16;
+      y += emptyRowH;
+    } else {
+      capped.shown.forEach(r=>{ drawRow(y, r); y += rowH; });
+      if(capped.overflow){
+        ctx.fillStyle = '#5C6B84';
+        ctx.font = `600 11px ${FONT}`;
+        ctx.textAlign = 'center';
+        ctx.fillText(`+ ${capped.overflow} earlier result${capped.overflow>1?'s':''} not shown`, CENTER_X, y+15);
+        ctx.textAlign = 'left';
+        y += overflowRowH;
       }
-      if(h.doubles){
-        const db = normalizeGroupEntry(h.doubles);
-        ctx.font = `700 12px ${FONT}`;
-        ctx.fillStyle = resultColor(db.result);
-        const opps = (db.oppNames || []).filter(Boolean).map(abbrevName).join(' & ') || 'Unknown';
-        const partners = (db.partnerNames || []).filter(Boolean).map(abbrevName).join(' & ');
-        let text = `${groupFormatLabel(db.format)} ${db.result} · `;
-        if(partners) text += `w/ ${partners} `;
-        text += `vs ${opps}`;
-        const score = formatDoublesScore(db);
-        if(score) text += ` · ${score}`;
-        ctx.fillText(ctxTruncateText(ctx, text, contentW), marginX, lineY);
-      }
+    }
+  };
 
-      y += rowH;
-    });
-  }
+  drawSection('Singles', singlesRecordLine, '#FFCB57', singlesCapped);
+  y += gapAfterSection;
+  drawSection('Doubles', doublesRecordLine, '#7FB3E0', doublesCapped);
 
   // ---- Round the card's corners and export ----
   const rounded = document.createElement('canvas');
@@ -3283,7 +3311,7 @@ async function sharePlayerCard(playerId){
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    const safeName = `${player.name}-stats`.replace(/[^a-z0-9]+/gi, '-').toLowerCase();
+    const safeName = `${player.name}-${scope}`.replace(/[^a-z0-9]+/gi, '-').toLowerCase();
     a.download = `${safeName || 'player'}-stats.png`;
     document.body.appendChild(a);
     a.click();
@@ -3310,13 +3338,13 @@ async function shareTeamRecordCard(){
   const ctx = draw.getContext('2d');
   ctx.scale(scale, scale);
 
-  ctx.fillStyle = '#F4F1EA';
+  ctx.fillStyle = '#F4F6FA';
   ctx.fillRect(0, 0, W, totalH);
 
   // ---- Header: record + point % instead of a single matchup ----
   const headerGrad = ctx.createLinearGradient(0, 0, W, headerH);
-  headerGrad.addColorStop(0, '#0F2240');
-  headerGrad.addColorStop(1, '#1B3A66');
+  headerGrad.addColorStop(0, '#0A1830');
+  headerGrad.addColorStop(1, '#12294D');
   ctx.fillStyle = headerGrad;
   ctx.fillRect(0, 0, W, headerH);
 
@@ -3353,14 +3381,14 @@ async function shareTeamRecordCard(){
 
   if(teamEvents.length === 0){
     ctx.textAlign = 'center';
-    ctx.fillStyle = '#8C8478';
+    ctx.fillStyle = '#5C6B84';
     ctx.font = `600 13px ${FONT}`;
     ctx.fillText('No team results recorded yet.', W/2, y+28);
     ctx.textAlign = 'left';
     y += rowH;
   } else {
     teamEvents.forEach(te=>{
-      ctx.strokeStyle = '#E4DFD3';
+      ctx.strokeStyle = '#DFE4EE';
       ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.moveTo(marginX, y);
@@ -3376,36 +3404,45 @@ async function shareTeamRecordCard(){
       }
       const matchupTitle = formatMatchupTitle(te.event, oppLabel);
       const d = fmtDate(te.event.date);
+      // Same per-event point share shown on-screen next to each Team Record row.
+      const evPct = (te.ourScore!=null && te.oppScore!=null && (te.ourScore+te.oppScore)>0)
+        ? `${((te.ourScore/(te.ourScore+te.oppScore))*100).toFixed(1)}% PTS` : null;
 
       ctx.textAlign = 'left';
       ctx.font = `800 14px ${FONT}`;
-      ctx.fillStyle = '#2B2620';
+      ctx.fillStyle = '#0E1B2E';
       ctx.fillText(ctxTruncateText(ctx, matchupTitle, contentW*0.48), marginX, y+24);
 
       ctx.font = `600 11px ${FONT}`;
-      ctx.fillStyle = '#8C8478';
+      ctx.fillStyle = '#5C6B84';
       ctx.fillText(`${d.mon} ${d.day}`, marginX, y+40);
 
-      const resultColor = te.result==='W' ? '#1E7A46' : te.result==='T' ? '#8A6112' : '#B3352E';
-      const resultBg = te.result==='W' ? '#DCEFE3' : te.result==='T' ? '#FBEFD8' : '#F8DEDB';
+      const resultColor = te.result==='W' ? '#12294D' : te.result==='T' ? '#8A6112' : '#C4453B';
+      const resultBg = te.result==='W' ? '#E1E8F5' : te.result==='T' ? '#FBEFD8' : '#F5D9D6';
       const resultLabel = te.result==='W' ? 'WIN' : te.result==='T' ? 'TIE' : 'LOSS';
 
       ctx.textAlign = 'right';
       ctx.font = `800 15px ${FONT}`;
       const scoreStr = `${te.ourScore} – ${te.oppScore}`;
       ctx.fillStyle = '#12294D';
-      ctx.fillText(scoreStr, W-marginX, y+28);
+      ctx.fillText(scoreStr, W-marginX, y+24);
       const scoreW = ctx.measureText(scoreStr).width;
+
+      if(evPct){
+        ctx.font = `700 10.5px ${FONT}`;
+        ctx.fillStyle = '#5C6B84';
+        ctx.fillText(evPct, W-marginX, y+40);
+      }
 
       ctx.font = `800 12px ${FONT}`;
       const badgeW = ctx.measureText(resultLabel).width + 20;
       const badgeX = W - marginX - scoreW - 14 - badgeW;
       ctx.fillStyle = resultBg;
-      ctxRoundRect(ctx, badgeX, y+14, badgeW, 20, 10);
+      ctxRoundRect(ctx, badgeX, y+10, badgeW, 20, 10);
       ctx.fill();
       ctx.fillStyle = resultColor;
       ctx.textAlign = 'center';
-      ctx.fillText(resultLabel, badgeX + badgeW/2, y+28);
+      ctx.fillText(resultLabel, badgeX + badgeW/2, y+24);
       ctx.textAlign = 'left';
 
       y += rowH;
@@ -3493,7 +3530,7 @@ async function renderPlayerHistoryHtml(playerId){
     </div>`;
 
   return pillsHtml + singlesSection + doublesSection +
-    `<button class="btn btn-outline btn-sm" style="width:100%; margin-top:12px;" onclick="event.stopPropagation(); sharePlayerCard('${playerId}')">⬇️ Share Image</button>`;
+    `<button class="btn btn-outline btn-sm" style="width:100%; margin-top:12px;" onclick="event.stopPropagation(); sharePlayerCard('${playerId}','${scope}')">⬇️ Share Image</button>`;
 }
 function setPlayerCardScope(scope){
   state.expandedPlayerCardScope = scope;
