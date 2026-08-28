@@ -2282,9 +2282,12 @@ function buildHistoryRows(player, isOpponent, scope, oppTeamsList, statsMap){
   let singlesRows = [];
   (player.matchHistory || []).filter(h => (h.type||'singles')==='singles').forEach(h=>{
     if(!matchScope(h.season)) return;
-    const identifier = [h.opponentTeam, h.opponentPdga?`PDGA ${h.opponentPdga}`:null, h.opponentPowerRank!=null?`Rank ${Number(h.opponentPowerRank).toFixed(1)}`:null].filter(Boolean).join(' · ');
+    // Opponent rank is admin-only everywhere in the app, and never shown at all in share
+    // images (even to admins, since an exported image can end up in front of anyone).
+    const identifier = [h.opponentTeam, h.opponentPdga?`PDGA ${h.opponentPdga}`:null, (state.adminMode && h.opponentPowerRank!=null)?`Rank ${Number(h.opponentPowerRank).toFixed(1)}`:null].filter(Boolean).join(' · ');
+    const shareIdentifier = [h.opponentTeam, h.opponentPdga?`PDGA ${h.opponentPdga}`:null].filter(Boolean).join(' · ');
     singlesRows.push({ sortKey: h.season||'', html: rowHtml(`vs ${esc(h.opponent)}`, identifier, h.event, h.result), result: h.result,
-      raw: { title: `vs ${h.opponent}`, identifier, subLabel: h.event, scoreLabel: null, formatLabel: null } });
+      raw: { title: `vs ${h.opponent}`, identifier: shareIdentifier, subLabel: h.event, scoreLabel: null, formatLabel: null } });
   });
   Object.keys(statsMap).forEach(eventId=>{
     const ev = state.events.find(e=>e.id===eventId);
@@ -2308,10 +2311,13 @@ function buildHistoryRows(player, isOpponent, scope, oppTeamsList, statsMap){
       const s = data[player.id];
       if(s && s.matchplay && s.matchplay.played){
         const ctx = resolveOppContext(s.matchplay.opponentPlayerId, s.matchplay.opponentName);
-        const identifier = [ctx.team, ctx.pdga?`PDGA ${ctx.pdga}`:null, ctx.rank!=null?`Rank ${Number(ctx.rank).toFixed(1)}`:null].filter(Boolean).join(' · ');
+        // Same admin-only-rank rule as above: on-screen shows rank only in admin mode; the
+        // raw copy feeding share images never includes ctx.rank, admin or not.
+        const identifier = [ctx.team, ctx.pdga?`PDGA ${ctx.pdga}`:null, (state.adminMode && ctx.rank!=null)?`Rank ${Number(ctx.rank).toFixed(1)}`:null].filter(Boolean).join(' · ');
+        const shareIdentifier = [ctx.team, ctx.pdga?`PDGA ${ctx.pdga}`:null].filter(Boolean).join(' · ');
         const margin = formatMatchplayMargin(s.matchplay);
         singlesRows.push({ sortKey: ev.date, html: rowHtml(`vs ${esc(ctx.name)}`, identifier, `${esc(ev.name)} · ${d.mon} ${d.day}`, s.matchplay.result), result: s.matchplay.result,
-          raw: { title: `vs ${ctx.name}`, identifier, subLabel: `${ev.name} · ${d.mon} ${d.day}`, scoreLabel: margin || null, formatLabel: null } });
+          raw: { title: `vs ${ctx.name}`, identifier: shareIdentifier, subLabel: `${ev.name} · ${d.mon} ${d.day}`, scoreLabel: margin || null, formatLabel: null } });
       }
     }
   });
@@ -2496,18 +2502,22 @@ async function computeTeamResult(eventId){
   return { result: details.result, ourScore: details.totalUsPts, oppScore: details.totalOppPts };
 }
 function renderScoreboard(ourLabel, usPts, oppPts, oppLabel, big){
-  const numSize = big ? '22px' : '17px';
-  const boxPad = big ? '8px 18px' : '5px 12px';
-  const teamFont = big ? '11px' : '9.5px';
+  const numSize = big ? '26px' : '19px';
+  const boxPad = big ? '10px 22px' : '7px 14px';
+  const teamFont = big ? '10.5px' : '9px';
+  const gap = big ? '22px' : '14px';
+  const side = (label, pts) => `
+    <div style="display:flex; flex-direction:column; align-items:center; gap:2px; min-width:0;">
+      <div style="font-size:${teamFont}; font-weight:800; color:rgba(255,255,255,0.72); text-transform:uppercase; letter-spacing:0.3px; max-width:110px; text-align:center; line-height:1.2; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${esc(label)}</div>
+      <div style="font-family:'Courier New', monospace; font-size:${numSize}; font-weight:800; color:#FFC94A; line-height:1;">${pts}</div>
+    </div>`;
   return `
-    <div style="display:flex; align-items:center; justify-content:center; gap:8px; margin-top:8px;">
-      <div style="font-size:${teamFont}; font-weight:800; color:var(--ink-soft); text-transform:uppercase; letter-spacing:0.3px; max-width:72px; text-align:right; line-height:1.25;">${esc(ourLabel)}</div>
-      <div style="display:flex; align-items:center; gap:5px; background:var(--forest-dark); border-radius:8px; padding:${boxPad}; box-shadow: inset 0 0 0 2px rgba(255,255,255,0.08);">
-        <span style="font-family:'Courier New', monospace; font-size:${numSize}; font-weight:800; color:#FFC94A; min-width:18px; text-align:center;">${usPts}</span>
-        <span style="font-family:'Courier New', monospace; font-size:${numSize}; font-weight:800; color:#FFC94A; opacity:0.5;">–</span>
-        <span style="font-family:'Courier New', monospace; font-size:${numSize}; font-weight:800; color:#FFC94A; min-width:18px; text-align:center;">${oppPts}</span>
+    <div style="display:flex; justify-content:center; margin-top:8px;">
+      <div style="display:flex; align-items:center; justify-content:center; gap:${gap}; background:var(--forest-dark); border-radius:10px; padding:${boxPad}; box-shadow: inset 0 0 0 2px rgba(255,255,255,0.08);">
+        ${side(ourLabel, usPts)}
+        <div style="width:1px; align-self:stretch; background:rgba(255,255,255,0.16);"></div>
+        ${side(oppLabel, oppPts)}
       </div>
-      <div style="font-size:${teamFont}; font-weight:800; color:var(--ink-soft); text-transform:uppercase; letter-spacing:0.3px; max-width:72px; text-align:left; line-height:1.25;">${esc(oppLabel)}</div>
     </div>`;
 }
 async function renderEventMatchBreakdown(eventId){
@@ -2653,23 +2663,31 @@ async function shareEventCard(eventId){
   const contentW = W - marginX*2;
   const FONT = '-apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif';
 
-  const rowH = 48, compactRowH = 30, colHeaderH = 22, sectionHeaderH = 32, headerH = 112, scoreH = 100, subtotalH = 38, gapAfterSection = 20, bottomPad = 24;
-  // Beyond a handful of matches, one tall column of rows would make the image far
-  // too tall to share well. Past 8 rows we switch to a compact style split across
-  // 2 or 3 side-by-side columns instead, capping height growth for big events.
-  const sectionLayout = (rowCount) => {
-    if(rowCount <= 8) return { numCols: 1, rowsPerCol: Math.max(rowCount, 1), rh: rowH, compact: false };
-    const numCols = rowCount <= 18 ? 2 : 3;
-    return { numCols, rowsPerCol: Math.ceil(rowCount / numCols), rh: compactRowH, compact: true };
+  const compactRowH = 30, colHeaderH = 22, sectionHeaderH = 32, headerH = 112, scoreH = 100, subtotalH = 38, gapAfterSection = 20, bottomPad = 24;
+  // Matchplay and Doubles render as two side-by-side panels rather than stacked
+  // sections, so a viewer can see both at a glance. Each panel gets its own
+  // "TWO BUFF | Opponent" column header. Rows always use the compact row style
+  // (it was already tuned for this exact column width from the old multi-column
+  // large-event layout), and a panel with a lot of rows splits into 2 side-by-side
+  // sub-columns of its own so height doesn't run away for big events.
+  const panelGap = 24;
+  const panelW = (contentW - panelGap) / 2;
+  const leftPanelX = marginX;
+  const rightPanelX = marginX + panelW + panelGap;
+  const panelHeaderBlockH = 40; // title line + subtitle line, before the column header
+  const noResultsH = 34;
+  const panelRowsLayout = (rowCount) => {
+    if(rowCount === 0) return { numCols: 1, rowsPerCol: 0, rh: compactRowH };
+    const numCols = rowCount > 10 ? 2 : 1;
+    return { numCols, rowsPerCol: Math.ceil(rowCount / numCols), rh: compactRowH };
   };
-  const singlesLayout = sectionLayout(singles.length);
-  const doublesLayout = sectionLayout(doubles.length);
-  const singlesSectionH = sectionHeaderH + colHeaderH + singlesLayout.rowsPerCol*singlesLayout.rh + subtotalH + gapAfterSection;
-  const doublesSectionH = sectionHeaderH + colHeaderH + doublesLayout.rowsPerCol*doublesLayout.rh + subtotalH;
+  const panelContentH = (rows) => rows.length === 0 ? noResultsH : panelRowsLayout(rows.length).rowsPerCol * compactRowH;
+  const panelTotalH = (rows) => panelHeaderBlockH + colHeaderH + panelContentH(rows) + subtotalH;
   const adjRowH = 40, adjRowHNoNote = 24;
   const adjustmentsRowsH = adjustments.reduce((sum,a)=> sum + (a.note ? adjRowH : adjRowHNoNote), 0);
   const adjustmentsSectionH = adjustments.length ? (gapAfterSection + sectionHeaderH + adjustmentsRowsH) : 0;
-  const totalH = headerH + scoreH + singlesSectionH + doublesSectionH + adjustmentsSectionH + bottomPad;
+  const panelsSectionH = Math.max(panelTotalH(singles), panelTotalH(doubles));
+  const totalH = headerH + scoreH + panelsSectionH + adjustmentsSectionH + bottomPad;
   // Splits rows into numCols groups as evenly as possible (sizes never differ by
   // more than 1), instead of filling earlier columns first and leaving the last
   // one nearly empty.
@@ -2792,36 +2810,10 @@ async function shareEventCard(eventId){
   ctx.textAlign = 'left';
   y += scoreH;
 
-  // ---- 7. Match rows: for a given target width, find the largest font size (down
-  // to a floor) that lets "our name — score — opponent name" fit as one line;
-  // only truncates a name as a last resort. Doubles gets a smaller starting size
-  // since "A & B" pairs are inherently longer than a single name. ----
-  const fitNameToWidth = (label, availableW, isHighlighted, startSize, minSize) => {
-    let fontSize = startSize;
-    const minFontSize = minSize || 10;
-    let text = label, w;
-    do {
-      ctx.font = `800 ${fontSize}px ${FONT}`;
-      text = label;
-      w = ctx.measureText(text).width;
-      const slot = w + (isHighlighted ? 16 : 0);
-      if(slot <= availableW || fontSize <= minFontSize) break;
-      fontSize -= 0.5;
-    } while(true);
-    let slot = w + (isHighlighted ? 16 : 0);
-    if(slot > availableW){
-      ctx.font = `800 ${fontSize}px ${FONT}`;
-      const overflow = slot - availableW + 6;
-      text = ctxTruncateText(ctx, label, Math.max(w - overflow, 30));
-      w = ctx.measureText(text).width;
-    }
-    return { fontSize, text, w };
-  };
-
-  // Compact table row used once a section has more than 8 matches and splits into
-  // side-by-side columns. The score sits between the two names on one line — same
-  // "anchor the score, names flow outward from it" technique as everywhere else —
-  // just centered on this column's own center instead of the whole card's.
+  // ---- 7. Match rows: every row (Matchplay and Doubles alike) uses the compact
+  // row style below, since each panel is only about half the card's width — this
+  // is the same renderer previously reserved for large events split into
+  // side-by-side columns, just reused as the default now that panels are narrower.
   // "Matt Grayum" -> "Matt G." — also handles doubles pairs like "Matt Grayum & Tanner Grayum"
   const abbreviateOneName = (name) => {
     const parts = name.trim().split(/\s+/);
@@ -2847,7 +2839,8 @@ async function shareEventCard(eventId){
     const oppLabel = abbreviatePlayerLabel(r.oppLabel);
 
     ctx.font = `700 ${fontSize}px ${FONT}`;
-    const centerW = Math.min(ctx.measureText(centerLabel).width, colW * 0.3);
+    const truncatedCenterLabel = ctxTruncateText(ctx, centerLabel, colW * 0.34);
+    const centerW = ctx.measureText(truncatedCenterLabel).width;
     const sideAvailW = (colW - centerW)/2 - gap;
 
     ctx.font = `800 ${fontSize}px ${FONT}`;
@@ -2881,7 +2874,7 @@ async function shareEventCard(eventId){
     ctx.textAlign = 'center';
     ctx.font = `700 ${fontSize}px ${FONT}`;
     ctx.fillStyle = isTie ? '#8A6112' : '#5C6B84';
-    ctx.fillText(centerLabel, colCenterX, rowTop + 4);
+    ctx.fillText(truncatedCenterLabel, colCenterX, rowTop + 4);
 
     ctx.textAlign = 'left';
     ctx.font = `800 ${fontSize}px ${FONT}`;
@@ -2907,168 +2900,77 @@ async function shareEventCard(eventId){
   };
 
   // Column header — "TWO BUFF" / opponent name — drawn above a block of rows so
-  // it's unambiguous which side is which, repeated for every side-by-side column.
-  const drawColumnHeader = (x, w) => {
+  // it's unambiguous which side is which, repeated for every panel/column.
+  const drawColumnHeader = (x, w, headerY) => {
     ctx.font = `800 10px ${FONT}`;
     ctx.fillStyle = '#5C6B84';
     ctx.textAlign = 'center';
-    ctx.fillText('TWO BUFF', x + w*0.25, y + colHeaderH - 8);
-    ctx.fillText(ctxTruncateText(ctx, opponentLabel.toUpperCase(), w*0.42), x + w*0.75, y + colHeaderH - 8);
+    ctx.fillText('TWO BUFF', x + w*0.25, headerY + colHeaderH - 8);
+    ctx.fillText(ctxTruncateText(ctx, opponentLabel.toUpperCase(), w*0.42), x + w*0.75, headerY + colHeaderH - 8);
     ctx.textAlign = 'left';
     ctx.strokeStyle = '#DFE4EE';
     ctx.lineWidth = 1;
     ctx.beginPath();
-    ctx.moveTo(x, y + colHeaderH);
-    ctx.lineTo(x + w, y + colHeaderH);
+    ctx.moveTo(x, headerY + colHeaderH);
+    ctx.lineTo(x + w, headerY + colHeaderH);
     ctx.stroke();
   };
 
-  // ---- 8. Section drawer: title/subtitle row, column headers, then each match,
-  // then a subtotal. The score summary is the anchor for each row — drawn fixed
-  // at its column's center, exactly like the marquee above — and both player
-  // names are fitted and positioned as mirror images flowing outward from it. ----
-  const drawSection = (title, subtitle, accent, rows, usPts, oppPts, startFontSize) => {
+  // ---- 8. Panel drawer: title/subtitle block, its own column header, then each
+  // match in the compact row style, then a subtotal pill — sized to a single
+  // panel's width rather than the full card, so Matchplay and Doubles can sit
+  // side by side. Returns the height it consumed instead of mutating the shared
+  // `y`, so both panels can be drawn starting at the same y and the card only
+  // grows by the taller of the two. ----
+  const drawPanel = (panelX, panelW, panelStartY, title, subtitle, accent, rows, usPts, oppPts) => {
+    let py = panelStartY;
     ctx.textAlign = 'left';
     ctx.fillStyle = accent;
-    ctxRoundRect(ctx, marginX, y+11, 10, 10, 3);
+    ctxRoundRect(ctx, panelX, py+3, 10, 10, 3);
     ctx.fill();
     ctx.fillStyle = '#12294D';
-    ctx.font = `800 14px ${FONT}`;
-    ctx.fillText(title.toUpperCase(), marginX + 18, y+21);
+    ctx.font = `800 13px ${FONT}`;
+    ctx.fillText(title.toUpperCase(), panelX + 16, py+12);
     ctx.fillStyle = '#5C6B84';
-    ctx.font = `700 12px ${FONT}`;
-    ctx.textAlign = 'right';
-    ctx.fillText(subtitle, W-marginX, y+21);
-    ctx.textAlign = 'left';
-    y += sectionHeaderH;
+    ctx.font = `700 10.5px ${FONT}`;
+    ctx.fillText(ctxTruncateText(ctx, subtitle, panelW), panelX, py+28);
+    py += panelHeaderBlockH;
+
+    drawColumnHeader(panelX, panelW, py);
+    py += colHeaderH;
 
     if(rows.length === 0){
       ctx.fillStyle = '#5C6B84';
-      ctx.font = `600 13px ${FONT}`;
+      ctx.font = `600 11px ${FONT}`;
       ctx.textAlign = 'center';
-      ctx.fillText('No results recorded.', CENTER_X, y+28);
+      ctx.fillText('No results recorded.', panelX + panelW/2, py + noResultsH/2 + 4);
       ctx.textAlign = 'left';
-      y += rowH;
-    } else if(!sectionLayout(rows.length).compact){
-      drawColumnHeader(marginX, contentW);
-      y += colHeaderH;
-      const gap = 14;
-      const halfContentW = contentW / 2;
-      rows.forEach(r=>{
-        ctx.strokeStyle = '#DFE4EE';
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(marginX, y);
-        ctx.lineTo(W-marginX, y);
-        ctx.stroke();
-
-        const midY = y + rowH/2;
-        const isOurWin = r.result === 'W';
-        const isOppWin = r.result === 'L';
-        const isTie = r.result === 'T';
-        const centerLabel = r.scoreLabel || (isTie ? 'TIE' : '—');
-
-        // A format tag (e.g. "TRIPLES · 3 PTS") for any group format other than
-        // plain doubles, since the points a win is worth differs by format.
-        if(r.formatLabel){
-          ctx.font = `800 8px ${FONT}`;
-          ctx.fillStyle = '#5C6B84';
-          ctx.textAlign = 'center';
-          ctx.fillText(r.formatLabel.toUpperCase(), CENTER_X, y + 11);
-          ctx.textAlign = 'left';
-        }
-
-        // The full score summary — e.g. "4 UP · 2 to play" — is one indivisible
-        // piece of text, drawn dead-center on the card first.
-        ctx.font = `700 12px ${FONT}`;
-        const centerW = Math.min(ctx.measureText(centerLabel).width, halfContentW * 0.55);
-        const sideAvailableW = halfContentW - centerW/2 - gap;
-
-        const ourFit = fitNameToWidth(r.ourLabel, sideAvailableW, isOurWin, startFontSize);
-        const oppFit = fitNameToWidth(r.oppLabel, sideAvailableW, isOppWin, startFontSize);
-        const ourRightEdge = CENTER_X - centerW/2 - gap;
-        const oppLeftEdge = CENTER_X + centerW/2 + gap;
-
-        ctx.textAlign = 'right';
-        ctx.font = `800 ${ourFit.fontSize}px ${FONT}`;
-        if(isOurWin){
-          const slotW = ourFit.w + 16;
-          ctx.fillStyle = '#E1E8F5';
-          ctxRoundRect(ctx, ourRightEdge - slotW, midY - 15, slotW, 28, 8);
-          ctx.fill();
-          ctx.fillStyle = '#12294D';
-          ctx.fillText(ourFit.text, ourRightEdge - 8, midY + 5);
-        } else {
-          ctx.fillStyle = '#0E1B2E';
-          ctx.fillText(ourFit.text, ourRightEdge, midY + 5);
-        }
-        if(r.ourIsHot){
-          const ourBlockLeftEdge = ourRightEdge - (isOurWin ? ourFit.w + 16 : ourFit.w);
-          ctx.font = `800 16px ${FONT}`;
-          ctx.fillStyle = '#C68A1E';
-          ctx.fillText('★', ourBlockLeftEdge - 4, midY + 5);
-        }
-
-        ctx.textAlign = 'center';
-        ctx.font = `700 12px ${FONT}`;
-        ctx.fillStyle = isTie ? '#8A6112' : '#5C6B84';
-        ctx.fillText(centerLabel, CENTER_X, midY + 4);
-
-        ctx.textAlign = 'left';
-        ctx.font = `800 ${oppFit.fontSize}px ${FONT}`;
-        if(isOppWin){
-          const slotW = oppFit.w + 16;
-          ctx.fillStyle = '#E1E8F5';
-          ctxRoundRect(ctx, oppLeftEdge, midY - 15, slotW, 28, 8);
-          ctx.fill();
-          ctx.fillStyle = '#12294D';
-          ctx.fillText(oppFit.text, oppLeftEdge + 8, midY + 5);
-        } else {
-          ctx.fillStyle = '#0E1B2E';
-          ctx.fillText(oppFit.text, oppLeftEdge, midY + 5);
-        }
-        if(r.oppIsHot){
-          const oppBlockRightEdge = oppLeftEdge + (isOppWin ? oppFit.w + 16 : oppFit.w);
-          ctx.textAlign = 'left';
-          ctx.font = `800 16px ${FONT}`;
-          ctx.fillStyle = '#C68A1E';
-          ctx.fillText('★', oppBlockRightEdge + 4, midY + 5);
-        }
-        ctx.textAlign = 'left';
-
-        y += rowH;
-      });
+      py += noResultsH;
     } else {
-      // Compact multi-column table — used once a section has more than 8 matches,
-      // so a large event (up to ~26 singles) still produces a shareable-sized image
-      // instead of one extremely tall column.
-      const layout = sectionLayout(rows.length);
-      const colGap = 20;
-      const colW = (contentW - colGap*(layout.numCols-1)) / layout.numCols;
-      for(let col=0; col<layout.numCols; col++){
-        const colX = marginX + col*(colW+colGap);
-        drawColumnHeader(colX, colW);
-      }
-      y += colHeaderH;
-      const sectionTopY = y;
+      // A panel with a lot of rows splits into 2 side-by-side sub-columns of its
+      // own, same technique the old large-event compact table used.
+      const layout = panelRowsLayout(rows.length);
+      const subColGap = 14;
+      const subColW = (panelW - subColGap*(layout.numCols-1)) / layout.numCols;
+      const rowsTopY = py;
       const columns = distributeIntoColumns(rows, layout.numCols);
       for(let col=0; col<layout.numCols; col++){
-        const colX = marginX + col*(colW+colGap);
+        const colX = panelX + col*(subColW+subColGap);
         const colRows = columns[col];
         colRows.forEach((r,i)=>{
-          const rowTop = sectionTopY + i*layout.rh + layout.rh/2;
+          const rowTop = rowsTopY + i*layout.rh + layout.rh/2;
           if(i > 0){
             ctx.strokeStyle = '#DFE4EE';
             ctx.lineWidth = 1;
             ctx.beginPath();
-            ctx.moveTo(colX, sectionTopY + i*layout.rh - 3);
-            ctx.lineTo(colX + colW, sectionTopY + i*layout.rh - 3);
+            ctx.moveTo(colX, rowsTopY + i*layout.rh - 3);
+            ctx.lineTo(colX + subColW, rowsTopY + i*layout.rh - 3);
             ctx.stroke();
           }
-          drawCompactRow(colX, rowTop, colW, r);
+          drawCompactRow(colX, rowTop, subColW, r);
         });
       }
-      y += layout.rowsPerCol * layout.rh;
+      py += layout.rowsPerCol * layout.rh;
     }
 
     ctx.save();
@@ -3076,16 +2978,24 @@ async function shareEventCard(eventId){
     ctx.shadowBlur = 8;
     ctx.shadowOffsetY = 2;
     ctx.fillStyle = '#FFFFFF';
-    ctxRoundRect(ctx, marginX, y+7, contentW, 30, 10);
+    ctxRoundRect(ctx, panelX, py+7, panelW, 30, 10);
     ctx.fill();
     ctx.restore();
     ctx.font = `800 13px ${FONT}`;
     ctx.fillStyle = '#12294D';
     ctx.textAlign = 'center';
-    ctx.fillText(`${usPts} – ${oppPts}`, CENTER_X, y+27);
+    ctx.fillText(`${usPts} – ${oppPts}`, panelX + panelW/2, py+27);
     ctx.textAlign = 'left';
-    y += subtotalH;
+    py += subtotalH;
+
+    return py - panelStartY;
   };
+
+  // Short inline tag folded into the score label itself (e.g. "3v3 · 54 - 55")
+  // for any group format other than plain doubles, since the compact row has no
+  // room for a second line — the points-per-win difference is still called out
+  // in the panel subtitle below.
+  const groupFormatShortTag = (format) => format === 'triples' ? '3v3' : format === 'singles' ? '1v1' : '2v2';
 
   const singlesRowsData = singles.map(s=>({
     ourLabel: s.ourName, oppLabel: s.opponentName, scoreLabel: formatMatchplayMargin(s), result: s.result
@@ -3100,17 +3010,21 @@ async function shareEventCard(eventId){
     if(d.ourScore != null && d.ourScore < hotRoundValue) hotRoundValue = d.ourScore;
     if(d.oppScore != null && d.oppScore < hotRoundValue) hotRoundValue = d.oppScore;
   });
-  const doublesRowsData = doubles.map(d=>({
-    ourLabel: d.ourSide, oppLabel: d.opponentName, scoreLabel: formatDoublesScore(d), result: d.result,
-    ourIsHot: d.ourScore != null && d.ourScore === hotRoundValue,
-    oppIsHot: d.oppScore != null && d.oppScore === hotRoundValue,
-    formatLabel: (d.format && d.format !== 'doubles') ? `${groupFormatLabel(d.format)} · ${groupFormatWinPoints(d.format)} pt${groupFormatWinPoints(d.format)>1?'s':''}` : null
-  }));
+  const doublesRowsData = doubles.map(d=>{
+    const scoreLabel = formatDoublesScore(d);
+    const tagged = (d.format && d.format !== 'doubles') ? `${groupFormatShortTag(d.format)} · ${scoreLabel}` : scoreLabel;
+    return {
+      ourLabel: d.ourSide, oppLabel: d.opponentName, scoreLabel: tagged, result: d.result,
+      ourIsHot: d.ourScore != null && d.ourScore === hotRoundValue,
+      oppIsHot: d.oppScore != null && d.oppScore === hotRoundValue
+    };
+  });
   const anyHotRound = hotRoundValue !== Infinity;
 
-  drawSection('Matchplay', '1 pt / win', '#FFCB57', singlesRowsData, mpUsPts, mpOppPts, 14.5);
-  y += gapAfterSection;
-  drawSection('Doubles', anyHotRound ? '2 pts / win  ·  ★ hot round' : '2 pts / win', '#7FB3E0', doublesRowsData, dbUsPts, dbOppPts, 13.5);
+  const panelStartY = y;
+  const singlesConsumedH = drawPanel(leftPanelX, panelW, panelStartY, 'Matchplay', '1 pt / win', '#FFCB57', singlesRowsData, mpUsPts, mpOppPts);
+  const doublesConsumedH = drawPanel(rightPanelX, panelW, panelStartY, 'Doubles', anyHotRound ? '2 pts / win  ·  ★ hot round' : '2 pts / win', '#7FB3E0', doublesRowsData, dbUsPts, dbOppPts);
+  y = panelStartY + Math.max(singlesConsumedH, doublesConsumedH);
 
   // ---- Special / penalty points, if any were recorded for this event ----
   if(adjustments.length){
@@ -3172,7 +3086,9 @@ async function shareEventCard(eventId){
 // Shares exactly the season currently selected via the pill buttons on the player's
 // expanded stats card (or 'all' for All-Time) — same buildHistoryRows core the
 // on-screen list uses, so the image always matches what's actually in view,
-// including opponent team/PDGA/rank context and doubles format tags.
+// including opponent team/PDGA context and doubles format tags — but NOT opponent
+// rank, which is admin-only info and is stripped from every row's raw.identifier
+// before it ever reaches this canvas (see buildHistoryRows' shareIdentifier).
 async function sharePlayerCard(playerId, scopeArg){
   const player = state.players.find(p=>p.id===playerId);
   if(!player){ showToast('Player not found'); return; }
@@ -3245,8 +3161,8 @@ async function sharePlayerCard(playerId, scopeArg){
   let y = headerH;
 
   // ---- One row: opponent/pairing on top with the result pill, opponent context
-  // (team, PDGA, skill rank), score/margin, and event+date underneath. Mirrors the
-  // exact fields buildHistoryRows resolves for the on-screen list. ----
+  // (team, PDGA — never rank, which is admin-only and stripped upstream), score/margin,
+  // and event+date underneath. Mirrors the on-screen list except for that omission. ----
   const drawRow = (rowTop, r) => {
     ctx.strokeStyle = '#DFE4EE';
     ctx.lineWidth = 1;
@@ -3624,12 +3540,13 @@ function renderPlayerProfileSummary(p, includeHistory){
 // singles/doubles-split view (buildHistoryRows) instead, which also merges in live
 // results — this plain version only ever shows the archive as originally imported.
 // Builds the "(Team · PDGA 959 · Rank 6.5)" context shown next to each opponent
-// in Season History. PDGA and Power Rank are only included when we actually
-// have them — most opponents will show team only, some will show all three.
+// in Season History. PDGA is included whenever we have it; Rank is admin-only
+// info and only ever shown in admin mode — most opponents will show team only,
+// some will show team+PDGA, and only admins additionally see rank.
 function opponentContextLine(h){
   const parts = [h.opponentTeam];
   if(h.opponentPdga) parts.push(`PDGA ${h.opponentPdga}`);
-  if(h.opponentPowerRank != null) parts.push(`Rank ${Number(h.opponentPowerRank).toFixed(1)}`);
+  if(state.adminMode && h.opponentPowerRank != null) parts.push(`Rank ${Number(h.opponentPowerRank).toFixed(1)}`);
   return parts.join(' · ');
 }
 function renderSeasonHistory(p){
@@ -4389,6 +4306,29 @@ async function renderMatchups(){
   const doublesScoreHtml = eventDetails ? renderScoreboard('Two Buff', eventDetails.dbUsPts, eventDetails.dbOppPts, currentTeam.name, false) : '';
   const finalScoreHtml = eventDetails ? renderScoreboard('Two Buff', eventDetails.totalUsPts, eventDetails.totalOppPts, currentTeam.name, true) : '';
 
+  // ---- Points Still Available: how many points are still up for grabs in each section,
+  // based on how many matchups have actually been PAIRED (not just decided). Each singles
+  // matchup is worth 1 point; each doubles/triples/stroke-singles matchup is worth whatever
+  // groupFormatWinPoints says for its format. As results get entered, decided points (win
+  // = full value, tie = still fully "accounted for" since it splits 50/50) come off the
+  // total, so this counts down toward 0 as a section fills in. In trial mode (no event
+  // selected yet) nothing is decided, so it just shows the full total on the table.
+  const fmtPts = (n) => (Math.round(n*2)/2).toString(); // points only ever land on whole/half values
+  const renderPointsAvailable = (totalPts, decidedPts) => {
+    if(totalPts <= 0) return '';
+    const available = Math.max(0, totalPts - decidedPts);
+    return `
+      <div style="text-align:center; margin-top:6px; font-size:11px; font-weight:700; color:var(--ink-soft);">
+        🎯 <span style="color:var(--forest-dark); font-weight:800;">${fmtPts(available)}</span> of ${fmtPts(totalPts)} point${totalPts===1?'':'s'} still available
+      </div>`;
+  };
+  const singlesTotalPts = singlesTbIds.length; // one pairing = one point on the line
+  const singlesDecidedPts = eventDetails ? (eventDetails.mpUsPts + eventDetails.mpOppPts) : 0;
+  const singlesAvailableHtml = renderPointsAvailable(singlesTotalPts, singlesDecidedPts);
+  const doublesTotalPts = doubles.reduce((sum,m)=> sum + groupFormatWinPoints(m.format || 'doubles'), 0);
+  const doublesDecidedPts = eventDetails ? (eventDetails.dbUsPts + eventDetails.dbOppPts) : 0;
+  const doublesAvailableHtml = renderPointsAvailable(doublesTotalPts, doublesDecidedPts);
+
   // "Not playing" sections: players present but benched from a given format. Tap to restore.
   // Shown in trial mode too, reading from that mode's own bench (see `bench` above).
   const benchSectionHtml = (format) => {
@@ -4459,6 +4399,7 @@ async function renderMatchups(){
     </div>
     ${benchSectionHtml('singles')}
     ${singlesScoreHtml}
+    ${singlesAvailableHtml}
 
     <div class="stats-section-header">👥 Doubles</div>
     ${state.adminMode ? `
@@ -4480,6 +4421,7 @@ async function renderMatchups(){
     </div>
     ${benchSectionHtml('doubles')}
     ${doublesScoreHtml}
+    ${doublesAvailableHtml}
 
     ${adjustmentsHtml}
 
