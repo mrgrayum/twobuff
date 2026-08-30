@@ -709,13 +709,23 @@ async function saveNotes(notes){
 }
 /* Maps a team name to its physical home course - mirrors the mapping used when the
    historical course-stats dataset was built externally. Kept in sync manually if a
-   team's home course ever changes. */
+   team's home course ever changes. Wick alternates between two real courses seasonally
+   (Wickham Park closes for portions of the winter, Keney Park used in its place), so it
+   needs the event's own location text to disambiguate rather than a single fixed mapping. */
 const TEAM_TO_COURSE = {
   '2Buff': 'Buffumville DGC', 'Buff': 'Buffumville DGC',
   'BSR': 'Bittersweet Ridge DG', 'Burgess': 'Burgess Park DGC',
   'Crane': 'Crane Hill DGC', 'Barre': 'Barre Falls Dam', 'Tank': 'Oakcrest Cove DGC',
-  'Wick': "Wick's home course (location recorded inconsistently in source data)",
 };
+function getCourseForEvent(homeTeamName, locationText){
+  if(homeTeamName === 'Wick'){
+    const loc = (locationText || '').toLowerCase();
+    if(loc.includes('keney')) return 'Keney Park';
+    if(loc.includes('wickham')) return 'Wickham Park';
+    return null; // can't tell which of Wick's two courses without the location filled in
+  }
+  return TEAM_TO_COURSE[homeTeamName] || null;
+}
 function findPlayerGenderById(id){
   const tb = state.players.find(p=>p.id===id);
   if(tb) return tb.gender || null;
@@ -734,45 +744,101 @@ function divisionForIds(ids){
   if(genders.length && genders.every(g=>g)) return 'Mixed';
   return 'Unknown';
 }
-/* Pulls doubles results out of the live dg_match_history_log and maps each one to a
-   physical course via the event's recorded venue (home/away/neutral) - neutral-site
-   matches are excluded, same as the historical methodology. Returns { courseName: [rows] }
-   in the exact shape renderCourseStatsTab expects for allMatches/twoBuffMostRecent. */
-async function getLiveCourseAdditions(){
-  const raw = await storeGet('dg_match_history_log', true);
-  const log = raw ? JSON.parse(raw) : [];
-  if(log.length === 0) return {};
-  await loadOppTeams();
-  const byCourse = {};
-  log.forEach(entry=>{
-    if(entry.venue === 'neutral' || !entry.doubles || entry.doubles.length === 0) return;
-    const isUsHome = entry.venue === 'home';
-    const course = isUsHome ? TEAM_TO_COURSE['2Buff'] : TEAM_TO_COURSE[entry.opponentTeamName];
-    if(!course) return; // opponent isn't one of the 7 known-course teams
-    byCourse[course] = byCourse[course] || [];
-    entry.doubles.forEach(d=>{
-      const resultUs = d.result === 'W' ? 'Won' : d.result === 'L' ? 'Lost' : 'Tied';
-      const resultOpp = d.result === 'W' ? 'Lost' : d.result === 'L' ? 'Won' : 'Tied';
-      byCourse[course].push({
-        score: d.ourScore, team: '2Buff', partners: d.teamPlayerNames, division: divisionForIds(d.teamPlayerIds),
-        result: resultUs, oppScore: d.oppScore, oppPartners: d.opponentNames, oppDivision: divisionForIds(d.opponentIds),
-        oppTeam: entry.opponentTeamName, date: entry.date, season: entry.season, homeAway: isUsHome ? 'Home' : 'Away'
-      });
-      byCourse[course].push({
-        score: d.oppScore, team: entry.opponentTeamName, partners: d.opponentNames, division: divisionForIds(d.opponentIds),
-        result: resultOpp, oppScore: d.ourScore, oppPartners: d.teamPlayerNames, oppDivision: divisionForIds(d.teamPlayerIds),
-        oppTeam: '2Buff', date: entry.date, season: entry.season, homeAway: isUsHome ? 'Away' : 'Home'
-      });
-    });
-  });
-  return byCourse;
+function divisionForName(name){
+  const g = findPlayerGenderByName(name);
+  return {'M':'MPO','F':'FPO'}[g] || 'Unknown';
 }
+function findPlayerGenderByName(name){
+  const tb = state.players.find(p=>p.name===name);
+  if(tb) return tb.gender || null;
+  if(state.oppTeamsCache){
+    for(const t of state.oppTeamsCache){
+      const found = (t.players||[]).find(p=>p.name===name);
+      if(found) return found.gender || null;
+    }
+  }
+  return null;
+}
+/* Pulls doubles AND singles results directly out of live dg_stats_<eventId> data - the
+   exact same source Team Record and Player Stats already read live from - so Course Stats
+   updates the instant a captain records a result, with no separate manual sync step needed.
+   Returns { doublesByCourse, singlesByCourse }, each { courseName: [rows] }. */
+async function getLiveMatchesByCourse(){
+  const allStats = await getAllStatsData();
+  const teams = await loadOppTeams();
+  const doublesByCourse = {};
+  const singlesByCourse = {};
+
+  for(const ev of state.events){
+    const stats = allStats[ev.id];
+    if(!stats) continue;
+    const venue = eventVenue(ev);
+    if(venue === 'neutral') continue;
+    const isUsHome = venue === 'home';
+    const team = teams.find(t=>t.id===ev.opponentTeamId);
+    const opponentTeamName = team ? team.name : (ev.opponentName || 'Opponent');
+    const homeTeamName = isUsHome ? '2Buff' : opponentTeamName;
+    const course = getCourseForEvent(homeTeamName, ev.location);
+    if(!course) continue;
+
+    const countedDoubles = new Set();
+    Object.keys(stats).forEach(pid=>{
+      if(pid === '__adjustments') return;
+      const s = stats[pid];
+      const me = state.players.find(p=>p.id===pid);
+      const myName = me ? me.name : 'Former player';
+
+      if(s.matchplay && s.matchplay.played){
+        singlesByCourse[course] = singlesByCourse[course] || [];
+        const margin = s.matchplay.marginUp != null ? s.matchplay.marginUp : 0;
+        const oppName = s.matchplay.opponentName || 'Unknown opponent';
+        singlesByCourse[course].push({
+          player: myName, division: findPlayerGenderById(pid) ? divisionForIds([pid]) : 'Unknown',
+          team: '2Buff', opponent: oppName, oppDivision: divisionForName(oppName), oppTeam: opponentTeamName,
+          result: s.matchplay.result, margin, date: ev.date, season: effectiveSeason(ev),
+          homeAway: isUsHome ? 'Home' : 'Away'
+        });
+        const oppResult = s.matchplay.result==='W' ? 'L' : s.matchplay.result==='L' ? 'W' : 'T';
+        singlesByCourse[course].push({
+          player: oppName, division: divisionForName(oppName), team: opponentTeamName,
+          opponent: myName, oppDivision: findPlayerGenderById(pid) ? divisionForIds([pid]) : 'Unknown', oppTeam: '2Buff',
+          result: oppResult, margin, date: ev.date, season: effectiveSeason(ev),
+          homeAway: isUsHome ? 'Away' : 'Home'
+        });
+      }
+
+      if(s.doubles && s.doubles.played && !countedDoubles.has(pid)){
+        const db = normalizeGroupEntry(s.doubles);
+        countedDoubles.add(pid);
+        (db.partnerIds || []).forEach(id=>countedDoubles.add(id));
+        const teamNames = [myName, ...(db.partnerNames||[])];
+        const resultUs = db.result === 'W' ? 'Won' : db.result === 'L' ? 'Lost' : 'Tied';
+        const resultOpp = db.result === 'W' ? 'Lost' : db.result === 'L' ? 'Won' : 'Tied';
+        doublesByCourse[course] = doublesByCourse[course] || [];
+        doublesByCourse[course].push({
+          score: db.ourScore, team: '2Buff', partners: teamNames, division: divisionForIds([pid, ...(db.partnerIds||[])]),
+          result: resultUs, oppScore: db.oppScore, oppPartners: db.oppNames, oppDivision: divisionForIds(db.oppIds),
+          oppTeam: opponentTeamName, date: ev.date, season: effectiveSeason(ev), homeAway: isUsHome ? 'Home' : 'Away'
+        });
+        doublesByCourse[course].push({
+          score: db.oppScore, team: opponentTeamName, partners: db.oppNames, division: divisionForIds(db.oppIds),
+          result: resultOpp, oppScore: db.ourScore, oppPartners: teamNames, oppDivision: divisionForIds([pid, ...(db.partnerIds||[])]),
+          oppTeam: '2Buff', date: ev.date, season: effectiveSeason(ev), homeAway: isUsHome ? 'Away' : 'Home'
+        });
+      }
+    });
+  }
+  return { doublesByCourse, singlesByCourse };
+}
+
 async function loadCourseStats(){
-  if(state.courseStatsCache) return state.courseStatsCache;
-  const raw = await storeGet('dg_course_stats', true);
-  const data = raw ? JSON.parse(raw) : {};
+  if(!state.courseStatsStaticCache){
+    const raw = await storeGet('dg_course_stats', true);
+    state.courseStatsStaticCache = raw ? JSON.parse(raw) : {};
+  }
+  const data = JSON.parse(JSON.stringify(state.courseStatsStaticCache)); // fresh clone every call - never mutate the cached static base, or live matches would stack on every re-render
   try{
-    const liveByCourse = await getLiveCourseAdditions();
+    const { doublesByCourse: liveByCourse } = await getLiveMatchesByCourse();
     Object.keys(liveByCourse).forEach(course=>{
       if(!data[course]) return; // only merge into courses the historical snapshot already knows about
       const c = data[course];
@@ -804,7 +870,6 @@ async function loadCourseStats(){
       }
     });
   } catch(err){ console.error('Live course-stats merge failed', err); }
-  state.courseStatsCache = data;
   return data;
 }
 async function loadOppTeams(){
@@ -5338,8 +5403,66 @@ function toggleCourseDetail(){
   state.courseDetailExpanded = !state.courseDetailExpanded;
   render();
 }
+async function loadSinglesCourseStats(){
+  if(!state.singlesCourseStatsStaticCache){
+    const raw = await storeGet('dg_singles_course_stats', true);
+    state.singlesCourseStatsStaticCache = raw ? JSON.parse(raw) : {};
+  }
+  const data = JSON.parse(JSON.stringify(state.singlesCourseStatsStaticCache));
+  try{
+    const { singlesByCourse: liveByCourse } = await getLiveMatchesByCourse();
+    Object.keys(liveByCourse).forEach(course=>{
+      if(!data[course]) return;
+      const c = data[course];
+      c.allMatches = [...liveByCourse[course], ...(c.allMatches||[])];
+      c.roundCount = c.allMatches.length;
+
+      const wins = c.allMatches.filter(m=>m.result==='W');
+      if(wins.length){
+        const biggest = wins.reduce((max,m)=> m.margin > max.margin ? m : max, wins[0]);
+        c.biggestWin = { player: biggest.player, division: biggest.division, team: biggest.team,
+          opponent: biggest.opponent, oppTeam: biggest.oppTeam, margin: biggest.margin, date: biggest.date };
+      }
+
+      const tbRows = c.allMatches.filter(m=>m.team==='2Buff');
+      if(tbRows.length){
+        const w = tbRows.filter(m=>m.result==='W').length;
+        const l = tbRows.filter(m=>m.result==='L').length;
+        const t = tbRows.filter(m=>m.result==='T').length;
+        c.twoBuffWinPct = Math.round((w/tbRows.length)*1000)/10;
+        c.twoBuffRecord = { w, l, t };
+        const signedMargin = m => m.result==='W' ? m.margin : (m.result==='L' ? -m.margin : 0);
+        c.twoBuffAvgMargin = Math.round((tbRows.reduce((s,m)=>s+signedMargin(m),0)/tbRows.length)*100)/100;
+        const fieldRows = c.allMatches.filter(m=>m.team!=='2Buff');
+        if(fieldRows.length){
+          c.fieldAvgMargin = Math.round((fieldRows.reduce((s,m)=>s+signedMargin(m),0)/fieldRows.length)*100)/100;
+          c.coursePerformanceRating = Math.round((c.twoBuffAvgMargin - c.fieldAvgMargin)*100)/100;
+        }
+      }
+
+      const liveTwoBuff = liveByCourse[course].filter(m=>m.team==='2Buff');
+      if(liveTwoBuff.length){
+        const latestDate = liveTwoBuff.reduce((max,m)=> m.date > max ? m.date : max, liveTwoBuff[0].date);
+        const existingLatest = (c.twoBuffMostRecent && c.twoBuffMostRecent[0]) ? c.twoBuffMostRecent[0].date : null;
+        if(!existingLatest || latestDate > existingLatest){
+          c.twoBuffMostRecent = liveTwoBuff.filter(m=>m.date===latestDate).map(m=>({
+            player: m.player, division: m.division, opponent: m.opponent, oppTeam: m.oppTeam,
+            result: m.result, margin: m.margin, date: m.date
+          }));
+        }
+      }
+    });
+  } catch(err){ console.error('Live singles course-stats merge failed', err); }
+  return data;
+}
+function setCourseStatsFormat(fmt){
+  state.courseStatsFormat = fmt;
+  state.courseDetailExpanded = false;
+  render();
+}
 async function renderCourseStatsTab(){
   const COURSE_STATS_DATASET = await loadCourseStats();
+  const SINGLES_COURSE_STATS_DATASET = await loadSinglesCourseStats();
   const courseKeys = Object.keys(COURSE_STATS_DATASET);
   if(courseKeys.length === 0){
     return `<div class="card empty"><span class="em">⛳</span><p>No course stats loaded yet. Run the course-stats update tool to populate this.</p></div>`;
@@ -5347,16 +5470,35 @@ async function renderCourseStatsTab(){
   if(!state.selectedCourseKey || !COURSE_STATS_DATASET[state.selectedCourseKey]){
     state.selectedCourseKey = courseKeys[0];
   }
+  if(!state.courseStatsFormat) state.courseStatsFormat = 'doubles';
   const shortName = (k) => k.length > 22 ? k.split(' ').slice(0,2).join(' ') : k;
   const pillsHtml = courseKeys.map(k => `
     <div class="course-pill ${state.selectedCourseKey===k ? 'active':''}" onclick="setSelectedCourse('${esc(k).replace(/'/g,"\\'")}')">${esc(shortName(k))}</div>
   `).join('');
-
-  const c = COURSE_STATS_DATASET[state.selectedCourseKey];
+  const formatPillsHtml = `
+    <div class="course-pills" style="margin-top:-4px;">
+      <div class="course-pill ${state.courseStatsFormat==='doubles' ? 'active':''}" onclick="setCourseStatsFormat('doubles')">🥏 Doubles</div>
+      <div class="course-pill ${state.courseStatsFormat==='singles' ? 'active':''}" onclick="setCourseStatsFormat('singles')">🎯 Singles</div>
+    </div>`;
   const divisionPill = (div) => {
     const cls = div==='FPO' ? 'pill-orange' : (div==='Mixed' ? 'pill-gray' : 'pill-forest');
     return `<span class="pill ${cls}">${esc(div)}</span>`;
   };
+
+  const body = state.courseStatsFormat === 'singles'
+    ? renderSinglesCourseCard(state.selectedCourseKey, SINGLES_COURSE_STATS_DATASET, divisionPill)
+    : renderDoublesCourseCard(state.selectedCourseKey, COURSE_STATS_DATASET, divisionPill);
+
+  return `
+    <div class="course-pills">${pillsHtml}</div>
+    ${formatPillsHtml}
+    ${body}
+  `;
+}
+function renderDoublesCourseCard(courseKey, COURSE_STATS_DATASET, divisionPill){
+  const c = COURSE_STATS_DATASET[courseKey];
+  if(!c) return `<div class="card empty"><span class="em">🥏</span><p>No doubles stats for this course yet.</p></div>`;
+
 
   const statCard = `
     <div class="card">
@@ -5379,27 +5521,27 @@ async function renderCourseStatsTab(){
     recentHtml = `
       <div class="stats-section-header">Two Buff's Most Recent Doubles Here — ${esc(d)}</div>
       <div class="card">
-        ${c.twoBuffMostRecent.map(m => `
-          <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid var(--chip-bg, #eee);">
-            <div>
+        ${c.twoBuffMostRecent.map(m => {
+          const isPlayoff = m.score === m.oppScore;
+          const scoreColor = m.won ? 'var(--forest)' : 'var(--red)';
+          return `
+          <div style="display:flex; align-items:center; gap:12px; padding:9px 0; border-bottom:1px solid var(--chip-bg, #eee);">
+            <div style="font-size:21px; font-weight:800; color:${scoreColor}; min-width:64px;">${m.score}–${m.oppScore}</div>
+            <div style="flex:1; min-width:0;">
               <div style="font-weight:700; font-size:12.5px;">${esc(m.partners.join(' & '))} ${divisionPill(m.division)}</div>
-              <div style="font-size:11px; color:var(--ink-soft);">vs ${esc(m.oppPartners.join(' & '))} (${esc(m.oppTeam)})</div>
+              <div style="font-size:11px; color:var(--ink-soft);">vs ${esc(m.oppPartners.join(' & '))} (${esc(m.oppTeam)})${isPlayoff ? ' · playoff' : ''}</div>
             </div>
-            <div style="text-align:right;">
-              <span class="pill ${m.won?'pill-forest':'pill-orange'}">${m.score===m.oppScore ? (m.won?'Won (playoff)':'Lost (playoff)') : (m.won?'Won':'Lost')}</span>
-              <div style="font-size:11px; color:var(--ink-soft); margin-top:2px;">${m.score}–${m.oppScore}</div>
-            </div>
-          </div>
-        `).join('')}
+          </div>`;
+        }).join('')}
       </div>`;
   } else {
     recentHtml = `
       <div class="stats-section-header">Most Recent Rounds At This Course</div>
       <div class="card">
         ${(c.allMatches||[]).slice(0,10).map(m => `
-          <div style="display:flex; justify-content:space-between; padding:6px 0; border-bottom:1px solid var(--chip-bg, #eee); font-size:12px;">
-            <div>${esc(m.partners.join(' & '))} ${divisionPill(m.division)} <span style="color:var(--ink-soft);">(${esc(m.team)})</span></div>
-            <div>${m.score} <span style="color:var(--ink-soft);">${esc(m.date)}</span></div>
+          <div style="display:flex; align-items:center; gap:12px; padding:7px 0; border-bottom:1px solid var(--chip-bg, #eee);">
+            <div style="font-size:18px; font-weight:800; color:var(--forest-dark); min-width:36px;">${m.score}</div>
+            <div style="flex:1; min-width:0; font-size:12px;">${esc(m.partners.join(' & '))} ${divisionPill(m.division)} <span style="color:var(--ink-soft);">(${esc(m.team)}) · ${esc(m.date)}</span></div>
           </div>
         `).join('')}
       </div>`;
@@ -5415,22 +5557,23 @@ async function renderCourseStatsTab(){
   if(expanded){
     detailListHtml = `
       <div class="card" style="margin-top:8px; max-height:420px; overflow-y:auto;">
-        ${c.allMatches.map(m => `
-          <div style="padding:8px 0; border-bottom:1px solid var(--chip-bg, #eee);">
-            <div style="display:flex; justify-content:space-between; align-items:baseline;">
-              <span style="font-weight:700; font-size:12.5px;">${esc(m.partners.join(' & '))} ${divisionPill(m.division)}</span>
-              <span class="pill ${m.result==='Won'?'pill-forest':(m.result==='Lost'?'pill-orange':'pill-gray')}" style="font-size:10px;">${esc(m.result)}</span>
+        ${c.allMatches.map(m => {
+          const isPlayoff = m.score === m.oppScore;
+          const scoreColor = m.result==='Won' ? 'var(--forest)' : (m.result==='Lost' ? 'var(--red)' : 'var(--ink-soft)');
+          return `
+          <div style="display:flex; align-items:center; gap:12px; padding:8px 0; border-bottom:1px solid var(--chip-bg, #eee);">
+            <div style="font-size:19px; font-weight:800; color:${scoreColor}; min-width:64px;">${m.score}–${m.oppScore}</div>
+            <div style="flex:1; min-width:0;">
+              <div style="font-weight:700; font-size:12.5px;">${esc(m.partners.join(' & '))} ${divisionPill(m.division)} <span style="font-weight:400; color:var(--ink-soft);">(${esc(m.team)})</span></div>
+              <div style="font-size:11px; color:var(--ink-soft);">vs ${esc(m.oppPartners.join(' & '))} ${divisionPill(m.oppDivision)} (${esc(m.oppTeam)}) · ${esc(m.date)} · ${esc(m.homeAway)}${isPlayoff ? ' · playoff' : ''}</div>
             </div>
-            <div style="font-size:11px; color:var(--ink-soft); margin-top:2px;">
-              ${m.score}–${m.oppScore} vs ${esc(m.oppPartners.join(' & '))} ${divisionPill(m.oppDivision)} (${esc(m.oppTeam)}) · ${esc(m.date)} · ${esc(m.homeAway)}
-            </div>
-          </div>
-        `).join('')}
+          </div>`;
+        }).join('')}
       </div>`;
   }
 
+
   return `
-    <div class="course-pills">${pillsHtml}</div>
     ${statCard}
     ${recentHtml}
     ${detailToggle}
@@ -5440,6 +5583,100 @@ async function renderCourseStatsTab(){
     </div>
   `;
 }
+function renderSinglesCourseCard(courseKey, SINGLES_COURSE_STATS_DATASET, divisionPill){
+  const c = SINGLES_COURSE_STATS_DATASET[courseKey];
+  if(!c || !c.roundCount){
+    return `<div class="card empty"><span class="em">🎯</span><p>No singles stats recorded for this course yet.</p></div>`;
+  }
+  const marginLabel = (m) => m === 0 ? 'PUSH' : `${m} hole${m===1?'':'s'}`;
+  const bw = c.biggestWin;
+  const ratingColor = c.coursePerformanceRating == null ? 'var(--ink-soft)' : (c.coursePerformanceRating >= 0 ? 'var(--forest)' : 'var(--red)');
+  const ratingLabel = c.coursePerformanceRating == null ? '—' : `${c.coursePerformanceRating > 0 ? '+' : ''}${c.coursePerformanceRating}`;
+
+  const statCard = `
+    <div class="card">
+      <div style="font-weight:800; font-size:14px; color:var(--forest-dark); margin-bottom:2px;">${esc(courseKey)}</div>
+      <div style="font-size:11px; color:var(--ink-soft); margin-bottom:10px;">${c.roundCount} recorded singles matches · excludes neutral-site matches</div>
+      <div class="course-stat-row">
+        <div class="stat-box"><div class="num" style="color:var(--forest);">${bw.margin === 0 ? 'PUSH' : bw.margin}</div><div class="lbl">Biggest Win</div></div>
+        <div class="stat-box"><div class="num">${c.twoBuffWinPct != null ? c.twoBuffWinPct + '%' : '—'}</div><div class="lbl">2Buff Win %</div></div>
+        <div class="stat-box"><div class="num" style="color:${ratingColor};">${ratingLabel}</div><div class="lbl">Course Rating</div></div>
+      </div>
+      <div style="font-size:11px; color:var(--ink-soft); margin-top:8px;">
+        Biggest win: ${esc(bw.player)} ${divisionPill(bw.division)} (${esc(bw.team)}) over ${esc(bw.opponent)} (${esc(bw.oppTeam)}) by ${marginLabel(bw.margin)} — ${esc(bw.date)}<br>
+        ${c.twoBuffWinPct != null ? `2Buff record here: ${c.twoBuffRecord.w}-${c.twoBuffRecord.l}${c.twoBuffRecord.t ? '-'+c.twoBuffRecord.t : ''}. ` : ''}
+        Course Rating compares 2Buff's average margin here (${c.twoBuffAvgMargin != null ? c.twoBuffAvgMargin : '—'}) to the field's average margin here (${c.fieldAvgMargin != null ? c.fieldAvgMargin : '—'}) — positive means 2Buff plays this course better than the field typically does.
+      </div>
+    </div>`;
+
+  let recentHtml = '';
+  if(c.twoBuffMostRecent && c.twoBuffMostRecent.length){
+    const d = c.twoBuffMostRecent[0].date;
+    recentHtml = `
+      <div class="stats-section-header">Two Buff's Most Recent Singles Here — ${esc(d)}</div>
+      <div class="card">
+        ${c.twoBuffMostRecent.map(m => {
+          const scoreColor = m.result==='W' ? 'var(--forest)' : (m.result==='L' ? 'var(--red)' : 'var(--ink-soft)');
+          return `
+          <div style="display:flex; align-items:center; gap:12px; padding:9px 0; border-bottom:1px solid var(--chip-bg, #eee);">
+            <div style="font-size:19px; font-weight:800; color:${scoreColor}; min-width:64px;">${marginLabel(m.margin)}</div>
+            <div style="flex:1; min-width:0;">
+              <div style="font-weight:700; font-size:12.5px;">${esc(m.player)} ${divisionPill(m.division)}</div>
+              <div style="font-size:11px; color:var(--ink-soft);">vs ${esc(m.opponent)} (${esc(m.oppTeam)})</div>
+            </div>
+          </div>`;
+        }).join('')}
+      </div>`;
+  } else {
+    recentHtml = `
+      <div class="stats-section-header">Most Recent Singles At This Course</div>
+      <div class="card">
+        ${(c.allMatches||[]).slice(0,10).map(m => {
+          const scoreColor = m.result==='W' ? 'var(--forest)' : (m.result==='L' ? 'var(--red)' : 'var(--ink-soft)');
+          return `
+          <div style="display:flex; align-items:center; gap:12px; padding:7px 0; border-bottom:1px solid var(--chip-bg, #eee);">
+            <div style="font-size:16px; font-weight:800; color:${scoreColor}; min-width:56px;">${marginLabel(m.margin)}</div>
+            <div style="flex:1; min-width:0; font-size:12px;">${esc(m.player)} ${divisionPill(m.division)} <span style="color:var(--ink-soft);">(${esc(m.team)}) vs ${esc(m.opponent)} · ${esc(m.date)}</span></div>
+          </div>`;
+        }).join('')}
+      </div>`;
+  }
+
+  const expanded = !!state.courseDetailExpanded;
+  const detailToggle = `
+    <button class="btn btn-outline btn-sm" style="width:100%; margin-top:10px;" onclick="toggleCourseDetail()">
+      ${expanded ? '▲ Hide full match history' : `▼ See all ${c.allMatches.length} singles matches at this course`}
+    </button>`;
+
+  let detailListHtml = '';
+  if(expanded){
+    detailListHtml = `
+      <div class="card" style="margin-top:8px; max-height:420px; overflow-y:auto;">
+        ${c.allMatches.map(m => {
+          const scoreColor = m.result==='W' ? 'var(--forest)' : (m.result==='L' ? 'var(--red)' : 'var(--ink-soft)');
+          return `
+          <div style="display:flex; align-items:center; gap:12px; padding:8px 0; border-bottom:1px solid var(--chip-bg, #eee);">
+            <div style="font-size:17px; font-weight:800; color:${scoreColor}; min-width:56px;">${marginLabel(m.margin)}</div>
+            <div style="flex:1; min-width:0;">
+              <div style="font-weight:700; font-size:12.5px;">${esc(m.player)} ${divisionPill(m.division)} <span style="font-weight:400; color:var(--ink-soft);">(${esc(m.team)})</span></div>
+              <div style="font-size:11px; color:var(--ink-soft);">vs ${esc(m.opponent)} ${divisionPill(m.oppDivision)} (${esc(m.oppTeam)}) · ${esc(m.date)} · ${esc(m.homeAway)}</div>
+            </div>
+          </div>`;
+        }).join('')}
+      </div>`;
+  }
+
+  return `
+    ${statCard}
+    ${recentHtml}
+    ${detailToggle}
+    ${detailListHtml}
+    <div class="card" style="background:var(--chip-bg); border:none; box-shadow:none; margin-top:10px;">
+      <div style="font-size:12px; color:var(--ink-soft); line-height:1.5;">Singles is match-play (holes won), so "score" here means margin of victory in holes, not a stroke total. Neutral-site matches are excluded.</div>
+    </div>
+  `;
+}
+
 
 async function renderTeamAndPlayerStats(){
   const FINALS_MIN_EVENTS = 3;
