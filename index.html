@@ -1626,7 +1626,7 @@ async function render(){
    see /functions/index.js). The function re-checks the PIN server-side
    against dg_admin_pin / dg_super_admin_pin, so this button being hidden
    is a UX nicety, not the actual security boundary. */
-const CHAT_ENDPOINT = "https://REPLACE-WITH-YOUR-DEPLOYED-FUNCTION-URL"; // from `firebase deploy --only functions`
+const CHAT_ENDPOINT = "https://us-central1-two-buff-team-hub.cloudfunctions.net/chatAgent";
 
 let _chatPin = null;      // kept in memory only for this page load, never persisted
 let _chatHistory = [];    // [{role, content}, ...] — resets on reload, matches the "full context each time" design
