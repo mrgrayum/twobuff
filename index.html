@@ -717,12 +717,13 @@ const TEAM_TO_COURSE = {
   'BSR': 'Bittersweet Ridge DG', 'Burgess': 'Burgess Park DGC',
   'Crane': 'Crane Hill DGC', 'Barre': 'Barre Falls Dam', 'Tank': 'Oakcrest Cove DGC',
 };
-function getCourseForEvent(homeTeamName, locationText){
+function getCourseForEvent(homeTeamName, ev){
   if(homeTeamName === 'Wick'){
-    const loc = (locationText || '').toLowerCase();
+    if(ev && ev.wickCourse) return ev.wickCourse; // explicit dropdown choice - authoritative
+    const loc = (ev && ev.location || '').toLowerCase();
     if(loc.includes('keney')) return 'Keney Park';
     if(loc.includes('wickham')) return 'Wickham Park';
-    return null; // can't tell which of Wick's two courses without the location filled in
+    return null; // can't tell which of Wick's two courses without it being specified
   }
   return TEAM_TO_COURSE[homeTeamName] || null;
 }
@@ -778,7 +779,7 @@ async function getLiveMatchesByCourse(){
     const team = teams.find(t=>t.id===ev.opponentTeamId);
     const opponentTeamName = team ? team.name : (ev.opponentName || 'Opponent');
     const homeTeamName = isUsHome ? '2Buff' : opponentTeamName;
-    const course = getCourseForEvent(homeTeamName, ev.location);
+    const course = getCourseForEvent(homeTeamName, ev);
     if(!course) continue;
 
     const countedDoubles = new Set();
@@ -1827,6 +1828,8 @@ function openEventModal(existingId){
   loadOppTeams().then(teams=>{
     const modal = document.getElementById('modalRoot');
     const isCustom = ev && !ev.opponentTeamId && ev.opponentName;
+    const selectedTeam = ev && ev.opponentTeamId ? teams.find(t=>t.id===ev.opponentTeamId) : null;
+    const isWickSelected = selectedTeam && selectedTeam.name === 'Wick';
     modal.innerHTML = `
       <div class="overlay" onclick="closeModalIfBackdrop(event)">
         <div class="sheet" onclick="event.stopPropagation()">
@@ -1850,7 +1853,7 @@ function openEventModal(existingId){
           <div class="field">
             <label>Opponent</label>
             ${teams.length > 0 ? `
-              <select id="ev_opponent_select" onchange="document.getElementById('ev_opponent_custom_wrap').style.display = this.value==='__custom__' ? 'block':'none';">
+              <select id="ev_opponent_select" onchange="document.getElementById('ev_opponent_custom_wrap').style.display = this.value==='__custom__' ? 'block':'none'; onOpponentSelectChange();">
                 <option value="">— None / TBD —</option>
                 ${teams.map(t=>`<option value="${t.id}" ${ev && ev.opponentTeamId===t.id ? 'selected':''}>${esc(t.name)}</option>`).join('')}
                 <option value="__custom__" ${isCustom ? 'selected':''}>Other / Custom…</option>
@@ -1862,6 +1865,15 @@ function openEventModal(existingId){
               <input id="ev_opponent_custom" type="text" placeholder="Opponent name (optional)" value="${ev && ev.opponentName ? esc(ev.opponentName) : ''}">
               <div style="font-size:11px; color:var(--ink-soft); margin-top:6px;">Add opponent teams on the Match tab to pick from a saved roster instead of typing a name.</div>
             `}
+          </div>
+          <div class="field" id="ev_wickCourseWrap" style="display:${isWickSelected ? 'block':'none'};">
+            <label>Which Wick course?</label>
+            <select id="ev_wickCourse">
+              <option value="">— Not sure yet —</option>
+              <option value="Wickham Park" ${ev && ev.wickCourse==='Wickham Park' ? 'selected':''}>Wickham Park</option>
+              <option value="Keney Park" ${ev && ev.wickCourse==='Keney Park' ? 'selected':''}>Keney Park</option>
+            </select>
+            <div style="font-size:11px; color:var(--ink-soft); margin-top:6px;">Wick alternates between two home courses seasonally - Wickham Park closes for portions of the winter. Picking the right one keeps Course Stats accurate.</div>
           </div>
           <div class="field">
             <label>Venue</label>
@@ -1880,6 +1892,14 @@ function openEventModal(existingId){
         </div>
       </div>`;
   });
+}
+function onOpponentSelectChange(){
+  const sel = document.getElementById('ev_opponent_select');
+  const wrap = document.getElementById('ev_wickCourseWrap');
+  if(!sel || !wrap) return;
+  const opt = sel.options[sel.selectedIndex];
+  const isWick = opt && opt.textContent.trim() === 'Wick';
+  wrap.style.display = isWick ? 'block' : 'none';
 }
 function closeModalIfBackdrop(e){
   if(e.target.classList.contains('overlay')) closeModal();
@@ -1907,6 +1927,8 @@ async function saveEventFromModal(existingId){
     if(customInput) opponentName = customInput.value.trim();
   }
   if(!date){ showToast('Date is required'); return; }
+  const wickCourseSelect = document.getElementById('ev_wickCourse');
+  const wickCourse = wickCourseSelect ? wickCourseSelect.value : '';
   // The title is derived from venue + opponent, not typed in. Build it against the
   // resolved opponent (linked team or custom name) so it stays consistent everywhere.
   const teams = await loadOppTeams();
@@ -1914,9 +1936,9 @@ async function saveEventFromModal(existingId){
   const name = buildEventTitle(draft, teams);
   if(existingId){
     const ev = state.events.find(e=>e.id===existingId);
-    Object.assign(ev, {name, date, time, season, location, isHome, venue, opponentTeamId, opponentName});
+    Object.assign(ev, {name, date, time, season, location, isHome, venue, opponentTeamId, opponentName, wickCourse: wickCourse || null});
   } else {
-    state.events.push({id: uid('ev'), name, date, time, season, location, isHome, venue, opponentTeamId, opponentName});
+    state.events.push({id: uid('ev'), name, date, time, season, location, isHome, venue, opponentTeamId, opponentName, wickCourse: wickCourse || null});
   }
   await saveEvents();
   closeModal();
@@ -2756,8 +2778,9 @@ function loadImageAsync(src){
   return new Promise(resolve=>{
     if(!src){ resolve(null); return; }
     const img = new Image();
+    img.crossOrigin = 'anonymous'; // avoids a tainted canvas (which silently exports blank) if the logo is served from a different origin
     img.onload = () => resolve(img);
-    img.onerror = () => resolve(null);
+    img.onerror = () => resolve(null); // if the CORS-enabled load fails, the card still exports fine without the logo watermark
     img.src = src;
   });
 }
@@ -3290,27 +3313,92 @@ async function shareEventCard(eventId){
     setTimeout(()=>URL.revokeObjectURL(url), 2000);
   }, 'image/png');
 }
+/* Builds one flat, chronologically-sorted list of result rows for a player, merging the
+   historical archive (matchHistory - imported past-season singles/doubles) with live
+   in-app results (dg_stats_, this season forward) - the same two sources buildHistoryRows
+   already merges for the on-screen expanded card, just as structured data instead of HTML
+   so it can be drawn onto a canvas. Previously sharePlayerCard only used the live source,
+   which is why a player with real history but no NEW live results yet would share a card
+   showing nothing. */
+async function buildPlayerShareHistory(player){
+  const rows = [];
+
+  (player.matchHistory || []).forEach(h=>{
+    const parts = (h.event || '').split(' · ');
+    const title = parts[0] || h.event || 'Match';
+    const dateLabel = parts[1] || h.season || '';
+    const scoreOrMargin = parts[2] || '';
+    const parsedDate = dateLabel ? new Date(dateLabel) : null;
+    const sortKey = parsedDate && !isNaN(parsedDate) ? parsedDate.toISOString().slice(0,10) : (h.season || '0000-00-00');
+    if((h.type || 'singles') === 'singles'){
+      let text = `Singles ${h.result} · vs ${h.opponent || 'Unknown'}`;
+      if(scoreOrMargin) text += ` · ${scoreOrMargin}`;
+      rows.push({ sortKey, title, dateLabel, result: h.result, text });
+    } else {
+      let text = `${h.partner ? 'Doubles' : 'Doubles'} ${h.result} · `;
+      if(h.partner) text += `w/ ${abbrevName(h.partner)} `;
+      text += `vs ${h.opponent || 'Unknown'}`;
+      if(scoreOrMargin) text += ` · ${scoreOrMargin}`;
+      rows.push({ sortKey, title, dateLabel, result: h.result, text });
+    }
+  });
+
+  const allStats = await getAllStatsData();
+  const oppTeams = await loadOppTeams();
+  Object.keys(allStats).forEach(eventId=>{
+    const ev = state.events.find(e=>e.id===eventId);
+    if(!ev) return;
+    const s = allStats[eventId][player.id];
+    if(!s) return;
+    const d = fmtDate(ev.date);
+    const dateLabel = `${d.mon} ${d.day}, ${new Date(ev.date).getFullYear()}`;
+    let oppLabel = 'Opponent';
+    if(ev.opponentTeamId){
+      const t = oppTeams.find(x=>x.id===ev.opponentTeamId);
+      if(t) oppLabel = t.name;
+    } else if(ev.opponentName){
+      oppLabel = ev.opponentName;
+    }
+    const title = formatMatchupTitle(ev, oppLabel);
+
+    if(s.matchplay && s.matchplay.played){
+      const m = s.matchplay;
+      let text = `Singles ${m.result} · vs ${m.opponentName || 'Unknown'}`;
+      const margin = formatMatchplayMargin(m);
+      if(margin) text += ` · ${margin}`;
+      rows.push({ sortKey: ev.date, title, dateLabel, result: m.result, text });
+    }
+    if(s.doubles && s.doubles.played){
+      const db = normalizeGroupEntry(s.doubles);
+      const opps = (db.oppNames || []).filter(Boolean).map(abbrevName).join(' & ') || 'Unknown';
+      const partners = (db.partnerNames || []).filter(Boolean).map(abbrevName).join(' & ');
+      let text = `${groupFormatLabel(db.format)} ${db.result} · `;
+      if(partners) text += `w/ ${partners} `;
+      text += `vs ${opps}`;
+      const score = formatDoublesScore(db);
+      if(score) text += ` · ${score}`;
+      rows.push({ sortKey: ev.date, title, dateLabel, result: db.result, text });
+    }
+  });
+
+  rows.sort((a,b)=> (b.sortKey||'').localeCompare(a.sortKey||''));
+  return rows;
+}
 async function sharePlayerCard(playerId){
   const player = state.players.find(p=>p.id===playerId);
   if(!player){ showToast('Player not found'); return; }
-  const history = await getPlayerEventHistory(playerId); // already sorted most-recent-first
+  const history = await buildPlayerShareHistory(player); // flat, one row per result, most-recent-first
   showToast('Generating image…');
 
   const logoEl = document.querySelector('.brand-mark img');
   const logoImg = await loadImageAsync(logoEl ? logoEl.src : null);
-  const oppTeams = await loadOppTeams();
 
   let mpW=0, mpL=0, mpT=0, dbW=0, dbL=0, dbT=0;
   history.forEach(h=>{
-    if(h.matchplay){
-      if(h.matchplay.result==='W') mpW++;
-      else if(h.matchplay.result==='L') mpL++;
-      else if(h.matchplay.result==='T') mpT++;
-    }
-    if(h.doubles){
-      if(h.doubles.result==='W') dbW++;
-      else if(h.doubles.result==='L') dbL++;
-      else if(h.doubles.result==='T') dbT++;
+    if(h.text.startsWith('Singles')){
+      if(h.result==='W') mpW++; else if(h.result==='L') mpL++; else if(h.result==='T') mpT++;
+    } else {
+      if(h.result==='W') dbW++; else if(h.result==='L') dbL++; else if(h.result==='T') dbT++;
     }
   });
 
@@ -3394,51 +3482,20 @@ async function sharePlayerCard(playerId){
       ctx.lineTo(W-marginX, y);
       ctx.stroke();
 
-      let oppLabel = 'Opponent';
-      if(h.event.opponentTeamId){
-        const t = oppTeams.find(x=>x.id===h.event.opponentTeamId);
-        if(t) oppLabel = t.name;
-      } else if(h.event.opponentName){
-        oppLabel = h.event.opponentName;
-      }
-      const matchupTitle = formatMatchupTitle(h.event, oppLabel);
-      const d = fmtDate(h.event.date);
-
       ctx.textAlign = 'left';
       ctx.font = `800 14.5px ${FONT}`;
       ctx.fillStyle = '#2B2620';
-      ctx.fillText(ctxTruncateText(ctx, matchupTitle, contentW*0.62), marginX, y+22);
+      ctx.fillText(ctxTruncateText(ctx, h.title, contentW*0.62), marginX, y+22);
 
       ctx.textAlign = 'right';
       ctx.font = `600 11px ${FONT}`;
       ctx.fillStyle = '#8C8478';
-      ctx.fillText(`${d.mon} ${d.day}`, W-marginX, y+22);
+      ctx.fillText(h.dateLabel, W-marginX, y+22);
       ctx.textAlign = 'left';
 
-      let lineY = y + 42;
-      if(h.matchplay){
-        const m = h.matchplay;
-        ctx.font = `700 12px ${FONT}`;
-        ctx.fillStyle = resultColor(m.result);
-        let text = `Singles ${m.result} · vs ${m.opponentName || 'Unknown'}`;
-        const margin = formatMatchplayMargin(m);
-        if(margin) text += ` · ${margin}`;
-        ctx.fillText(ctxTruncateText(ctx, text, contentW), marginX, lineY);
-        lineY += 16;
-      }
-      if(h.doubles){
-        const db = normalizeGroupEntry(h.doubles);
-        ctx.font = `700 12px ${FONT}`;
-        ctx.fillStyle = resultColor(db.result);
-        const opps = (db.oppNames || []).filter(Boolean).map(abbrevName).join(' & ') || 'Unknown';
-        const partners = (db.partnerNames || []).filter(Boolean).map(abbrevName).join(' & ');
-        let text = `${groupFormatLabel(db.format)} ${db.result} · `;
-        if(partners) text += `w/ ${partners} `;
-        text += `vs ${opps}`;
-        const score = formatDoublesScore(db);
-        if(score) text += ` · ${score}`;
-        ctx.fillText(ctxTruncateText(ctx, text, contentW), marginX, lineY);
-      }
+      ctx.font = `700 12px ${FONT}`;
+      ctx.fillStyle = resultColor(h.result);
+      ctx.fillText(ctxTruncateText(ctx, h.text, contentW), marginX, y+42);
 
       y += rowH;
     });
@@ -5395,13 +5452,54 @@ function setStatsTab(tab){
 
 /* ============================= COURSE STATS TAB ============================= */
 function setSelectedCourse(courseKey){
-  state.selectedCourseKey = courseKey;
+  state.selectedCourseKey = (state.selectedCourseKey === courseKey) ? null : courseKey;
   state.courseDetailExpanded = false;
   render();
 }
 function toggleCourseDetail(){
   state.courseDetailExpanded = !state.courseDetailExpanded;
   render();
+}
+async function loadPairingsRanked(){
+  if(state.pairingsRankedCache) return state.pairingsRankedCache;
+  const raw = await storeGet('dg_pairings_ranked', true);
+  const data = raw ? JSON.parse(raw) : {};
+  state.pairingsRankedCache = data;
+  return data;
+}
+function renderGenericPairingsCard(){
+  const data = state.pairingsRankedCache || {};
+  const tb = data['2Buff'];
+  if(!tb || (!tb.established?.length && !tb.limited?.length)){
+    return `<div class="card empty"><span class="em">🥏</span><p>No pairing data loaded yet. Run the pairings-ranked update tool to populate this.</p></div>`;
+  }
+  const divisionPill = (div) => {
+    const cls = div==='FPO' ? 'pill-orange' : (div==='Mixed' ? 'pill-gray' : 'pill-forest');
+    return `<span class="pill ${cls}">${esc(div)}</span>`;
+  };
+  const rowHtml = (p) => {
+    const devColor = p.avg_deviation <= -1.5 ? 'var(--forest)' : (p.avg_deviation >= 1.5 ? 'var(--red)' : 'var(--ink-soft)');
+    return `
+      <div style="display:flex; align-items:center; gap:12px; padding:8px 0; border-bottom:1px solid var(--chip-bg, #eee);">
+        <div style="font-size:17px; font-weight:800; color:${devColor}; min-width:52px;">${p.avg_deviation > 0 ? '+' : ''}${p.avg_deviation}</div>
+        <div style="flex:1; min-width:0;">
+          <div style="font-weight:700; font-size:12.5px;">${esc(p.partner1)} & ${esc(p.partner2)} ${divisionPill(p.division)}</div>
+          <div style="font-size:11px; color:var(--ink-soft);">${p.times_played}x played · ${p.wins}-${p.losses}-${p.ties} · most recent ${esc(p.most_recent_season)}</div>
+        </div>
+      </div>`;
+  };
+  const established = (tb.established || []).slice().sort((a,b)=>a.avg_deviation-b.avg_deviation);
+  const limited = (tb.limited || []).slice().sort((a,b)=>a.avg_deviation-b.avg_deviation);
+  return `
+    <div class="card">
+      <div style="font-weight:800; font-size:14px; color:var(--forest-dark); margin-bottom:2px;">Two Buff Doubles Pairings</div>
+      <div style="font-size:11px; color:var(--ink-soft); margin-bottom:10px;">Ranked by average deviation from the event field median — not tied to any one course. Tap a course pill above to see course-specific stats instead.</div>
+    </div>
+    <div class="stats-section-header">Established — ${established.length} pairing${established.length===1?'':'s'} (3+ matches together)</div>
+    <div class="card">${established.map(rowHtml).join('') || `<div style="font-size:12px; color:var(--ink-soft); padding:6px 2px;">None yet.</div>`}</div>
+    <div class="stats-section-header">Limited Data — ${limited.length} pairing${limited.length===1?'':'s'} (1-2 matches together)</div>
+    <div class="card" style="max-height:320px; overflow-y:auto;">${limited.map(rowHtml).join('') || `<div style="font-size:12px; color:var(--ink-soft); padding:6px 2px;">None yet.</div>`}</div>
+  `;
 }
 async function loadSinglesCourseStats(){
   if(!state.singlesCourseStatsStaticCache){
@@ -5463,11 +5561,16 @@ function setCourseStatsFormat(fmt){
 async function renderCourseStatsTab(){
   const COURSE_STATS_DATASET = await loadCourseStats();
   const SINGLES_COURSE_STATS_DATASET = await loadSinglesCourseStats();
+  await loadPairingsRanked();
   const courseKeys = Object.keys(COURSE_STATS_DATASET);
   if(courseKeys.length === 0){
     return `<div class="card empty"><span class="em">⛳</span><p>No course stats loaded yet. Run the course-stats update tool to populate this.</p></div>`;
   }
-  if(!state.selectedCourseKey || !COURSE_STATS_DATASET[state.selectedCourseKey]){
+  // undefined = never touched yet, default to the first course. null = user explicitly tapped
+  // the selected pill again to deselect it, which should show the generic (non-course) pairing
+  // view rather than snapping back to a default. A stale key (course no longer exists) still
+  // falls back to the first course.
+  if(state.selectedCourseKey === undefined || (state.selectedCourseKey && !COURSE_STATS_DATASET[state.selectedCourseKey])){
     state.selectedCourseKey = courseKeys[0];
   }
   if(!state.courseStatsFormat) state.courseStatsFormat = 'doubles';
@@ -5485,13 +5588,15 @@ async function renderCourseStatsTab(){
     return `<span class="pill ${cls}">${esc(div)}</span>`;
   };
 
-  const body = state.courseStatsFormat === 'singles'
-    ? renderSinglesCourseCard(state.selectedCourseKey, SINGLES_COURSE_STATS_DATASET, divisionPill)
-    : renderDoublesCourseCard(state.selectedCourseKey, COURSE_STATS_DATASET, divisionPill);
+  const body = state.selectedCourseKey === null
+    ? renderGenericPairingsCard()
+    : (state.courseStatsFormat === 'singles'
+        ? renderSinglesCourseCard(state.selectedCourseKey, SINGLES_COURSE_STATS_DATASET, divisionPill)
+        : renderDoublesCourseCard(state.selectedCourseKey, COURSE_STATS_DATASET, divisionPill));
 
   return `
     <div class="course-pills">${pillsHtml}</div>
-    ${formatPillsHtml}
+    ${state.selectedCourseKey !== null ? formatPillsHtml : ''}
     ${body}
   `;
 }
