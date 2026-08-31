@@ -3313,117 +3313,93 @@ async function shareEventCard(eventId){
     setTimeout(()=>URL.revokeObjectURL(url), 2000);
   }, 'image/png');
 }
-/* Builds one flat, chronologically-sorted list of result rows for a player, merging the
-   historical archive (matchHistory - imported past-season singles/doubles) with live
-   in-app results (dg_stats_, this season forward) - the same two sources buildHistoryRows
-   already merges for the on-screen expanded card, just as structured data instead of HTML
-   so it can be drawn onto a canvas. Previously sharePlayerCard only used the live source,
-   which is why a player with real history but no NEW live results yet would share a card
-   showing nothing. */
-async function buildPlayerShareHistory(player){
-  const rows = [];
-
-  (player.matchHistory || []).forEach(h=>{
-    const parts = (h.event || '').split(' · ');
-    const title = parts[0] || h.event || 'Match';
-    const dateLabel = parts[1] || h.season || '';
-    const scoreOrMargin = parts[2] || '';
-    const parsedDate = dateLabel ? new Date(dateLabel) : null;
-    const sortKey = parsedDate && !isNaN(parsedDate) ? parsedDate.toISOString().slice(0,10) : (h.season || '0000-00-00');
-    if((h.type || 'singles') === 'singles'){
-      let text = `Singles ${h.result} · vs ${h.opponent || 'Unknown'}`;
-      if(scoreOrMargin) text += ` · ${scoreOrMargin}`;
-      rows.push({ sortKey, title, dateLabel, result: h.result, text });
-    } else {
-      let text = `${h.partner ? 'Doubles' : 'Doubles'} ${h.result} · `;
-      if(h.partner) text += `w/ ${abbrevName(h.partner)} `;
-      text += `vs ${h.opponent || 'Unknown'}`;
-      if(scoreOrMargin) text += ` · ${scoreOrMargin}`;
-      rows.push({ sortKey, title, dateLabel, result: h.result, text });
+/* Structured twin of buildHistoryRows for the share-image canvas, which needs separate
+   title/detail text pieces to draw (not one HTML blob) - same merge of historical
+   matchHistory + live dg_stats_ results, same season scoping, same grouping into
+   singles/doubles, just returned as plain data instead of markup. */
+function buildPlayerSeasonHistoryData(player, scope, oppTeamsList, statsMap){
+  const resolveOppContext = (oppId, fallbackName) => {
+    for(const t of oppTeamsList){
+      const found = (t.players || []).find(pl => pl.id === oppId);
+      if(found) return { name: found.name, team: t.name, pdga: found.pdgaRating || null, rank: found.skillRank != null ? found.skillRank : null };
     }
-  });
+    return { name: fallbackName || 'Unknown', team: null, pdga: null, rank: null };
+  };
+  const matchScope = (season) => scope === 'all' || season === scope;
+  const detailLine = (team, pdga, rank, matchupBit) => [team, pdga?`PDGA ${pdga}`:null, rank!=null?`Rank ${Number(rank).toFixed(1)}`:null, matchupBit].filter(Boolean).join(' · ');
 
-  const allStats = await getAllStatsData();
-  const oppTeams = await loadOppTeams();
-  Object.keys(allStats).forEach(eventId=>{
+  let singlesRows = [];
+  (player.matchHistory || []).filter(h => (h.type||'singles')==='singles').forEach(h=>{
+    if(!matchScope(h.season)) return;
+    singlesRows.push({ sortKey: h.season||'', title: `vs ${h.opponent}`, detail: detailLine(h.opponentTeam, h.opponentPdga, h.opponentPowerRank, h.event), result: h.result });
+  });
+  Object.keys(statsMap).forEach(eventId=>{
     const ev = state.events.find(e=>e.id===eventId);
     if(!ev) return;
-    const s = allStats[eventId][player.id];
-    if(!s) return;
+    if(!matchScope(effectiveSeason(ev))) return;
     const d = fmtDate(ev.date);
-    const dateLabel = `${d.mon} ${d.day}, ${new Date(ev.date).getFullYear()}`;
-    let oppLabel = 'Opponent';
-    if(ev.opponentTeamId){
-      const t = oppTeams.find(x=>x.id===ev.opponentTeamId);
-      if(t) oppLabel = t.name;
-    } else if(ev.opponentName){
-      oppLabel = ev.opponentName;
-    }
-    const title = formatMatchupTitle(ev, oppLabel);
-
-    if(s.matchplay && s.matchplay.played){
-      const m = s.matchplay;
-      let text = `Singles ${m.result} · vs ${m.opponentName || 'Unknown'}`;
-      const margin = formatMatchplayMargin(m);
-      if(margin) text += ` · ${margin}`;
-      rows.push({ sortKey: ev.date, title, dateLabel, result: m.result, text });
-    }
-    if(s.doubles && s.doubles.played){
-      const db = normalizeGroupEntry(s.doubles);
-      const opps = (db.oppNames || []).filter(Boolean).map(abbrevName).join(' & ') || 'Unknown';
-      const partners = (db.partnerNames || []).filter(Boolean).map(abbrevName).join(' & ');
-      let text = `${groupFormatLabel(db.format)} ${db.result} · `;
-      if(partners) text += `w/ ${partners} `;
-      text += `vs ${opps}`;
-      const score = formatDoublesScore(db);
-      if(score) text += ` · ${score}`;
-      rows.push({ sortKey: ev.date, title, dateLabel, result: db.result, text });
+    const s = statsMap[eventId][player.id];
+    if(s && s.matchplay && s.matchplay.played){
+      const ctx = resolveOppContext(s.matchplay.opponentPlayerId, s.matchplay.opponentName);
+      const margin = formatMatchplayMargin(s.matchplay);
+      const matchupBit = [ev.name, `${d.mon} ${d.day}`, margin].filter(Boolean).join(' · ');
+      singlesRows.push({ sortKey: ev.date, title: `vs ${ctx.name}`, detail: detailLine(ctx.team, ctx.pdga, ctx.rank, matchupBit), result: s.matchplay.result });
     }
   });
+  singlesRows.sort((a,b)=> (b.sortKey||'').localeCompare(a.sortKey||''));
+  const sRec = singlesRows.reduce((acc,r)=>{ acc[r.result]=(acc[r.result]||0)+1; return acc; }, {});
+  const singlesRecordLine = `${sRec.W||0}-${sRec.L||0}${sRec.T?`-${sRec.T}`:''}`;
 
-  rows.sort((a,b)=> (b.sortKey||'').localeCompare(a.sortKey||''));
-  return rows;
+  let doublesRows = [];
+  (player.matchHistory || []).filter(h => h.type === 'doubles').forEach(h=>{
+    if(!matchScope(h.season)) return;
+    const title = (h.partner ? `w/ ${h.partner} ` : '') + `vs ${h.opponent}`;
+    doublesRows.push({ sortKey: h.season||'', title, detail: [h.opponentTeam, h.event].filter(Boolean).join(' · '), result: h.result });
+  });
+  Object.keys(statsMap).forEach(eventId=>{
+    const ev = state.events.find(e=>e.id===eventId);
+    if(!ev) return;
+    if(!matchScope(effectiveSeason(ev))) return;
+    const d = fmtDate(ev.date);
+    const s = statsMap[eventId][player.id];
+    if(!s || !s.doubles || !s.doubles.played) return;
+    const e = normalizeGroupEntry(s.doubles);
+    const oppContexts = (e.oppIds||[]).map((id,i)=>resolveOppContext(id, (e.oppNames||[])[i]));
+    const oppNamesJoined = oppContexts.map(c=>c.name).join(' & ') || 'Unknown opponents';
+    const team = oppContexts.find(c=>c.team)?.team;
+    const partners = (e.partnerNames||[]).filter(Boolean).join(' & ');
+    const scoreText = formatDoublesScore(e);
+    const title = (partners?`w/ ${partners} `:'') + `vs ${oppNamesJoined}`;
+    const matchupBit = [ev.name, `${d.mon} ${d.day}`, scoreText].filter(Boolean).join(' · ');
+    doublesRows.push({ sortKey: ev.date, title, detail: [team, matchupBit].filter(Boolean).join(' · '), result: e.result });
+  });
+  doublesRows.sort((a,b)=> (b.sortKey||'').localeCompare(a.sortKey||''));
+  const dRec = doublesRows.reduce((acc,r)=>{ acc[r.result]=(acc[r.result]||0)+1; return acc; }, {});
+  const doublesRecordLine = `${dRec.W||0}-${dRec.L||0}${dRec.T?`-${dRec.T}`:''}`;
+
+  return { singlesRows, doublesRows, singlesRecordLine, doublesRecordLine };
 }
-async function sharePlayerCard(playerId){
+async function sharePlayerCard(playerId, scope){
   const player = state.players.find(p=>p.id===playerId);
   if(!player){ showToast('Player not found'); return; }
-  const history = await buildPlayerShareHistory(player); // flat, one row per result, most-recent-first
+  const seasons = getAvailableSeasons();
+  const effectiveScope = scope || state.expandedPlayerCardScope || (seasons[0] || 'all');
+  const [oppTeamsList, statsMap] = await Promise.all([loadOppTeams(), getAllStatsData()]);
+  const { singlesRows, doublesRows, singlesRecordLine, doublesRecordLine } = buildPlayerSeasonHistoryData(player, effectiveScope, oppTeamsList, statsMap);
   showToast('Generating image…');
 
   const logoEl = document.querySelector('.brand-mark img');
   const logoImg = await loadImageAsync(logoEl ? logoEl.src : null);
 
-  let mpW=0, mpL=0, mpT=0, dbW=0, dbL=0, dbT=0;
-  history.forEach(h=>{
-    if(h.text.startsWith('Singles')){
-      if(h.result==='W') mpW++; else if(h.result==='L') mpL++; else if(h.result==='T') mpT++;
-    } else {
-      if(h.result==='W') dbW++; else if(h.result==='L') dbL++; else if(h.result==='T') dbT++;
-    }
-  });
-
   const scale = 2, marginX = 60, cardRadius = 20;
   const FONT = '-apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif';
-  const headerH = 128, naturalRowH = 66, maxRowH = 92, listTopPad = 16, bottomPad = 24;
-  const minTotalH = 560; // guarantees enough width for the name and event details even with few events
-  const rowCount = Math.max(history.length, 1);
-  let rowH = naturalRowH;
-  let totalH = headerH + listTopPad + rowCount*rowH + bottomPad;
-  let extraBottomPad = 0;
-  if(totalH < minTotalH){
-    // Grow rows a bit for breathing room, but cap it — stretching a 1-row card to fill
-    // 560px of height would leave a huge dead zone inside that single row. Whatever's
-    // still short after a reasonable row size gets absorbed as clean bottom padding.
-    const available = minTotalH - headerH - listTopPad - bottomPad;
-    rowH = Math.min(available / rowCount, maxRowH);
-    totalH = headerH + listTopPad + rowCount*rowH + bottomPad;
-    if(totalH < minTotalH){
-      extraBottomPad = minTotalH - totalH;
-      totalH = minTotalH;
-    }
-  }
-  const W = totalH; // square card — width always matches the (possibly stretched/padded) height
+  const W = 760;
   const contentW = W - marginX*2;
+  const headerH = 156, sectionHeaderH = 40, rowH = 54, listTopPad = 8, bottomPad = 28, sectionGap = 10;
+  const totalRows = singlesRows.length + doublesRows.length;
+  const sectionCount = (singlesRows.length ? 1 : 0) + (doublesRows.length ? 1 : 0);
+  let totalH = headerH + listTopPad + sectionCount*sectionHeaderH + totalRows*rowH + sectionGap*Math.max(sectionCount-1,0) + bottomPad;
+  if(totalRows === 0) totalH = headerH + 90;
 
   const draw = document.createElement('canvas');
   draw.width = W*scale;
@@ -3434,7 +3410,7 @@ async function sharePlayerCard(playerId){
   ctx.fillStyle = '#F4F1EA';
   ctx.fillRect(0, 0, W, totalH);
 
-  // ---- Header: player name instead of a matchup, plus their overall record ----
+  // ---- Header ----
   const headerGrad = ctx.createLinearGradient(0, 0, W, headerH);
   headerGrad.addColorStop(0, '#0F2240');
   headerGrad.addColorStop(1, '#1B3A66');
@@ -3444,7 +3420,7 @@ async function sharePlayerCard(playerId){
   if(logoImg){
     ctx.save();
     ctx.globalAlpha = 0.16;
-    const logoSize = W * 0.34; // proportional, since this card's width varies by player unlike the fixed-width event/team cards
+    const logoSize = W * 0.34;
     ctx.drawImage(logoImg, W - logoSize*0.62, -logoSize*0.28, logoSize, logoSize);
     ctx.restore();
   }
@@ -3456,25 +3432,44 @@ async function sharePlayerCard(playerId){
   ctx.fillStyle = '#FFCB57';
   ctx.fillRect(marginX, 65, 42, 4);
 
+  if(effectiveScope !== 'all'){
+    ctx.fillStyle = '#FFCB57';
+    ctx.font = `800 12px ${FONT}`;
+    ctx.fillText(`${effectiveScope} SEASON`.toUpperCase(), marginX, 92);
+  }
+
   ctx.fillStyle = '#B8C4D9';
   ctx.font = `600 14px ${FONT}`;
   const summaryParts = [];
-  if(mpW+mpL+mpT > 0) summaryParts.push(`Singles ${mpW}-${mpL}-${mpT}`);
-  if(dbW+dbL+dbT > 0) summaryParts.push(`Doubles ${dbW}-${dbL}-${dbT}`);
-  ctx.fillText(summaryParts.length ? summaryParts.join('    ·    ') : 'No results recorded yet', marginX, 90);
+  if(singlesRows.length) summaryParts.push(`Singles ${singlesRecordLine}`);
+  if(doublesRows.length) summaryParts.push(`Doubles ${doublesRecordLine}`);
+  ctx.fillText(summaryParts.length ? summaryParts.join('    ·    ') : 'No results recorded yet', marginX, effectiveScope !== 'all' ? 122 : 90);
 
+  // ---- Body: grouped sections ----
   let y = headerH + listTopPad;
-
-  if(history.length === 0){
-    ctx.textAlign = 'center';
-    ctx.fillStyle = '#8C8478';
-    ctx.font = `600 13px ${FONT}`;
-    ctx.fillText('No recorded results yet.', W/2, y+28);
+  const resultBadge = (result) => {
+    if(result==='W') return { bg: '#E1E8F5', fg: '#12294D' };
+    if(result==='T') return { bg: '#FBEFD8', fg: '#8A6112' };
+    return { bg: '#F5D9D6', fg: '#8A2E27' };
+  };
+  const drawSection = (label, dotColor, recordLine, rows) => {
+    if(rows.length === 0) return;
+    ctx.fillStyle = dotColor;
+    ctx.beginPath();
+    ctx.arc(marginX+5, y+sectionHeaderH/2-2, 5, 0, Math.PI*2);
+    ctx.fill();
     ctx.textAlign = 'left';
-    y += rowH;
-  } else {
-    const resultColor = (r) => r==='W' ? '#1E7A46' : r==='T' ? '#8A6112' : '#B3352E';
-    history.forEach(h=>{
+    ctx.font = `800 15px ${FONT}`;
+    ctx.fillStyle = '#12294D';
+    ctx.fillText(label, marginX+18, y+sectionHeaderH/2+3);
+    ctx.textAlign = 'right';
+    ctx.font = `800 14px ${FONT}`;
+    ctx.fillStyle = '#5C6B84';
+    ctx.fillText(recordLine, W-marginX, y+sectionHeaderH/2+3);
+    ctx.textAlign = 'left';
+    y += sectionHeaderH;
+
+    rows.forEach(r=>{
       ctx.strokeStyle = '#E4DFD3';
       ctx.lineWidth = 1;
       ctx.beginPath();
@@ -3482,23 +3477,41 @@ async function sharePlayerCard(playerId){
       ctx.lineTo(W-marginX, y);
       ctx.stroke();
 
+      const badge = resultBadge(r.result);
+      const badgeR = 14, badgeCx = marginX+badgeR, badgeCy = y+rowH/2;
+      ctx.fillStyle = badge.bg;
+      ctx.beginPath();
+      ctx.arc(badgeCx, badgeCy, badgeR, 0, Math.PI*2);
+      ctx.fill();
+      ctx.fillStyle = badge.fg;
+      ctx.font = `800 12px ${FONT}`;
+      ctx.textAlign = 'center';
+      ctx.fillText(r.result, badgeCx, badgeCy+4);
       ctx.textAlign = 'left';
-      ctx.font = `800 14.5px ${FONT}`;
-      ctx.fillStyle = '#2B2620';
-      ctx.fillText(ctxTruncateText(ctx, h.title, contentW*0.62), marginX, y+22);
 
-      ctx.textAlign = 'right';
+      const textX = marginX + badgeR*2 + 14;
+      const textW = contentW - badgeR*2 - 14;
+      ctx.font = `800 13.5px ${FONT}`;
+      ctx.fillStyle = '#2B2620';
+      ctx.fillText(ctxTruncateText(ctx, r.title, textW), textX, y+rowH/2-4);
       ctx.font = `600 11px ${FONT}`;
       ctx.fillStyle = '#8C8478';
-      ctx.fillText(h.dateLabel, W-marginX, y+22);
-      ctx.textAlign = 'left';
-
-      ctx.font = `700 12px ${FONT}`;
-      ctx.fillStyle = resultColor(h.result);
-      ctx.fillText(ctxTruncateText(ctx, h.text, contentW), marginX, y+42);
+      ctx.fillText(ctxTruncateText(ctx, r.detail, textW), textX, y+rowH/2+13);
 
       y += rowH;
     });
+    y += sectionGap;
+  };
+
+  if(totalRows === 0){
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#8C8478';
+    ctx.font = `600 13px ${FONT}`;
+    ctx.fillText('No recorded results yet.', W/2, y+28);
+    ctx.textAlign = 'left';
+  } else {
+    drawSection('SINGLES', '#FFCB57', singlesRecordLine, singlesRows);
+    drawSection('DOUBLES', '#5B9BD5', doublesRecordLine, doublesRows);
   }
 
   // ---- Round the card's corners and export ----
@@ -3514,7 +3527,7 @@ async function sharePlayerCard(playerId){
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    const safeName = `${player.name}-stats`.replace(/[^a-z0-9]+/gi, '-').toLowerCase();
+    const safeName = `${player.name}-${effectiveScope}-stats`.replace(/[^a-z0-9]+/gi, '-').toLowerCase();
     a.download = `${safeName || 'player'}-stats.png`;
     document.body.appendChild(a);
     a.click();
@@ -3724,7 +3737,7 @@ async function renderPlayerHistoryHtml(playerId){
     </div>`;
 
   return pillsHtml + singlesSection + doublesSection +
-    `<button class="btn btn-outline btn-sm" style="width:100%; margin-top:12px;" onclick="event.stopPropagation(); sharePlayerCard('${playerId}')">⬇️ Share Image</button>`;
+    `<button class="btn btn-outline btn-sm" style="width:100%; margin-top:12px;" onclick="event.stopPropagation(); sharePlayerCard('${playerId}', '${esc(scope)}')">⬇️ Share Image</button>`;
 }
 function setPlayerCardScope(scope){
   state.expandedPlayerCardScope = scope;
@@ -5558,6 +5571,44 @@ function setCourseStatsFormat(fmt){
   state.courseDetailExpanded = false;
   render();
 }
+async function renderGenericSinglesCard(){
+  const [oppTeamsList, statsMap] = await Promise.all([loadOppTeams(), getAllStatsData()]);
+  const rows = state.players.map(p=>{
+    const { singlesRecordLine } = buildPlayerSeasonHistoryData(p, 'all', oppTeamsList, statsMap);
+    const parts = singlesRecordLine.split('-').map(Number);
+    const w = parts[0]||0, l = parts[1]||0, t = parts[2]||0;
+    const total = w+l+t;
+    const winPct = total ? Math.round((w/total)*1000)/10 : null;
+    return { name: p.name, gender: p.gender, powerRank: p.skillRank, pdga: p.pdgaRating, w, l, t, total, winPct };
+  }).filter(r=>r.total > 0);
+
+  if(rows.length === 0){
+    return `<div class="card empty"><span class="em">🎯</span><p>No singles results recorded yet for any Two Buff player.</p></div>`;
+  }
+  rows.sort((a,b)=> (b.powerRank||0) - (a.powerRank||0));
+  const divisionPill = (gender) => {
+    const div = gender==='F' ? 'FPO' : 'MPO';
+    return `<span class="pill ${gender==='F' ? 'pill-orange':'pill-forest'}">${div}</span>`;
+  };
+  const rowHtml = (r) => {
+    const pctColor = r.winPct >= 60 ? 'var(--forest)' : (r.winPct <= 40 ? 'var(--red)' : 'var(--ink-soft)');
+    return `
+      <div style="display:flex; align-items:center; gap:12px; padding:8px 0; border-bottom:1px solid var(--chip-bg, #eee);">
+        <div style="font-size:17px; font-weight:800; color:${pctColor}; min-width:52px;">${r.winPct}%</div>
+        <div style="flex:1; min-width:0;">
+          <div style="font-weight:700; font-size:12.5px;">${esc(r.name)} ${divisionPill(r.gender)}</div>
+          <div style="font-size:11px; color:var(--ink-soft);">${r.w}-${r.l}${r.t?`-${r.t}`:''} · ${r.total} played${r.powerRank!=null?` · Power Rank ${Number(r.powerRank).toFixed(1)}`:''}${r.pdga?` · PDGA ${r.pdga}`:''}</div>
+        </div>
+      </div>`;
+  };
+  return `
+    <div class="card">
+      <div style="font-weight:800; font-size:14px; color:var(--forest-dark); margin-bottom:2px;">Two Buff Singles Records</div>
+      <div style="font-size:11px; color:var(--ink-soft); margin-bottom:10px;">All-time singles record per player, across every course — not tied to any one opponent. Sorted by Power Rank. Tap a course pill above to see course-specific stats instead.</div>
+    </div>
+    <div class="card">${rows.map(rowHtml).join('')}</div>
+  `;
+}
 async function renderCourseStatsTab(){
   const COURSE_STATS_DATASET = await loadCourseStats();
   const SINGLES_COURSE_STATS_DATASET = await loadSinglesCourseStats();
@@ -5588,15 +5639,18 @@ async function renderCourseStatsTab(){
     return `<span class="pill ${cls}">${esc(div)}</span>`;
   };
 
-  const body = state.selectedCourseKey === null
-    ? renderGenericPairingsCard()
-    : (state.courseStatsFormat === 'singles'
-        ? renderSinglesCourseCard(state.selectedCourseKey, SINGLES_COURSE_STATS_DATASET, divisionPill)
-        : renderDoublesCourseCard(state.selectedCourseKey, COURSE_STATS_DATASET, divisionPill));
+  let body;
+  if(state.selectedCourseKey === null){
+    body = state.courseStatsFormat === 'singles' ? await renderGenericSinglesCard() : renderGenericPairingsCard();
+  } else {
+    body = state.courseStatsFormat === 'singles'
+      ? renderSinglesCourseCard(state.selectedCourseKey, SINGLES_COURSE_STATS_DATASET, divisionPill)
+      : renderDoublesCourseCard(state.selectedCourseKey, COURSE_STATS_DATASET, divisionPill);
+  }
 
   return `
     <div class="course-pills">${pillsHtml}</div>
-    ${state.selectedCourseKey !== null ? formatPillsHtml : ''}
+    ${formatPillsHtml}
     ${body}
   `;
 }
