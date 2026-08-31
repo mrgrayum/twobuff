@@ -363,6 +363,35 @@
   .rules-match-section-title{font-size:11px; font-weight:800; color:var(--orange-dark); text-transform:uppercase; letter-spacing:0.4px; margin:0 2px 6px;}
   mark.rules-mark{background:#FCE29B; color:inherit; border-radius:3px; padding:0 2px;}
   .rules-updated-note{font-size:11.5px; color:var(--ink-soft); text-align:center; margin:18px 0 4px;}
+/* ---- Strategy chat widget ---- */
+#chatFab{
+  position:fixed; right:18px; bottom:18px; z-index:500;
+  width:56px; height:56px; border-radius:50%;
+  background:var(--orange); color:#fff; border:none;
+  font-size:24px; box-shadow:0 4px 14px rgba(0,0,0,.25);
+  display:none; align-items:center; justify-content:center; cursor:pointer;
+}
+#chatFab.show{ display:flex; }
+#chatPanel{
+  position:fixed; right:18px; bottom:86px; z-index:500;
+  width:min(380px, calc(100vw - 36px)); height:min(560px, calc(100vh - 140px));
+  background:#fff; border-radius:16px;
+  box-shadow:0 8px 30px rgba(0,0,0,.3);
+  display:none; flex-direction:column; overflow:hidden;
+}
+#chatPanel.open{ display:flex; }
+#chatPanelHead{
+  padding:12px 14px; background:var(--orange); color:#fff;
+  display:flex; justify-content:space-between; align-items:center; font-weight:700;
+}
+#chatMessages{ flex:1; overflow-y:auto; padding:12px; display:flex; flex-direction:column; gap:10px; }
+.chat-bubble{ max-width:85%; padding:9px 12px; border-radius:12px; font-size:13.5px; line-height:1.45; white-space:pre-wrap; }
+.chat-bubble.user{ align-self:flex-end; background:var(--orange); color:#fff; border-bottom-right-radius:3px; }
+.chat-bubble.assistant{ align-self:flex-start; background:var(--chip-bg); color:var(--ink); border-bottom-left-radius:3px; }
+.chat-bubble.pending{ opacity:.6; font-style:italic; }
+#chatInputRow{ display:flex; gap:8px; padding:10px; border-top:1px solid var(--line); }
+#chatInput{ flex:1; border:1px solid var(--line); border-radius:10px; padding:9px 11px; font-size:13.5px; resize:none; font-family:inherit; }
+#chatSendBtn{ border:none; background:var(--orange); color:#fff; border-radius:10px; padding:0 16px; font-weight:700; cursor:pointer; }
 </style>
 </head>
 <body>
@@ -1554,6 +1583,7 @@ function openEvent(id){
 
 /* ============================= RENDER ROOT ============================= */
 async function render(){
+  updateChatFabVisibility(); // strategy chat: only visible in admin mode
   document.querySelectorAll('.navbtn').forEach(b=>b.classList.toggle('active', b.dataset.view === (state.view==='eventDetail'?'events':state.view)));
   const root = document.getElementById('viewRoot');
   if(!state.loaded){ root.innerHTML = '<div class="loading-dots">Loading team hub…</div>'; return; }
@@ -1588,6 +1618,83 @@ async function render(){
   }
   if(state.renderToken === myToken){
     root.innerHTML = html; // only apply if nothing newer has started since we began
+  }
+}
+
+/* ====================== STRATEGY CHAT AGENT ======================
+   Calls a Firebase Cloud Function (never the Anthropic API directly —
+   see /functions/index.js). The function re-checks the PIN server-side
+   against dg_admin_pin / dg_super_admin_pin, so this button being hidden
+   is a UX nicety, not the actual security boundary. */
+const CHAT_ENDPOINT = "https://us-central1-two-buff-team-hub.cloudfunctions.net/chatAgent"; // from `firebase deploy --only functions`
+
+let _chatPin = null;      // kept in memory only for this page load, never persisted
+let _chatHistory = [];    // [{role, content}, ...] — resets on reload, matches the "full context each time" design
+
+function updateChatFabVisibility(){
+  const fab = document.getElementById('chatFab');
+  if(fab) fab.classList.toggle('show', !!state.adminMode);
+}
+
+function openChatPanel(){
+  document.getElementById('chatPanel').classList.add('open');
+  if(_chatHistory.length === 0){
+    appendChatBubble('assistant', "Hey — ask me about a matchup, a pairing, a course, or a rule. I've got the full methodology, rulebook, and current roster/stats loaded.");
+  }
+  document.getElementById('chatInput').focus();
+}
+function closeChatPanel(){
+  document.getElementById('chatPanel').classList.remove('open');
+}
+
+function appendChatBubble(role, text, pending){
+  const el = document.createElement('div');
+  el.className = `chat-bubble ${role}${pending ? ' pending' : ''}`;
+  el.textContent = text;
+  document.getElementById('chatMessages').appendChild(el);
+  document.getElementById('chatMessages').scrollTop = 1e9;
+  return el;
+}
+
+async function ensureChatPin(){
+  if(_chatPin) return _chatPin;
+  const entered = prompt("Enter your admin PIN to use the strategy assistant:");
+  if(!entered) return null;
+  _chatPin = entered.trim();
+  return _chatPin;
+}
+
+async function sendChatMessage(){
+  const input = document.getElementById('chatInput');
+  const text = input.value.trim();
+  if(!text) return;
+  const pin = await ensureChatPin();
+  if(!pin) return;
+
+  input.value = '';
+  appendChatBubble('user', text);
+  const pendingEl = appendChatBubble('assistant', 'Thinking…', true);
+
+  try{
+    const res = await fetch(CHAT_ENDPOINT, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ pin, message: text, history: _chatHistory })
+    });
+    const data = await res.json();
+    if(!res.ok){
+      if(res.status === 401){ _chatPin = null; } // bad PIN — let them retry
+      pendingEl.remove();
+      appendChatBubble('assistant', `Error: ${data.error || 'something went wrong'}`);
+      return;
+    }
+    pendingEl.remove();
+    appendChatBubble('assistant', data.reply);
+    _chatHistory.push({role:'user', content:text}, {role:'assistant', content:data.reply});
+    if(_chatHistory.length > 20) _chatHistory = _chatHistory.slice(-20); // cap client-side history
+  }catch(e){
+    pendingEl.remove();
+    appendChatBubble('assistant', 'Network error — try again.');
   }
 }
 
@@ -6348,5 +6455,18 @@ function clearRulesSearch(){
 /* ============================= GO ============================= */
 init();
 </script>
+<!-- Strategy chat widget: floating button + panel, shown only in admin mode -->
+<button id="chatFab" onclick="openChatPanel()" aria-label="Strategy assistant">🥏💬</button>
+<div id="chatPanel">
+  <div id="chatPanelHead">
+    <span>Matchup Assistant</span>
+    <button onclick="closeChatPanel()" style="background:none;border:none;color:#fff;font-size:20px;cursor:pointer;">×</button>
+  </div>
+  <div id="chatMessages"></div>
+  <div id="chatInputRow">
+    <textarea id="chatInput" rows="1" placeholder="Ask about a matchup, a pairing, a rule…" onkeydown="if(event.key==='Enter' && !event.shiftKey){ event.preventDefault(); sendChatMessage(); }"></textarea>
+    <button id="chatSendBtn" onclick="sendChatMessage()">Send</button>
+  </div>
+</div>
 </body>
 </html>
