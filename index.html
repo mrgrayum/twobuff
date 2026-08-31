@@ -2481,7 +2481,7 @@ function buildHistoryRows(player, isOpponent, scope, oppTeamsList, statsMap){
   let singlesRows = [];
   (player.matchHistory || []).filter(h => (h.type||'singles')==='singles').forEach(h=>{
     if(!matchScope(h.season)) return;
-    const identifier = [h.opponentTeam, h.opponentPdga?`PDGA ${h.opponentPdga}`:null, h.opponentPowerRank!=null?`Rank ${Number(h.opponentPowerRank).toFixed(1)}`:null].filter(Boolean).join(' · ');
+    const identifier = [h.opponentTeam, h.opponentPdga?`PDGA ${h.opponentPdga}`:null, (state.adminMode && h.opponentPowerRank!=null)?`Rank ${Number(h.opponentPowerRank).toFixed(1)}`:null].filter(Boolean).join(' · ');
     singlesRows.push({ sortKey: h.season||'', html: rowHtml(`vs ${esc(h.opponent)}`, identifier, h.event, h.result), result: h.result });
   });
   Object.keys(statsMap).forEach(eventId=>{
@@ -2504,7 +2504,7 @@ function buildHistoryRows(player, isOpponent, scope, oppTeamsList, statsMap){
       const s = data[player.id];
       if(s && s.matchplay && s.matchplay.played){
         const ctx = resolveOppContext(s.matchplay.opponentPlayerId, s.matchplay.opponentName);
-        const identifier = [ctx.team, ctx.pdga?`PDGA ${ctx.pdga}`:null, ctx.rank!=null?`Rank ${Number(ctx.rank).toFixed(1)}`:null].filter(Boolean).join(' · ');
+        const identifier = [ctx.team, ctx.pdga?`PDGA ${ctx.pdga}`:null, (state.adminMode && ctx.rank!=null)?`Rank ${Number(ctx.rank).toFixed(1)}`:null].filter(Boolean).join(' · ');
         singlesRows.push({ sortKey: ev.date, html: rowHtml(`vs ${esc(ctx.name)}`, identifier, `${esc(ev.name)} · ${d.mon} ${d.day}`, s.matchplay.result), result: s.matchplay.result });
       }
     }
@@ -3380,7 +3380,7 @@ function buildPlayerSeasonHistoryData(player, scope, oppTeamsList, statsMap){
     return { name: fallbackName || 'Unknown', team: null, pdga: null, rank: null };
   };
   const matchScope = (season) => scope === 'all' || season === scope;
-  const detailLine = (team, pdga, rank, matchupBit) => [team, pdga?`PDGA ${pdga}`:null, rank!=null?`Rank ${Number(rank).toFixed(1)}`:null, matchupBit].filter(Boolean).join(' · ');
+  const detailLine = (team, pdga, rank, matchupBit) => [team, pdga?`PDGA ${pdga}`:null, (state.adminMode && rank!=null)?`Rank ${Number(rank).toFixed(1)}`:null, matchupBit].filter(Boolean).join(' · ');
 
   let singlesRows = [];
   (player.matchHistory || []).filter(h => (h.type||'singles')==='singles').forEach(h=>{
@@ -3861,7 +3861,7 @@ function renderPlayerProfileSummary(p, includeHistory){
 function opponentContextLine(h){
   const parts = [h.opponentTeam];
   if(h.opponentPdga) parts.push(`PDGA ${h.opponentPdga}`);
-  if(h.opponentPowerRank != null) parts.push(`Rank ${Number(h.opponentPowerRank).toFixed(1)}`);
+  if(state.adminMode && h.opponentPowerRank != null) parts.push(`Rank ${Number(h.opponentPowerRank).toFixed(1)}`);
   return parts.join(' · ');
 }
 function renderSeasonHistory(p){
@@ -5648,7 +5648,7 @@ async function renderGenericSinglesCard(){
               ${divisionPill(r.gender)}
               <span style="font-size:10px; color:var(--ink-soft);">${expanded ? '▲' : '▼'}</span>
             </div>
-            <div style="font-size:11px; color:var(--ink-soft);">${r.w}-${r.l}${r.t?`-${r.t}`:''} · ${r.total} played${r.powerRank!=null?` · Power Rank ${Number(r.powerRank).toFixed(1)}`:''}${r.pdga?` · PDGA ${r.pdga}`:''}</div>
+            <div style="font-size:11px; color:var(--ink-soft);">${r.w}-${r.l}${r.t?`-${r.t}`:''} · ${r.total} played${(state.adminMode && r.powerRank!=null)?` · Power Rank ${Number(r.powerRank).toFixed(1)}`:''}${r.pdga?` · PDGA ${r.pdga}`:''}</div>
           </div>
         </div>
         ${expanded ? `<div onclick="event.stopPropagation()" style="margin-top:8px;">${historyHtml}</div>` : ''}
@@ -6061,13 +6061,31 @@ async function renderTeamAndPlayerStats(){
   `;
 
   const sortedPlayers = [...state.players].sort((a,b)=> record[b.id].powerScore - record[a.id].powerScore);
+  const statsMapForCards = await getAllStatsData();
   const rowCards = await Promise.all(sortedPlayers.map(async p=>{
     const r = record[p.id];
-    const hasMp = (r.mpW+r.mpL+r.mpT) > 0;
-    const hasDb = (r.dbW+r.dbL+r.dbT) > 0;
     const eventsPlayed = r.eventsPlayed.size;
     const qualified = eventsPlayed >= FINALS_MIN_EVENTS;
     const expanded = state.expandedPlayerId === p.id;
+    // The top-of-card Singles/Doubles W-L normally reflects the same "most current season"
+    // record used for sorting and the Finals-qualified badge above. But once a card is
+    // expanded, that card gets its own season selector (see setPlayerCardScope) — so the
+    // W-L shown here needs to track THAT selection instead, or it goes stale/mismatched
+    // against the season-filtered history displayed right below it.
+    let mpW = r.mpW, mpL = r.mpL, mpT = r.mpT, dbW = r.dbW, dbL = r.dbL, dbT = r.dbT;
+    if(expanded){
+      const cardScope = state.expandedPlayerCardScope || (getAvailableSeasons()[0] || 'all');
+      const scoped = buildHistoryRows(p, false, cardScope, oppTeamsForRecord, statsMapForCards);
+      // singlesRecordLine/doublesRecordLine are "W-L" (2 parts) unless there's a tie, in which
+      // case they're "W-L-T" (3 parts) — a fixed-length destructure here left mpT/dbT undefined
+      // whenever T was 0, which silently broke the hasMp/hasDb check below and showed "—".
+      const sParts = scoped.singlesRecordLine.split('-').map(n=>Number(n)||0);
+      mpW = sParts[0]||0; mpL = sParts[1]||0; mpT = sParts[2]||0;
+      const dParts = scoped.doublesRecordLine.split('-').map(n=>Number(n)||0);
+      dbW = dParts[0]||0; dbL = dParts[1]||0; dbT = dParts[2]||0;
+    }
+    const hasMp = (mpW+mpL+mpT) > 0;
+    const hasDb = (dbW+dbL+dbT) > 0;
     const historyHtml = expanded ? await renderPlayerHistoryHtml(p.id) : '';
     return `
       <div class="player-stat-card" style="${qualified ? 'background:#FFF3E6; border-color:var(--orange);' : ''}" onclick="toggleExpandPlayer('${p.id}')">
@@ -6081,8 +6099,8 @@ async function renderTeamAndPlayerStats(){
               Events Played: ${eventsPlayed}${qualified ? ' ⭐' : ''}
             </div>
           </div>
-          <div class="rec" style="color:${hasMp ? 'var(--forest-dark)':'var(--ink-soft)'};">${hasMp ? r.mpW+'-'+r.mpL+'-'+r.mpT : '—'}<span class="sub">Singles</span></div>
-          <div class="rec" style="color:${hasDb ? 'var(--forest-dark)':'var(--ink-soft)'};">${hasDb ? r.dbW+'-'+r.dbL+'-'+r.dbT : '—'}<span class="sub">Doubles</span></div>
+          <div class="rec" style="color:${hasMp ? 'var(--forest-dark)':'var(--ink-soft)'};">${hasMp ? mpW+'-'+mpL+'-'+mpT : '—'}<span class="sub">Singles</span></div>
+          <div class="rec" style="color:${hasDb ? 'var(--forest-dark)':'var(--ink-soft)'};">${hasDb ? dbW+'-'+dbL+'-'+dbT : '—'}<span class="sub">Doubles</span></div>
         </div>
         ${expanded ? `<div onclick="event.stopPropagation()">${renderPlayerProfileSummary(p, false)}${historyHtml}</div>` : ''}
       </div>`;
