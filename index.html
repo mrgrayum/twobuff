@@ -786,6 +786,25 @@ const TEAM_TO_COURSE = {
   'BSR': 'Bittersweet Ridge DG', 'Burgess': 'Burgess Park DGC',
   'Crane': 'Crane Hill DGC', 'Barre': 'Barre Falls Dam', 'Tank': 'Oakcrest Cove DGC',
 };
+/* Which opponent team's doubles pairing tendencies to show on a given course's Stats page.
+   Buffumville is shared with 2Buff, but we only ever want to see Buff's tendencies there —
+   we already know our own. Wickham Park and Keney Park both show Wick's tendencies. */
+const COURSE_TO_OPPONENT_TEAM = {
+  'Buffumville DGC': 'Buff',
+  'Bittersweet Ridge DG': 'BSR',
+  'Burgess Park DGC': 'Burgess',
+  'Crane Hill DGC': 'Crane',
+  'Barre Falls Dam': 'Barre',
+  'Oakcrest Cove DGC': 'Tank',
+  'Wickham Park': 'Wick',
+  'Keney Park': 'Wick',
+};
+/* Hardcoded 2025-26 doubles pairing tendencies per opponent team, "Possible" confidence and up only
+   (Very Likely = 4+ times, Likely = 3 times, Possible = 2 times — "Seen Once" pairings are excluded).
+   Skill = average Blended Individual Doubles Rank. Source: doubles pairing tendency analysis.
+   Static for now; revisit wiring this through Firebase (like dg_pairings_ranked) if it needs to
+   update more often than a manual edit here. */
+const DOUBLES_PAIRING_TENDENCY = {"Buff": [{"p1": "Issiac Christiansen", "p2": "Jeremy Binley", "skill": 7.1, "times": 6, "total": 8, "confidence": "Very Likely"}, {"p1": "Matt Heenan", "p2": "Nick Economos", "skill": 6.83, "times": 5, "total": 9, "confidence": "Very Likely"}, {"p1": "Jenna Gosselin", "p2": "Nicole Gonsalves", "skill": 6.36, "times": 5, "total": 8, "confidence": "Very Likely"}, {"p1": "John Buonsanto", "p2": "Ryan Mooney", "skill": 6.87, "times": 4, "total": 4, "confidence": "Very Likely"}, {"p1": "Aaron Leblanc", "p2": "Casey White", "skill": 7.92, "times": 3, "total": 6, "confidence": "Likely"}, {"p1": "Greg Aucoin", "p2": "Mark Chapalonis", "skill": 7.5, "times": 3, "total": 5, "confidence": "Likely"}, {"p1": "Al Leighton", "p2": "Nick Carl", "skill": 7.45, "times": 3, "total": 3, "confidence": "Likely"}, {"p1": "Keith Burtt", "p2": "Ryan Robinson", "skill": 6.28, "times": 2, "total": 4, "confidence": "Possible"}, {"p1": "Aaron Leblanc", "p2": "Kyle Bergmann", "skill": 7.1, "times": 2, "total": 3, "confidence": "Possible"}, {"p1": "Joe Yaskis", "p2": "Steve Economos", "skill": 7.07, "times": 2, "total": 3, "confidence": "Possible"}, {"p1": "Greg Aucoin", "p2": "Joe Yaskis", "skill": 6.71, "times": 2, "total": 2, "confidence": "Possible"}, {"p1": "Josh O'Coin", "p2": "Steve Economos", "skill": 7.6, "times": 2, "total": 2, "confidence": "Possible"}, {"p1": "Keith Burtt", "p2": "Nick Carl", "skill": 7.07, "times": 2, "total": 2, "confidence": "Possible"}, {"p1": "Kyle Bergmann", "p2": "Matt Kobel", "skill": 6.92, "times": 2, "total": 2, "confidence": "Possible"}], "Barre": [{"p1": "Joe Gray", "p2": "Nathan Sherman", "skill": 7.1, "times": 6, "total": 6, "confidence": "Very Likely"}, {"p1": "Corey Johnson", "p2": "Korey Fournier", "skill": 6.64, "times": 5, "total": 5, "confidence": "Very Likely"}, {"p1": "Danny Maher", "p2": "Michael Gray", "skill": 5.81, "times": 5, "total": 5, "confidence": "Very Likely"}, {"p1": "Justin Patenaude", "p2": "Koi Lanoue", "skill": 6.05, "times": 5, "total": 5, "confidence": "Very Likely"}, {"p1": "Kevin Nosek", "p2": "Richard Caron III", "skill": 6.57, "times": 5, "total": 5, "confidence": "Very Likely"}, {"p1": "Joey Horstman Jr", "p2": "Seamus Collins", "skill": 6.55, "times": 4, "total": 4, "confidence": "Very Likely"}, {"p1": "Kenny Lapke", "p2": "McKayla Haley", "skill": 5.88, "times": 3, "total": 3, "confidence": "Likely"}, {"p1": "Matt Nowd", "p2": "Zach Peele", "skill": 6.81, "times": 3, "total": 3, "confidence": "Likely"}, {"p1": "Alec Goodale", "p2": "Andrew Hill", "skill": 6.45, "times": 2, "total": 2, "confidence": "Possible"}, {"p1": "Emily Burdett", "p2": "Kelly Sutton", "skill": 1.35, "times": 2, "total": 2, "confidence": "Possible"}, {"p1": "Emily Burdett", "p2": "McKayla Haley", "skill": 3.62, "times": 2, "total": 2, "confidence": "Possible"}], "Wick": [{"p1": "Jasin Bayer", "p2": "Perry Russo", "skill": 6.94, "times": 7, "total": 7, "confidence": "Very Likely"}, {"p1": "Andrew Tabaczynski", "p2": "Greg Wintrob", "skill": 7.04, "times": 5, "total": 5, "confidence": "Very Likely"}, {"p1": "Andrew Bosco", "p2": "Jason Koczeniak", "skill": 6.69, "times": 4, "total": 4, "confidence": "Very Likely"}, {"p1": "Brandon Shaw", "p2": "Shawn Mullen", "skill": 6.85, "times": 4, "total": 4, "confidence": "Very Likely"}, {"p1": "Connor Waitt", "p2": "Josh Tamosaitis", "skill": 7.79, "times": 4, "total": 4, "confidence": "Very Likely"}, {"p1": "Dan Hale", "p2": "Harris Reid", "skill": 7.02, "times": 4, "total": 4, "confidence": "Very Likely"}, {"p1": "Amanda Porter", "p2": "Elizabeth Croteau", "skill": 2.02, "times": 3, "total": 3, "confidence": "Likely"}, {"p1": "Danny Bailey", "p2": "Matt Geffert", "skill": 7.3, "times": 3, "total": 3, "confidence": "Likely"}, {"p1": "Amanda Porter", "p2": "Toby Sznaj", "skill": null, "times": 2, "total": 2, "confidence": "Possible"}, {"p1": "Andrew Bosco", "p2": "James Bress", "skill": 7.12, "times": 2, "total": 2, "confidence": "Possible"}, {"p1": "Craig Hoeksema", "p2": "Jared Hill", "skill": 7.84, "times": 2, "total": 2, "confidence": "Possible"}], "Tank": [{"p1": "Allie Lawler", "p2": "Sabrina Pray", "skill": 5.42, "times": 7, "total": 7, "confidence": "Very Likely"}, {"p1": "Reuben Hagen", "p2": "Troy Yacyshyn", "skill": 7.54, "times": 6, "total": 6, "confidence": "Very Likely"}, {"p1": "Brad Wagner", "p2": "Dave Beadenkopf", "skill": 7.09, "times": 3, "total": 3, "confidence": "Likely"}, {"p1": "Dylan Capaccioli", "p2": "Terry Belmosto", "skill": 7.68, "times": 3, "total": 3, "confidence": "Likely"}, {"p1": "Malcolm Cooper", "p2": "Nick Nealon", "skill": 7.04, "times": 3, "total": 3, "confidence": "Likely"}, {"p1": "Nate Kane", "p2": "Owen Hamilton", "skill": 7.4, "times": 3, "total": 3, "confidence": "Likely"}, {"p1": "Alec Shostek", "p2": "Andres Ripley", "skill": 7.76, "times": 2, "total": 2, "confidence": "Possible"}, {"p1": "Alec Shostek", "p2": "Matt Dodge", "skill": 5.83, "times": 2, "total": 2, "confidence": "Possible"}, {"p1": "Alex Bruhm", "p2": "Andres Ripley", "skill": 7.57, "times": 2, "total": 2, "confidence": "Possible"}, {"p1": "Alex Vigeant", "p2": "Dave Beadenkopf", "skill": 7.19, "times": 2, "total": 2, "confidence": "Possible"}, {"p1": "Alex Vigeant", "p2": "Terry Belmosto", "skill": 6.93, "times": 2, "total": 2, "confidence": "Possible"}, {"p1": "Amanda Borgman", "p2": "Brad Wagner", "skill": 5.62, "times": 2, "total": 2, "confidence": "Possible"}, {"p1": "Greg Peterson", "p2": "Nathaniel Groz", "skill": 6.58, "times": 2, "total": 2, "confidence": "Possible"}, {"p1": "Matt Dodge", "p2": "Matthew Greene", "skill": 5.55, "times": 2, "total": 2, "confidence": "Possible"}], "BSR": [{"p1": "Brandon Cournoyer", "p2": "Jake Lapierre", "skill": 6.91, "times": 5, "total": 5, "confidence": "Very Likely"}, {"p1": "Mike Fyfe", "p2": "Tyler Grady", "skill": 7.17, "times": 5, "total": 5, "confidence": "Very Likely"}, {"p1": "Connor Moody", "p2": "Josh Dibattista", "skill": 7.66, "times": 4, "total": 7, "confidence": "Very Likely"}, {"p1": "Hali Pope", "p2": "Kassidi Blanchet", "skill": 2.01, "times": 4, "total": 4, "confidence": "Very Likely"}, {"p1": "Jordan Ross", "p2": "Matt Enman", "skill": 7.25, "times": 3, "total": 6, "confidence": "Likely"}, {"p1": "Andrew Jones", "p2": "Andy Bolduc", "skill": 7.07, "times": 3, "total": 5, "confidence": "Likely"}, {"p1": "Bryan Sheets", "p2": "Greg Estabrook", "skill": 7.14, "times": 3, "total": 4, "confidence": "Likely"}, {"p1": "Andy Bolduc", "p2": "Nick Young", "skill": 6.95, "times": 3, "total": 3, "confidence": "Likely"}, {"p1": "Griffin Swinburne", "p2": "Miles Sayer", "skill": 7.71, "times": 2, "total": 5, "confidence": "Possible"}, {"p1": "Collin Pope", "p2": "Jamie White", "skill": 5.76, "times": 2, "total": 2, "confidence": "Possible"}, {"p1": "Collin Pope", "p2": "Tyler Blanchet", "skill": 6.1, "times": 2, "total": 2, "confidence": "Possible"}, {"p1": "Kassidi Blanchet", "p2": "Tyler Blanchet", "skill": 4.67, "times": 2, "total": 2, "confidence": "Possible"}, {"p1": "Matt Enman", "p2": "Tye Cobb", "skill": 7.42, "times": 2, "total": 2, "confidence": "Possible"}], "Crane": [{"p1": "Jake Landeck", "p2": "Mike Meindertsma", "skill": 6.95, "times": 7, "total": 7, "confidence": "Very Likely"}, {"p1": "Peri Stevens", "p2": "Wendy Boutin", "skill": 4.49, "times": 7, "total": 7, "confidence": "Very Likely"}, {"p1": "Ryan Arsenault", "p2": "Sam Allen", "skill": 6.63, "times": 6, "total": 7, "confidence": "Very Likely"}, {"p1": "Jacob Roberge", "p2": "Matt Armstrong", "skill": 7.39, "times": 6, "total": 6, "confidence": "Very Likely"}, {"p1": "Alex Campbell", "p2": "Sean Pennington", "skill": 7.29, "times": 5, "total": 10, "confidence": "Very Likely"}, {"p1": "Dave Normand II", "p2": "Nate Eckhoff", "skill": 6.79, "times": 5, "total": 10, "confidence": "Very Likely"}, {"p1": "Jason Erhardt", "p2": "Mike Thompson", "skill": 7.07, "times": 5, "total": 8, "confidence": "Very Likely"}, {"p1": "Kevin Shields", "p2": "Mike Phaneuf", "skill": 6.76, "times": 3, "total": 3, "confidence": "Likely"}, {"p1": "Cam Gallant", "p2": "Jeff Lingenfelter", "skill": 7.24, "times": 2, "total": 2, "confidence": "Possible"}], "Burgess": [{"p1": "Ethan Adams", "p2": "Mike Allen", "skill": 6.92, "times": 5, "total": 9, "confidence": "Very Likely"}, {"p1": "Mike Hennen", "p2": "Nathaniel Cummings", "skill": 6.57, "times": 4, "total": 6, "confidence": "Very Likely"}, {"p1": "Tony DiMonte", "p2": "Troy Manni", "skill": 7.45, "times": 4, "total": 6, "confidence": "Very Likely"}, {"p1": "Katheryn Maloney", "p2": "Kristen Mills", "skill": 4.71, "times": 4, "total": 4, "confidence": "Very Likely"}, {"p1": "Garrett Gorton", "p2": "Zak Bernier", "skill": 7.34, "times": 2, "total": 5, "confidence": "Possible"}, {"p1": "Mike Hennen", "p2": "Ralph DiMonte", "skill": 6.39, "times": 2, "total": 5, "confidence": "Possible"}, {"p1": "Ben Hedderig", "p2": "Jim Barry", "skill": 6.54, "times": 2, "total": 4, "confidence": "Possible"}, {"p1": "Danny Maloney", "p2": "Kristen Mills", "skill": 4.94, "times": 2, "total": 4, "confidence": "Possible"}, {"p1": "Jake Fuller", "p2": "Joey Antosca", "skill": 6.71, "times": 2, "total": 4, "confidence": "Possible"}, {"p1": "Cody Richardson", "p2": "Todd Lapham", "skill": 5.76, "times": 2, "total": 2, "confidence": "Possible"}, {"p1": "Danny Maloney", "p2": "Jim Barry", "skill": 7.12, "times": 2, "total": 2, "confidence": "Possible"}, {"p1": "Matt Talbot", "p2": "Ralph DiMonte", "skill": 6.31, "times": 2, "total": 2, "confidence": "Possible"}]};
 function getCourseForEvent(homeTeamName, ev){
   if(homeTeamName === 'Wick'){
     if(ev && ev.wickCourse) return ev.wickCourse; // explicit dropdown choice - authoritative
@@ -5844,6 +5863,32 @@ async function renderCourseStatsTab(){
     ${body}
   `;
 }
+function renderDoublesTendencyCard(courseKey){
+  const team = COURSE_TO_OPPONENT_TEAM[courseKey];
+  const pairings = team ? DOUBLES_PAIRING_TENDENCY[team] : null;
+  if(!team || !pairings || !pairings.length) return '';
+
+  const confPill = (conf) => {
+    const cls = conf === 'Very Likely' ? 'pill-forest' : (conf === 'Likely' ? 'pill-orange' : 'pill-gray');
+    return `<span class="pill ${cls}">${esc(conf)}</span>`;
+  };
+
+  const rowHtml = (p) => `
+    <div style="display:flex; align-items:center; gap:12px; padding:8px 0; border-bottom:1px solid var(--chip-bg, #eee);">
+      <div style="font-size:17px; font-weight:800; color:var(--forest-dark); min-width:44px;">${p.skill != null ? p.skill.toFixed(2) : '—'}</div>
+      <div style="flex:1; min-width:0;">
+        <div style="font-weight:700; font-size:12.5px;">${esc(p.p1)} & ${esc(p.p2)} ${confPill(p.confidence)}</div>
+        <div style="font-size:11px; color:var(--ink-soft);">${p.times}x this season · ${p.total}x combined recent seasons</div>
+      </div>
+    </div>`;
+
+  return `
+    <div class="stats-section-header">${esc(team)}'s Likely Doubles Pairings</div>
+    <div class="card">
+      <div style="font-size:11px; color:var(--ink-soft); margin-bottom:8px;">Ranked by how often used in 2025-26. Skill = average Blended Individual Doubles Rank. Pairings used only once are left off — not enough history to call a tendency yet.</div>
+      ${pairings.map(rowHtml).join('')}
+    </div>`;
+}
 function renderDoublesCourseCard(courseKey, COURSE_STATS_DATASET, divisionPill){
   const c = COURSE_STATS_DATASET[courseKey];
   if(!c) return `<div class="card empty"><span class="em">🥏</span><p>No doubles stats for this course yet.</p></div>`;
@@ -5922,9 +5967,12 @@ function renderDoublesCourseCard(courseKey, COURSE_STATS_DATASET, divisionPill){
   }
 
 
+  const tendencyHtml = renderDoublesTendencyCard(courseKey);
+
   return `
     ${statCard}
     ${recentHtml}
+    ${tendencyHtml}
     ${detailToggle}
     ${detailListHtml}
     <div class="card" style="background:var(--chip-bg); border:none; box-shadow:none; margin-top:10px;">
