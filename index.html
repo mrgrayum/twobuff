@@ -364,17 +364,14 @@
   mark.rules-mark{background:#FCE29B; color:inherit; border-radius:3px; padding:0 2px;}
   .rules-updated-note{font-size:11.5px; color:var(--ink-soft); text-align:center; margin:18px 0 4px;}
 /* ---- Strategy chat widget ---- */
-#chatFab{
-  position:fixed; right:18px; bottom:18px; z-index:500;
-  width:56px; height:56px; border-radius:50%;
-  background:var(--orange); color:#fff; border:none;
-  font-size:24px; box-shadow:0 4px 14px rgba(0,0,0,.25);
-  display:none; align-items:center; justify-content:center; cursor:pointer;
-}
-#chatFab.show{ display:flex; }
+/* Trigger lives in the header now, next to Refresh/Settings (see .topbar markup) —
+   not floating over the bottom nav, so it can no longer sit on top of the Stats tab
+   on phones. Only visible in admin mode; .settings-gear supplies the icon-button look. */
+#chatFab{ display:none; }
+#chatFab.show{ display:inline-flex; align-items:center; }
 #chatPanel{
-  position:fixed; right:18px; bottom:86px; z-index:500;
-  width:min(380px, calc(100vw - 36px)); height:min(560px, calc(100vh - 140px));
+  position:fixed; top:64px; right:16px; z-index:500;
+  width:min(380px, calc(100vw - 32px)); height:min(520px, calc(100vh - 160px));
   background:#fff; border-radius:16px;
   box-shadow:0 8px 30px rgba(0,0,0,.3);
   display:none; flex-direction:column; overflow:hidden;
@@ -417,6 +414,7 @@
     <div style="display:flex; align-items:center; gap:14px;">
       <button class="settings-gear" onclick="hardRefresh()" aria-label="Refresh">🔄</button>
       <button class="settings-gear" onclick="openSettingsModal()" aria-label="Settings">⚙️</button>
+      <button class="settings-gear" id="chatFab" onclick="openChatPanel()" aria-label="Strategy assistant">🥏💬</button>
       <div class="admin-toggle">
         Admin
         <div class="switch" id="adminSwitch" onclick="toggleAdmin()"><div class="knob"></div></div>
@@ -1111,6 +1109,7 @@ function relockApp(){
   state.unlocked = false;
   state.adminMode = false;
   state.isSuperAdmin = false;
+  _chatPin = null; // don't keep reusing a PIN from a session that's now locked
   closeModal();
   const gate = document.getElementById('appGate');
   const main = document.getElementById('mainApp');
@@ -1262,6 +1261,7 @@ function toggleAdmin(){
   if(state.adminMode){
     state.adminMode = false;
     state.isSuperAdmin = false;
+    _chatPin = null; // don't keep reusing a PIN from a session that's now locked
     document.getElementById('adminSwitch').classList.remove('on');
     render();
     return;
@@ -1507,6 +1507,7 @@ async function saveNewRegularPin(){
   if(!/^\d{4}$/.test(p1)){ showToast('PIN must be exactly 4 digits'); return; }
   if(p1 !== p2){ showToast("PINs don't match"); return; }
   await storeSet('dg_admin_pin', p1, true);
+  _chatPin = null; // old cached PIN would just fail auth on the next chat message
   closeModal();
   showToast('Admin PIN updated');
 }
@@ -1559,6 +1560,7 @@ async function saveNewSuperPin(){
   if(!/^\d{4}$/.test(p1)){ showToast('PIN must be exactly 4 digits'); return; }
   if(p1 !== p2){ showToast("PINs don't match"); return; }
   await storeSet('dg_super_admin_pin', p1, true);
+  _chatPin = null; // old cached PIN would just fail auth on the next chat message
   closeModal();
   showToast('Super admin PIN updated');
 }
@@ -1679,6 +1681,13 @@ function appendChatBubble(role, text, pending){
 
 async function ensureChatPin(){
   if(_chatPin) return _chatPin;
+  if(state.adminMode){
+    // Already unlocked via the Admin toggle — reuse that PIN instead of asking again.
+    // (The chat button is only ever shown in admin mode, so this is the normal path.)
+    _chatPin = state.isSuperAdmin ? await getSuperAdminPin() : await getAdminPin();
+    return _chatPin;
+  }
+  // Fallback for the unlikely case this gets called outside admin mode.
   const entered = prompt("Enter your admin PIN to use the strategy assistant:");
   if(!entered) return null;
   _chatPin = entered.trim();
@@ -6476,8 +6485,8 @@ function clearRulesSearch(){
 /* ============================= GO ============================= */
 init();
 </script>
-<!-- Strategy chat widget: floating button + panel, shown only in admin mode -->
-<button id="chatFab" onclick="openChatPanel()" aria-label="Strategy assistant">🥏💬</button>
+<!-- Strategy chat panel: the trigger button now lives in the header (see .topbar
+     above), shown only in admin mode. -->
 <div id="chatPanel">
   <div id="chatPanelHead">
     <span>Matchup Assistant</span>
