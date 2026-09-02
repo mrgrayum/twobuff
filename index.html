@@ -2070,7 +2070,7 @@ function openEventModal(existingId){
               <div style="font-size:11px; color:var(--ink-soft); margin-top:6px;">Add opponent teams on the Match tab to pick from a saved roster instead of typing a name.</div>
             `}
           </div>
-          <div class="field" id="ev_wickCourseWrap" style="display:${isWickSelected ? 'block':'none'};">
+          <div class="field" id="ev_wickCourseWrap" style="display:${isWickSelected && eventVenue(ev)==='away' ? 'block':'none'};">
             <label>Which Wick course?</label>
             <select id="ev_wickCourse">
               <option value="">— Not sure yet —</option>
@@ -2082,9 +2082,9 @@ function openEventModal(existingId){
           <div class="field">
             <label>Venue</label>
             <div class="seg-row" id="ev_venueRow">
-              <div class="seg-btn ${eventVenue(ev)==='home' ? 'seg-sel':''}" data-v="home" onclick="selectSeg(this)">🏡 Home</div>
-              <div class="seg-btn ${eventVenue(ev)==='away' ? 'seg-sel':''}" data-v="away" onclick="selectSeg(this)">✈️ Away</div>
-              <div class="seg-btn ${eventVenue(ev)==='neutral' ? 'seg-sel':''}" data-v="neutral" onclick="selectSeg(this)">⚖️ Neutral</div>
+              <div class="seg-btn ${eventVenue(ev)==='home' ? 'seg-sel':''}" data-v="home" onclick="selectSeg(this); onVenueSegChange();">🏡 Home</div>
+              <div class="seg-btn ${eventVenue(ev)==='away' ? 'seg-sel':''}" data-v="away" onclick="selectSeg(this); onVenueSegChange();">✈️ Away</div>
+              <div class="seg-btn ${eventVenue(ev)==='neutral' ? 'seg-sel':''}" data-v="neutral" onclick="selectSeg(this); onVenueSegChange();">⚖️ Neutral</div>
             </div>
           </div>
           <div style="font-size:11.5px; color:var(--ink-soft); margin-top:-4px;">Home events show a ⭐ on the date tile and unlock the lunch spread sign-up list. Neutral means neither team hosts.</div>
@@ -2097,14 +2097,22 @@ function openEventModal(existingId){
       </div>`;
   });
 }
-function onOpponentSelectChange(){
+// Wick-course picker should only ever show when the opponent is Wick AND we're the
+// away team — if we're home (or it's a neutral site) we're not playing at either of
+// Wick's courses, so asking which one is just noise. Both the opponent dropdown and
+// the venue segmented control can flip this, so each handler re-checks both conditions.
+function updateWickCourseVisibility(){
   const sel = document.getElementById('ev_opponent_select');
   const wrap = document.getElementById('ev_wickCourseWrap');
-  if(!sel || !wrap) return;
-  const opt = sel.options[sel.selectedIndex];
+  const venueBtn = document.querySelector('#ev_venueRow .seg-sel');
+  if(!wrap) return;
+  const opt = sel ? sel.options[sel.selectedIndex] : null;
   const isWick = opt && opt.textContent.trim() === 'Wick';
-  wrap.style.display = isWick ? 'block' : 'none';
+  const venue = venueBtn ? venueBtn.dataset.v : 'away';
+  wrap.style.display = (isWick && venue === 'away') ? 'block' : 'none';
 }
+function onOpponentSelectChange(){ updateWickCourseVisibility(); }
+function onVenueSegChange(){ updateWickCourseVisibility(); }
 function closeModalIfBackdrop(e){
   if(e.target.classList.contains('overlay')) closeModal();
 }
