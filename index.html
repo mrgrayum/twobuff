@@ -499,6 +499,9 @@ const state = {
   armedDoublesTBPair: [],  // Matchups: Two Buff players being grouped (size depends on groupFormat)
   armedDoublesOppPair: [], // Matchups: opponent players being grouped (size depends on groupFormat)
   groupFormat: 'doubles',  // Matchups: 'singles' (1v1 stroke), 'doubles' (2v2), or 'triples' (3v3) — set via long-press
+  viewedTeamId: null, // Matchups: non-admin's local, unsaved team selection — separate from the
+                       // shared/persisted ms.currentTeamId so a regular user browsing teams never
+                       // changes what an admin is actively working on
   expandedMockupResultKey: null, // Matchups: which matchup's Won/Lost/quality section is expanded
   expandedMatchupKey: null, // Matchups: '<format>:<playerId>' — which player's card is open and in which section (singles/doubles)
   expandedMatchupHistoryId: null, // Matchups: which player's Season History dropdown is open inside their card
@@ -1736,6 +1739,7 @@ function setView(v){
   state.oppTeamsCache = null;
   state.seasonDatesCache = null;
   state.availabilityCache = null;
+  state.viewedTeamId = null;
   document.querySelectorAll('.navbtn').forEach(b=>b.classList.toggle('active', b.dataset.view === v));
   document.getElementById('viewRoot').innerHTML = '<div class="loading-dots">Loading…</div>';
   render();
@@ -4918,11 +4922,15 @@ async function renderMatchups(){
   ]);
   state.matchupStateCache = ms; // reused by tap handlers so every tap doesn't re-fetch over the network
   const activeTB = state.players.filter(p=>p.active !== false);
-  const currentTeam = teams.find(t=>t.id===ms.currentTeamId) || null;
+  // Admins browse/work on the shared, persisted team (ms.currentTeamId) — a non-admin tapping
+  // a team pill only changes their own local view (state.viewedTeamId, never saved), so it
+  // can't disrupt what an admin is actively working on or affect any other viewer.
+  const effectiveTeamId = state.adminMode ? ms.currentTeamId : state.viewedTeamId;
+  const currentTeam = teams.find(t=>t.id===effectiveTeamId) || null;
 
   const teamPills = `
     <div class="season-tabs">
-      ${teams.map(t=>`<button class="matchup-team-pill ${t.id===ms.currentTeamId?'active':''}" ${state.adminMode ? `onclick="selectMatchupTeam('${t.id}')"` : ''}>${esc(t.name)}</button>`).join('')}
+      ${teams.map(t=>`<button class="matchup-team-pill ${t.id===effectiveTeamId?'active':''}" onclick="${state.adminMode ? `selectMatchupTeam('${t.id}')` : `selectViewTeam('${t.id}')`}">${esc(t.name)}</button>`).join('')}
     </div>`;
 
   if(!currentTeam){
@@ -5321,6 +5329,12 @@ async function selectMatchupTeam(teamId){
   state.matchupStateCache = ms;
   render(); // instant — the cache already reflects the change
   saveMatchupState(ms).catch(err=>console.error('Matchup save failed', err));
+}
+// Non-admin equivalent of selectMatchupTeam — purely local (state.viewedTeamId), never written
+// to Firestore, so a regular user browsing teams can't change what admins see or work on.
+function selectViewTeam(teamId){
+  state.viewedTeamId = (state.viewedTeamId === teamId) ? null : teamId;
+  render();
 }
 function toggleMockupResult(key){
   state.expandedMockupResultKey = (state.expandedMockupResultKey === key) ? null : key;
