@@ -555,12 +555,18 @@ function availabilityLinkFor(slug){
 function availabilityNudgeMessage(firstName, slug){
   return 'Hey ' + firstName + ', take a minute to provide your availability on our 2Buff team app for this season. ' + availabilityLinkFor(slug);
 }
-// Fallback for players with no phone on file: copies the invite text so it can be pasted into
-// any messaging app instead of trying (and failing) to open an sms: link.
+// sms: links only do anything useful on a phone (desktop OSes have no default handler for
+// them, so the link just silently fails there) — used to decide whether to try opening one
+// or fall straight to copying the message instead.
+function isMobileDevice(){
+  return /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+}
+// Fallback used whenever we can't (or shouldn't) try an sms: link — no phone on file, or on a
+// desktop where sms: links don't do anything — copies the invite text for pasting anywhere.
 async function copyAvailabilityMessage(text){
   try{
     await navigator.clipboard.writeText(text);
-    showToast('No phone on file — message copied, paste it anywhere');
+    showToast('Message copied — paste it into a text, email, or DM');
     return;
   }catch(e){ /* Clipboard API unavailable — fall back below */ }
   try{
@@ -572,9 +578,9 @@ async function copyAvailabilityMessage(text){
     ta.select();
     document.execCommand('copy');
     document.body.removeChild(ta);
-    showToast('No phone on file — message copied, paste it anywhere');
+    showToast('Message copied — paste it into a text, email, or DM');
   }catch(e){
-    showToast('No phone on file, and copying failed — try a different browser');
+    showToast('Copying failed — try a different browser');
   }
 }
 // Attribute-safe wrapper for inline onclick handlers: takes only a slug (never free text like
@@ -2633,7 +2639,7 @@ async function renderManageAvailability(){
     const slug = slugForPlayer(p.id);
     const rec = availability[slug];
     const s = rec && rec.responses && rec.responses[d.date];
-    const nudge = s ? '' : p.phone
+    const nudge = s ? '' : (p.phone && isMobileDevice())
       ? `<a href="sms:${cleanPhoneHref(p.phone)}?&body=${encodeURIComponent(availabilityNudgeMessage(p.name.split(' ')[0], slug))}" onclick="event.stopPropagation()" style="text-decoration:none; margin-left:6px;">💬</a>`
       : `<span onclick="event.stopPropagation(); copyAvailabilityMessageForSlug('${slug}')" style="cursor:pointer; margin-left:6px;">💬</span>`;
     return `
@@ -2709,7 +2715,7 @@ function textAvailabilityLink(){
   if(!p) return;
   const slug = slugForPlayer(p.id);
   const body = availabilityNudgeMessage(p.name.split(' ')[0], slug);
-  if(p.phone){
+  if(p.phone && isMobileDevice()){
     window.location.href = 'sms:' + cleanPhoneHref(p.phone) + '?&body=' + encodeURIComponent(body);
   } else {
     copyAvailabilityMessage(body);
