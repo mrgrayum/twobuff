@@ -1919,14 +1919,15 @@ async function renderHome(){
             <div class="mon">${d.mon}</div><div class="day">${d.day}</div>
           </div>
         </div>
+        ${state.adminMode ? `
         <div class="stat-grid">
           <div class="stat-box"><div class="num" style="color:var(--forest);">${counts.confirmed}</div><div class="lbl">Confirmed</div></div>
           <div class="stat-box"><div class="num" style="color:var(--red);">${counts.out}</div><div class="lbl">Out</div></div>
           <div class="stat-box"><div class="num" style="color:var(--gold);">${counts.waiting}</div><div class="lbl">Waiting</div></div>
         </div>
         <div style="margin-top:14px;">
-          <button class="btn btn-primary" onclick="openEvent('${next.id}')">View &amp; RSVP →</button>
-        </div>
+          <button class="btn btn-primary" onclick="openEvent('${next.id}')">View or Edit →</button>
+        </div>` : ''}
       </div>`;
   } else {
     nextHtml = `<div class="card empty"><span class="em">🥏</span><p>No upcoming events on the schedule yet.</p>${state.adminMode ? '<button class="btn btn-orange" onclick="openEventModal()">+ Add an Event</button>' : ''}</div>`;
@@ -2080,15 +2081,16 @@ async function renderEvents(){
             <div class="mon">${d.mon}</div><div class="day">${d.day}</div>
           </div>
         </div>
+        ${state.adminMode ? `
         <div class="stat-grid">
           <div class="stat-box"><div class="num" style="color:var(--forest);">${counts.confirmed}</div><div class="lbl">Confirmed</div></div>
           <div class="stat-box"><div class="num" style="color:var(--red);">${counts.out}</div><div class="lbl">Out</div></div>
           <div class="stat-box"><div class="num" style="color:var(--gold);">${counts.waiting}</div><div class="lbl">Waiting</div></div>
         </div>
         <div style="margin-top:14px; display:flex; gap:8px;">
-          <button class="btn btn-primary" style="flex:1;" onclick="openEvent('${e.id}')">View &amp; RSVP →</button>
+          <button class="btn btn-primary" style="flex:1;" onclick="openEvent('${e.id}')">View or Edit →</button>
           <button class="icon-btn" onclick="event.stopPropagation(); openAddToCalendarModal('${e.id}')" aria-label="Add to calendar">📅</button>
-        </div>
+        </div>` : ''}
       </div>`;
   }
 
@@ -2283,7 +2285,37 @@ function closeModalIfBackdrop(e){
 }
 function closeModal(){ document.getElementById('modalRoot').innerHTML = ''; }
 
+// Guards against silently turning an already-dated event into a TBD placeholder: if the
+// event currently has a real date and the form's date field has been cleared, confirm first
+// rather than saving straight through.
 async function saveEventFromModal(existingId){
+  const date = document.getElementById('ev_date').value;
+  if(existingId){
+    const existing = state.events.find(e=>e.id===existingId);
+    if(existing && existing.date && !date){
+      openConfirmClearEventDateModal(existingId);
+      return;
+    }
+  }
+  await saveEventFromModalConfirmed(existingId);
+}
+function openConfirmClearEventDateModal(existingId){
+  const modal = document.getElementById('modalRoot');
+  modal.innerHTML = `
+    <div class="overlay" onclick="closeModalIfBackdrop(event)">
+      <div class="sheet" onclick="event.stopPropagation()">
+        <h3>Remove this event's date?</h3>
+        <div style="font-size:13.5px; color:var(--ink-soft); line-height:1.6; margin-bottom:16px;">
+          This event already has a date set. Saving with the date field blank turns it into a "Date TBD" placeholder and takes it out of the scheduled list — you'd have to re-enter the date yourself to undo this.
+        </div>
+        <div class="btn-row">
+          <button class="btn btn-ghost" onclick="openEventModal('${existingId}')">← Keep Editing</button>
+          <button class="btn btn-primary" style="background:var(--red); border-color:var(--red);" onclick="saveEventFromModalConfirmed('${existingId}')">Remove Date</button>
+        </div>
+      </div>
+    </div>`;
+}
+async function saveEventFromModalConfirmed(existingId){
   const date = document.getElementById('ev_date').value;
   const time = document.getElementById('ev_time').value;
   const season = document.getElementById('ev_season').value.trim() || inferSeason(date);
@@ -2447,6 +2479,13 @@ async function addToGoogleCalendar(eventId){
 async function renderEventDetail(eventId){
   const ev = state.events.find(e=>e.id===eventId);
   if(!ev) return `<div class="empty"><p>Event not found.</p></div>`;
+  // RSVP is admin-managed now — this whole page is really an RSVP/edit screen, so it's
+  // admin-only. Non-admins never see a button that leads here; this is just a safety net.
+  if(!state.adminMode){
+    return `
+      <button class="btn btn-ghost btn-sm" style="width:auto; margin-bottom:12px;" onclick="setView('events')">← All Events</button>
+      <div class="card empty"><span class="em">🔒</span><p>Event details and RSVP are managed by team admins.</p></div>`;
+  }
   const [rsvp, teamResult, oppTeams] = await Promise.all([
     loadRsvp(eventId),
     computeTeamResult(eventId),
@@ -6003,7 +6042,7 @@ async function performDeleteTeam(teamId){
 }
 
 async function renderStats(){
-  if(!state.statsTab) state.statsTab = 'team';
+  if(!state.statsTab) state.statsTab = 'player';
   const tabsHtml = `
     <div class="stats-tabs">
       <div class="stats-tab ${state.statsTab==='team'?'active':''}" onclick="setStatsTab('team')">🏆 Team</div>
