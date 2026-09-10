@@ -2721,14 +2721,21 @@ async function renderManageAvailability(){
   const [dates, availability] = await Promise.all([loadSeasonDates(), loadAvailability()]);
   const roster = state.players.filter(p=>p.active!==false).sort((a,b)=>a.name.localeCompare(b.name));
 
+  // Minimum turnout for a full slate: 16 men + 2 women marked Available.
+  const MIN_MEN_AVAILABLE = 16;
+  const MIN_WOMEN_AVAILABLE = 2;
   const tallyFor = (d) => {
-    let available=0, maybe=0, cant=0;
+    let available=0, maybe=0, cant=0, availableMen=0, availableWomen=0;
     roster.forEach(p=>{
       const status = (availability[slugForPlayer(p.id)] || {}).responses;
       const s = status && status[d.date];
-      if(s==='available') available++; else if(s==='maybe') maybe++; else if(s==='cant') cant++;
+      if(s==='available'){
+        available++;
+        if(p.gender==='F') availableWomen++; else availableMen++;
+      } else if(s==='maybe') maybe++; else if(s==='cant') cant++;
     });
-    return { available, maybe, cant };
+    const meetsThreshold = availableMen >= MIN_MEN_AVAILABLE && availableWomen >= MIN_WOMEN_AVAILABLE;
+    return { available, maybe, cant, availableMen, availableWomen, meetsThreshold };
   };
   const rosterRowsFor = (d) => roster.map(p => {
     const slug = slugForPlayer(p.id);
@@ -2752,8 +2759,13 @@ async function renderManageAvailability(){
     const t = tallyFor(d);
     const expanded = state.expandedAvailabilityDate === d.date;
     const parts = formatSeasonDateParts(d.date);
+    // Green once enough players have confirmed Available (16 men + 2 women); red otherwise,
+    // so an admin can scan the whole list and immediately spot which dates still need players.
+    const statusStyle = t.meetsThreshold
+      ? 'background:#DCEFE3; border-color:var(--forest);'
+      : 'background:#F5D9D6; border-color:var(--red);';
     return `
-      <div class="card" style="flex:1; padding:12px 8px; margin-bottom:0; cursor:pointer; ${expanded ? 'border-color:var(--forest);' : ''}" onclick="toggleExpandAvailabilityDate('${d.date}')">
+      <div class="card" style="flex:1; padding:12px 8px; margin-bottom:0; cursor:pointer; ${statusStyle} ${expanded ? 'box-shadow:0 0 0 3px rgba(18,41,77,0.3);' : ''}" onclick="toggleExpandAvailabilityDate('${d.date}')">
         <div style="text-align:center; margin-bottom:8px; padding-bottom:6px; border-bottom:2px solid var(--line);">
           <div style="font-size:17px; font-weight:900; color:var(--forest-dark); line-height:1.15;">${parts.weekday}</div>
           <div style="font-size:11px; font-weight:700; color:var(--ink-soft); margin-top:2px;">${parts.monthDay}</div>
