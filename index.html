@@ -518,6 +518,11 @@ function formatSeasonDateParts(iso){
   const d = new Date(iso + 'T00:00:00');
   return { weekday: WEEKDAYS_FULL[d.getDay()], monthDay: MONTHS[d.getMonth()] + ' ' + d.getDate() };
 }
+// Plain formatted date with no weekday — e.g. "Oct 3, 2026" — for contexts like the xlsx
+// export where the day-of-week name isn't needed and just adds clutter to a column header.
+function formatSeasonDateForExport(iso){
+  return formatSeasonDateParts(iso).monthDay + ', ' + iso.slice(0,4);
+}
 
 function uid(prefix){ return prefix + '_' + Date.now().toString(36) + Math.random().toString(36).slice(2,7); }
 // Lowercase, hyphenated identifier for a player name (e.g. "Harry Chace" -> "harry-chace").
@@ -2012,7 +2017,11 @@ async function renderEvents(){
   }
   const season = state.selectedSeason;
   const t = todayISO();
-  const inSeason = state.events.filter(e=>effectiveSeason(e)===season).sort((a,b)=>a.date.localeCompare(b.date));
+  // Events saved as a placeholder with no date yet — shown in their own section, independent
+  // of the season tabs (since there's no date to place them in a season by), rather than mixed
+  // into the date-sorted upcoming/past lists below.
+  const tbdEvents = state.events.filter(e=>!e.date);
+  const inSeason = state.events.filter(e=>e.date && effectiveSeason(e)===season).sort((a,b)=>a.date.localeCompare(b.date));
   const upcoming = inSeason.filter(e=>e.date >= t);
   const past = inSeason.filter(e=>e.date < t).reverse(); // most recently past first
 
@@ -2026,7 +2035,7 @@ async function renderEvents(){
       `).join('')}
     </div>`;
 
-  const needsOppTeams = inSeason.some(e=>e.opponentTeamId);
+  const needsOppTeams = inSeason.some(e=>e.opponentTeamId) || tbdEvents.some(e=>e.opponentTeamId);
   const [oppTeamsForList, allRsvp, allStats] = await Promise.all([
     needsOppTeams ? loadOppTeams() : Promise.resolve([]),
     getAllRsvpData(),
@@ -2105,9 +2114,28 @@ async function renderEvents(){
       ${pastCards}`;
   }
 
+  // TBD placeholder events: no RSVP/matchups/stats yet since there's no real date to record
+  // any of that against — just a name/opponent placeholder with an admin-only way to date it.
+  function tbdCardFor(e){
+    const opponentName = resolveOpponentName(e);
+    return `
+      <div class="card" style="border-style:dashed; border-color:var(--orange);">
+        <div class="page-sub" style="margin-bottom:4px;">📌 DATE NOT SET YET</div>
+        <h3 style="font-size:18px;">${esc(e.name)}</h3>
+        ${opponentName ? `<div style="color:var(--ink-soft); font-size:13px; margin-top:4px;">vs ${esc(opponentName)}</div>` : ''}
+        ${state.adminMode
+          ? `<button class="btn btn-outline" style="width:100%; margin-top:12px;" onclick="openEventModal('${e.id}')">📅 Add Date</button>`
+          : `<div style="font-size:12.5px; color:var(--ink-soft); margin-top:10px;">Check back once a date is set.</div>`}
+      </div>`;
+  }
+  const tbdHtml = tbdEvents.length
+    ? `<div class="section-label" style="margin-top:0;">📌 Date Not Set Yet</div>${tbdEvents.map(tbdCardFor).join('')}`
+    : '';
+
   return `
     <div class="page-title">Events</div>
     <div class="page-sub">Tap an event to RSVP and see who's in.</div>
+    ${tbdHtml}
     ${tabsHtml}
     ${state.adminMode ? `<div class="fab-row"><button class="btn btn-orange btn-sm" onclick="openEventModal()">+ Add Event</button></div>` : ''}
     ${upcomingHtml}
@@ -2177,6 +2205,7 @@ function openEventModal(existingId){
           <div class="field">
             <label>Date</label>
             <input id="ev_date" type="date" value="${ev ? ev.date : ''}">
+            <div style="font-size:11.5px; color:var(--ink-soft); margin-top:4px;">Leave blank to save this as a placeholder for an event you know is happening but doesn't have a date yet — add the date later by editing it.</div>
           </div>
           <div class="field">
             <label>Start Time</label>
@@ -2274,7 +2303,6 @@ async function saveEventFromModal(existingId){
     const customInput = document.getElementById('ev_opponent_custom');
     if(customInput) opponentName = customInput.value.trim();
   }
-  if(!date){ showToast('Date is required'); return; }
   const wickCourseSelect = document.getElementById('ev_wickCourse');
   const wickCourse = wickCourseSelect ? wickCourseSelect.value : '';
   // The title is derived from venue + opponent, not typed in. Build it against the
@@ -4831,7 +4859,9 @@ async function renderMatchups(){
   }
 
   // ---- Event linking: which real event (if any) results get recorded against ----
-  const linkedEvents = state.events.filter(e=>e.opponentTeamId === currentTeam.id).sort((a,b)=>b.date.localeCompare(a.date));
+  // Excludes TBD (dateless) placeholder events — matchups/stats aren't recordable against
+  // an event that doesn't have a real date yet.
+  const linkedEvents = state.events.filter(e=>e.date && e.opponentTeamId === currentTeam.id).sort((a,b)=>b.date.localeCompare(a.date));
   const selectedEventId = ms.eventIdByTeam[currentTeam.id] || null;
   const selectedEvent = selectedEventId ? state.events.find(e=>e.id===selectedEventId) : null;
   const eventStats = selectedEventId ? await loadStats(selectedEventId) : null;
@@ -6689,7 +6719,7 @@ async function exportAvailabilityXlsx(){
       return rec && rec.responses && rec.responses[d.date];
     };
 
-    const dateHeader = dates.map(d => { const parts = formatSeasonDateParts(d.date); return parts.weekday + ' ' + parts.monthDay; });
+    const dateHeader = dates.map(d => formatSeasonDateForExport(d.date));
     const matrix = [['Player', ...dateHeader]];
     roster.forEach(p => {
       matrix.push([p.name, ...dates.map(d => { const s = statusFor(p, d); return s ? STATUS_LABEL[s] : ''; })]);
