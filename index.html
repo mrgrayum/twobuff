@@ -406,7 +406,6 @@
 
   <div class="bottomnav">
     <button class="navbtn" data-view="home" onclick="setView('home')"><span class="ic">🏠</span>Home</button>
-    <button class="navbtn" data-view="events" onclick="setView('events')"><span class="ic">📅</span>Events</button>
     <button class="navbtn" data-view="matchups" onclick="setView('matchups')"><span class="ic">🎯</span>Matchups</button>
     <button class="navbtn" data-view="stats" onclick="setView('stats')"><span class="ic">🏆</span>Stats</button>
     <button class="navbtn" data-view="scheduling" onclick="openSchedulingSheet()"><span class="ic">📆</span>Scheduling</button>
@@ -542,6 +541,12 @@ function playerNameForSlug(slug){
   if(p) return p.name;
   const rec = state.availabilityCache && state.availabilityCache[slug];
   return (rec && rec.playerName) || 'Player';
+}
+function availabilityLinkFor(slug){
+  return 'https://mrgrayum.github.io/twobuff/?player=' + slug;
+}
+function availabilityNudgeMessage(firstName, slug){
+  return 'Hey ' + firstName + ', take a minute to provide your availability on our 2Buff team app for this season. ' + availabilityLinkFor(slug);
 }
 function showToast(msg){
   const t = document.getElementById('toast');
@@ -806,6 +811,29 @@ async function loadSeasonDates(){
 async function addSeasonDate(date, label){
   await _db.collection('season_dates').doc(date).set({ date, label, source: 'admin-added' });
   state.seasonDatesCache = null;
+}
+// Groups a chronologically-sorted season_dates list into weekend rows: each entry is
+// {sat, sun, other} where sat/sun are the matching Saturday/Sunday date objects for that
+// weekend (paired by anchoring on the Saturday, computed from the Sunday if needed), and
+// `other` holds any date that doesn't fall on a Sat/Sun (e.g. an odd ad-hoc admin-added date),
+// which renders as its own standalone row rather than being paired with anything.
+function groupDatesByWeekend(dates){
+  const groups = {};
+  const order = [];
+  const isoOf = (dt) => dt.getFullYear() + '-' + String(dt.getMonth()+1).padStart(2,'0') + '-' + String(dt.getDate()).padStart(2,'0');
+  dates.forEach(d => {
+    const dt = new Date(d.date + 'T00:00:00');
+    const dow = dt.getDay(); // 0 = Sun, 6 = Sat
+    let key;
+    if(dow === 6) key = d.date;
+    else if(dow === 0){ const sat = new Date(dt); sat.setDate(sat.getDate() - 1); key = isoOf(sat); }
+    else key = d.date;
+    if(!groups[key]){ groups[key] = { sat: null, sun: null, other: [] }; order.push(key); }
+    if(dow === 6) groups[key].sat = d;
+    else if(dow === 0) groups[key].sun = d;
+    else groups[key].other.push(d);
+  });
+  return order.map(k => groups[k]);
 }
 async function loadAvailability(){
   if(state.availabilityCache) return state.availabilityCache;
@@ -1201,6 +1229,9 @@ function relockApp(){
 async function init(){
   await Promise.all([loadPlayers(), loadEvents()]);
   state.loaded = true;
+  // A ?player=<slug> link (sent via text) should land directly on the availability picker,
+  // not on Home — renderAvailability() itself reads the query param for identity resolution.
+  if(new URLSearchParams(location.search).get('player')) state.view = 'availability';
   render();
   if(applyTrustedUnlock()){
     // A returning admin's trust window is still valid — make sure the data is current.
@@ -2498,23 +2529,28 @@ async function renderAvailability(){
   const playerName = (rec && rec.playerName) || playerNameForSlug(slug);
   const responses = (rec && rec.responses) || {};
 
-  const rows = dates.map(d => {
+  const dayCard = (d) => {
+    if(!d) return `<div style="flex:1;"></div>`;
     const status = responses[d.date];
     return `
-      <div class="card" style="margin-bottom:10px;">
-        <div style="font-weight:800; font-size:13.5px; margin-bottom:8px;">${esc(d.label)}</div>
-        <div class="rsvp-grid">
-          <div class="rsvp-btn ${status==='available'?'sel-confirmed':''}" onclick="setAvailabilityStatus('${d.date}','available')"><span class="em">✅</span>Available</div>
-          <div class="rsvp-btn ${status==='maybe'?'sel-maybe':''}" onclick="setAvailabilityStatus('${d.date}','maybe')"><span class="em">🤔</span>Maybe</div>
-          <div class="rsvp-btn ${status==='cant'?'sel-declined':''}" onclick="setAvailabilityStatus('${d.date}','cant')"><span class="em">❌</span>Can't</div>
+      <div class="card" style="flex:1; padding:10px; margin-bottom:0;">
+        <div style="font-size:12px; font-weight:800; margin-bottom:8px; text-align:center;">${esc(d.label)}</div>
+        <div class="rsvp-grid" style="gap:4px;">
+          <div class="rsvp-btn ${status==='available'?'sel-confirmed':''}" style="padding:8px 2px; font-size:16px;" onclick="setAvailabilityStatus('${d.date}','available')">✅</div>
+          <div class="rsvp-btn ${status==='maybe'?'sel-maybe':''}" style="padding:8px 2px; font-size:16px;" onclick="setAvailabilityStatus('${d.date}','maybe')">🤔</div>
+          <div class="rsvp-btn ${status==='cant'?'sel-declined':''}" style="padding:8px 2px; font-size:16px;" onclick="setAvailabilityStatus('${d.date}','cant')">❌</div>
         </div>
       </div>`;
+  };
+  const rows = groupDatesByWeekend(dates).map(g => {
+    if(g.other.length) return `<div style="margin-bottom:10px;">${g.other.map(dayCard).join('')}</div>`;
+    return `<div style="display:flex; gap:8px; margin-bottom:10px;">${dayCard(g.sat)}${dayCard(g.sun)}</div>`;
   }).join('');
 
   return `
     <button class="btn btn-ghost btn-sm" style="width:auto; margin-bottom:12px;" onclick="setView('home')">← Back to Home</button>
     <div class="page-title">My Availability</div>
-    <div class="page-sub">Hey ${esc(playerName.split(' ')[0])} — tap a status for each date below. Saved instantly.</div>
+    <div class="page-sub">Hey ${esc(playerName.split(' ')[0])} — tap a status for each date below. Saved instantly. ✅ Available · 🤔 Maybe · ❌ Can't</div>
     ${dates.length ? rows : '<div class="card empty"><span class="em">📆</span><p>No season dates yet — check back soon.</p></div>'}`;
 }
 function selectAvailabilityPlayer(playerId){
@@ -2541,37 +2577,48 @@ async function renderManageAvailability(){
   const [dates, availability] = await Promise.all([loadSeasonDates(), loadAvailability()]);
   const roster = state.players.filter(p=>p.active!==false).sort((a,b)=>a.name.localeCompare(b.name));
 
-  const dateRows = dates.map(d => {
+  const tallyFor = (d) => {
     let available=0, maybe=0, cant=0;
     roster.forEach(p=>{
       const status = (availability[slugForPlayer(p.id)] || {}).responses;
       const s = status && status[d.date];
       if(s==='available') available++; else if(s==='maybe') maybe++; else if(s==='cant') cant++;
     });
-    const expanded = state.expandedAvailabilityDate === d.date;
-    const rosterRows = !expanded ? '' : roster.map(p => {
-      const slug = slugForPlayer(p.id);
-      const rec = availability[slug];
-      const s = rec && rec.responses && rec.responses[d.date];
-      const nudge = (!s && p.phone) ? `<a href="sms:${cleanPhoneHref(p.phone)}?&body=${encodeURIComponent("Hey " + p.name.split(' ')[0] + ", please fill out your availability: https://mrgrayum.github.io/twobuff/?player=" + slug)}" onclick="event.stopPropagation()" style="text-decoration:none; margin-left:6px;">💬</a>` : '';
-      return `
-        <div style="display:flex; align-items:center; justify-content:space-between; padding:8px 0; border-bottom:1px solid var(--line);" onclick="event.stopPropagation()">
-          <div style="font-size:13px; font-weight:700;">${esc(p.name)}${nudge}</div>
-          <div class="rsvp-grid" style="flex:0 0 auto; width:auto; gap:4px;">
-            <div class="rsvp-btn ${s==='available'?'sel-confirmed':''}" style="padding:4px 8px; font-size:11px;" onclick="setAdminAvailabilityStatus('${slug}','${d.date}','available')">✅</div>
-            <div class="rsvp-btn ${s==='maybe'?'sel-maybe':''}" style="padding:4px 8px; font-size:11px;" onclick="setAdminAvailabilityStatus('${slug}','${d.date}','maybe')">🤔</div>
-            <div class="rsvp-btn ${s==='cant'?'sel-declined':''}" style="padding:4px 8px; font-size:11px;" onclick="setAdminAvailabilityStatus('${slug}','${d.date}','cant')">❌</div>
-          </div>
-        </div>`;
-    }).join('');
+    return { available, maybe, cant };
+  };
+  const rosterRowsFor = (d) => roster.map(p => {
+    const slug = slugForPlayer(p.id);
+    const rec = availability[slug];
+    const s = rec && rec.responses && rec.responses[d.date];
+    const nudge = (!s && p.phone) ? `<a href="sms:${cleanPhoneHref(p.phone)}?&body=${encodeURIComponent(availabilityNudgeMessage(p.name.split(' ')[0], slug))}" onclick="event.stopPropagation()" style="text-decoration:none; margin-left:6px;">💬</a>` : '';
     return `
-      <div class="card" style="margin-bottom:10px; cursor:pointer;" onclick="toggleExpandAvailabilityDate('${d.date}')">
-        <div style="display:flex; align-items:center; justify-content:space-between;">
-          <div style="font-weight:800; font-size:13.5px;">${esc(d.label)}</div>
-          <div style="font-size:12px; font-weight:700; color:var(--ink-soft);">✅ ${available} &nbsp; 🤔 ${maybe} &nbsp; ❌ ${cant}</div>
+      <div style="display:flex; align-items:center; justify-content:space-between; padding:8px 0; border-bottom:1px solid var(--line);">
+        <div style="font-size:13px; font-weight:700;">${esc(p.name)}${nudge}</div>
+        <div class="rsvp-grid" style="flex:0 0 auto; width:auto; gap:4px;">
+          <div class="rsvp-btn ${s==='available'?'sel-confirmed':''}" style="padding:4px 8px; font-size:11px;" onclick="setAdminAvailabilityStatus('${slug}','${d.date}','available')">✅</div>
+          <div class="rsvp-btn ${s==='maybe'?'sel-maybe':''}" style="padding:4px 8px; font-size:11px;" onclick="setAdminAvailabilityStatus('${slug}','${d.date}','maybe')">🤔</div>
+          <div class="rsvp-btn ${s==='cant'?'sel-declined':''}" style="padding:4px 8px; font-size:11px;" onclick="setAdminAvailabilityStatus('${slug}','${d.date}','cant')">❌</div>
         </div>
-        ${expanded ? `<div style="margin-top:10px;">${rosterRows}</div>` : ''}
       </div>`;
+  }).join('');
+  const tallyCard = (d) => {
+    if(!d) return `<div style="flex:1;"></div>`;
+    const t = tallyFor(d);
+    const expanded = state.expandedAvailabilityDate === d.date;
+    return `
+      <div class="card" style="flex:1; padding:10px; margin-bottom:0; cursor:pointer; ${expanded ? 'border-color:var(--forest);' : ''}" onclick="toggleExpandAvailabilityDate('${d.date}')">
+        <div style="font-size:12px; font-weight:800; margin-bottom:4px; text-align:center;">${esc(d.label)}</div>
+        <div style="font-size:11px; font-weight:700; color:var(--ink-soft); text-align:center;">✅${t.available} &nbsp;🤔${t.maybe} &nbsp;❌${t.cant}</div>
+      </div>`;
+  };
+  const dateRows = groupDatesByWeekend(dates).map(g => {
+    const days = g.other.length ? g.other : [g.sat, g.sun].filter(Boolean);
+    const pairHtml = g.other.length
+      ? `<div style="margin-bottom:10px;">${tallyCard(g.other[0])}</div>`
+      : `<div style="display:flex; gap:8px; margin-bottom:10px;">${tallyCard(g.sat)}${tallyCard(g.sun)}</div>`;
+    const expandedDate = days.find(d => state.expandedAvailabilityDate === d.date);
+    const expandedHtml = !expandedDate ? '' : `<div class="card" style="margin:-4px 0 10px;">${rosterRowsFor(expandedDate)}</div>`;
+    return pairHtml + expandedHtml;
   }).join('');
 
   const contactOptions = roster.map(p=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('');
@@ -2612,7 +2659,7 @@ function textAvailabilityLink(){
   const p = state.players.find(x=>x.id===sel.value);
   if(!p || !p.phone){ showToast('That player has no phone number on file'); return; }
   const slug = slugForPlayer(p.id);
-  const body = 'Hey ' + p.name.split(' ')[0] + ', please fill out your availability: https://mrgrayum.github.io/twobuff/?player=' + slug;
+  const body = availabilityNudgeMessage(p.name.split(' ')[0], slug);
   window.location.href = 'sms:' + cleanPhoneHref(p.phone) + '?&body=' + encodeURIComponent(body);
 }
 
