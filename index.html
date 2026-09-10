@@ -815,18 +815,20 @@ async function loadAvailability(){
   state.availabilityCache = map;
   return map;
 }
-// Single write path for both the player's own taps and admin overrides. The dot-path key
-// ('responses.'+date) is required so Firestore merges just that one date into the existing
-// responses map — a plain {responses:{[date]:status}} payload would replace the WHOLE map
-// and silently wipe every other date's response on every tap.
+// Single write path for both the player's own taps and admin overrides. Verified live against
+// this SDK: set(..., {merge:true}) with a plain nested {responses:{[date]:status}} object DOES
+// deep-merge into the existing responses map (it does not replace the whole map), and a nested
+// FieldValue.delete() correctly clears just that one date. A dotted string key
+// ('responses.'+date) does NOT do this for set() the way it does for update() — it was tried
+// here first and confirmed (via live data) to create a literal top-level field named
+// "responses.<date>" instead of nesting into responses, which is why it must not be used.
 async function saveAvailability(playerSlug, playerName, date, status){
   if(state.availabilityCache){
     const rec = state.availabilityCache[playerSlug] || (state.availabilityCache[playerSlug] = { playerName, responses: {} });
     rec.playerName = playerName;
     if(status) rec.responses[date] = status; else delete rec.responses[date];
   }
-  const payload = { playerName };
-  payload['responses.' + date] = status || firebase.firestore.FieldValue.delete();
+  const payload = { playerName, responses: { [date]: status || firebase.firestore.FieldValue.delete() } };
   await _db.collection('availability').doc(playerSlug).set(payload, { merge: true });
 }
 
@@ -2556,9 +2558,9 @@ async function renderManageAvailability(){
         <div style="display:flex; align-items:center; justify-content:space-between; padding:8px 0; border-bottom:1px solid var(--line);" onclick="event.stopPropagation()">
           <div style="font-size:13px; font-weight:700;">${esc(p.name)}${nudge}</div>
           <div class="rsvp-grid" style="flex:0 0 auto; width:auto; gap:4px;">
-            <div class="rsvp-btn ${s==='available'?'sel-confirmed':''}" style="padding:4px 8px; font-size:11px;" onclick="setAdminAvailabilityStatus('${slug}',${JSON.stringify(p.name)},'${d.date}','available')">✅</div>
-            <div class="rsvp-btn ${s==='maybe'?'sel-maybe':''}" style="padding:4px 8px; font-size:11px;" onclick="setAdminAvailabilityStatus('${slug}',${JSON.stringify(p.name)},'${d.date}','maybe')">🤔</div>
-            <div class="rsvp-btn ${s==='cant'?'sel-declined':''}" style="padding:4px 8px; font-size:11px;" onclick="setAdminAvailabilityStatus('${slug}',${JSON.stringify(p.name)},'${d.date}','cant')">❌</div>
+            <div class="rsvp-btn ${s==='available'?'sel-confirmed':''}" style="padding:4px 8px; font-size:11px;" onclick="setAdminAvailabilityStatus('${slug}','${d.date}','available')">✅</div>
+            <div class="rsvp-btn ${s==='maybe'?'sel-maybe':''}" style="padding:4px 8px; font-size:11px;" onclick="setAdminAvailabilityStatus('${slug}','${d.date}','maybe')">🤔</div>
+            <div class="rsvp-btn ${s==='cant'?'sel-declined':''}" style="padding:4px 8px; font-size:11px;" onclick="setAdminAvailabilityStatus('${slug}','${d.date}','cant')">❌</div>
           </div>
         </div>`;
     }).join('');
@@ -2596,7 +2598,8 @@ function toggleExpandAvailabilityDate(date){
   state.expandedAvailabilityDate = (state.expandedAvailabilityDate === date) ? null : date;
   render();
 }
-function setAdminAvailabilityStatus(slug, playerName, date, status){
+function setAdminAvailabilityStatus(slug, date, status){
+  const playerName = playerNameForSlug(slug);
   const availability = state.availabilityCache || (state.availabilityCache = {});
   const rec = availability[slug] || (availability[slug] = { playerName, responses: {} });
   const next = (rec.responses[date] === status) ? null : status;
