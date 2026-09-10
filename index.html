@@ -548,6 +548,34 @@ function availabilityLinkFor(slug){
 function availabilityNudgeMessage(firstName, slug){
   return 'Hey ' + firstName + ', take a minute to provide your availability on our 2Buff team app for this season. ' + availabilityLinkFor(slug);
 }
+// Fallback for players with no phone on file: copies the invite text so it can be pasted into
+// any messaging app instead of trying (and failing) to open an sms: link.
+async function copyAvailabilityMessage(text){
+  try{
+    await navigator.clipboard.writeText(text);
+    showToast('No phone on file — message copied, paste it anywhere');
+    return;
+  }catch(e){ /* Clipboard API unavailable — fall back below */ }
+  try{
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    showToast('No phone on file — message copied, paste it anywhere');
+  }catch(e){
+    showToast('No phone on file, and copying failed — try a different browser');
+  }
+}
+// Attribute-safe wrapper for inline onclick handlers: takes only a slug (never free text like
+// a name, which could contain a quote and break the HTML attribute) and resolves the rest itself.
+function copyAvailabilityMessageForSlug(slug){
+  const firstName = playerNameForSlug(slug).split(' ')[0];
+  copyAvailabilityMessage(availabilityNudgeMessage(firstName, slug));
+}
 function showToast(msg){
   const t = document.getElementById('toast');
   t.textContent = msg;
@@ -2534,7 +2562,7 @@ async function renderAvailability(){
     const status = responses[d.date];
     return `
       <div class="card" style="flex:1; padding:10px; margin-bottom:0;">
-        <div style="font-size:12px; font-weight:800; margin-bottom:8px; text-align:center;">${esc(d.label)}</div>
+        <div style="font-size:16px; font-weight:900; margin-bottom:10px; text-align:center; color:var(--forest-dark);">${esc(d.label)}</div>
         <div class="rsvp-grid" style="gap:4px;">
           <div class="rsvp-btn ${status==='available'?'sel-confirmed':''}" style="padding:8px 2px; font-size:16px;" onclick="setAvailabilityStatus('${d.date}','available')">✅</div>
           <div class="rsvp-btn ${status==='maybe'?'sel-maybe':''}" style="padding:8px 2px; font-size:16px;" onclick="setAvailabilityStatus('${d.date}','maybe')">🤔</div>
@@ -2550,7 +2578,11 @@ async function renderAvailability(){
   return `
     <button class="btn btn-ghost btn-sm" style="width:auto; margin-bottom:12px;" onclick="setView('home')">← Back to Home</button>
     <div class="page-title">My Availability</div>
-    <div class="page-sub">Hey ${esc(playerName.split(' ')[0])} — tap a status for each date below. Saved instantly. ✅ Available · 🤔 Maybe · ❌ Can't</div>
+    <div style="display:inline-flex; align-items:center; gap:10px; background:var(--chip-bg); border:2px solid var(--forest); border-radius:14px; padding:8px 16px 8px 8px; margin:6px 0 4px;">
+      <div class="avatar" style="width:36px; height:36px; font-size:14px;">${esc(initials(playerName))}</div>
+      <div style="font-weight:900; font-size:17px; color:var(--forest-dark);">${esc(playerName)}</div>
+    </div>
+    <div class="page-sub">Tap a status for each date below. Saved instantly. ✅ Available · 🤔 Maybe · ❌ Can't</div>
     ${dates.length ? rows : '<div class="card empty"><span class="em">📆</span><p>No season dates yet — check back soon.</p></div>'}`;
 }
 function selectAvailabilityPlayer(playerId){
@@ -2590,7 +2622,9 @@ async function renderManageAvailability(){
     const slug = slugForPlayer(p.id);
     const rec = availability[slug];
     const s = rec && rec.responses && rec.responses[d.date];
-    const nudge = (!s && p.phone) ? `<a href="sms:${cleanPhoneHref(p.phone)}?&body=${encodeURIComponent(availabilityNudgeMessage(p.name.split(' ')[0], slug))}" onclick="event.stopPropagation()" style="text-decoration:none; margin-left:6px;">💬</a>` : '';
+    const nudge = s ? '' : p.phone
+      ? `<a href="sms:${cleanPhoneHref(p.phone)}?&body=${encodeURIComponent(availabilityNudgeMessage(p.name.split(' ')[0], slug))}" onclick="event.stopPropagation()" style="text-decoration:none; margin-left:6px;">💬</a>`
+      : `<span onclick="event.stopPropagation(); copyAvailabilityMessageForSlug('${slug}')" style="cursor:pointer; margin-left:6px;">💬</span>`;
     return `
       <div style="display:flex; align-items:center; justify-content:space-between; padding:8px 0; border-bottom:1px solid var(--line);">
         <div style="font-size:13px; font-weight:700;">${esc(p.name)}${nudge}</div>
@@ -2607,7 +2641,7 @@ async function renderManageAvailability(){
     const expanded = state.expandedAvailabilityDate === d.date;
     return `
       <div class="card" style="flex:1; padding:10px; margin-bottom:0; cursor:pointer; ${expanded ? 'border-color:var(--forest);' : ''}" onclick="toggleExpandAvailabilityDate('${d.date}')">
-        <div style="font-size:12px; font-weight:800; margin-bottom:4px; text-align:center;">${esc(d.label)}</div>
+        <div style="font-size:15px; font-weight:900; margin-bottom:6px; text-align:center; color:var(--forest-dark);">${esc(d.label)}</div>
         <div style="font-size:11px; font-weight:700; color:var(--ink-soft); text-align:center;">✅${t.available} &nbsp;🤔${t.maybe} &nbsp;❌${t.cant}</div>
       </div>`;
   };
@@ -2657,10 +2691,14 @@ function setAdminAvailabilityStatus(slug, date, status){
 function textAvailabilityLink(){
   const sel = document.getElementById('contact_player_select');
   const p = state.players.find(x=>x.id===sel.value);
-  if(!p || !p.phone){ showToast('That player has no phone number on file'); return; }
+  if(!p) return;
   const slug = slugForPlayer(p.id);
   const body = availabilityNudgeMessage(p.name.split(' ')[0], slug);
-  window.location.href = 'sms:' + cleanPhoneHref(p.phone) + '?&body=' + encodeURIComponent(body);
+  if(p.phone){
+    window.location.href = 'sms:' + cleanPhoneHref(p.phone) + '?&body=' + encodeURIComponent(body);
+  } else {
+    copyAvailabilityMessage(body);
+  }
 }
 
 function blankResultEntry(kind){
