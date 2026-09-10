@@ -511,6 +511,13 @@ const state = {
 
 const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 const WEEKDAYS_SHORT = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+const WEEKDAYS_FULL = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+// Derives the display weekday/date directly from the ISO date rather than the stored `label`
+// field, so card titles are always accurate regardless of what label a date was seeded/added with.
+function formatSeasonDateParts(iso){
+  const d = new Date(iso + 'T00:00:00');
+  return { weekday: WEEKDAYS_FULL[d.getDay()], monthDay: MONTHS[d.getMonth()] + ' ' + d.getDate() };
+}
 
 function uid(prefix){ return prefix + '_' + Date.now().toString(36) + Math.random().toString(36).slice(2,7); }
 // Lowercase, hyphenated identifier for a player name (e.g. "Harry Chace" -> "harry-chace").
@@ -2560,9 +2567,13 @@ async function renderAvailability(){
   const dayCard = (d) => {
     if(!d) return `<div style="flex:1;"></div>`;
     const status = responses[d.date];
+    const parts = formatSeasonDateParts(d.date);
     return `
-      <div class="card" style="flex:1; padding:10px; margin-bottom:0;">
-        <div style="font-size:16px; font-weight:900; margin-bottom:10px; text-align:center; color:var(--forest-dark);">${esc(d.label)}</div>
+      <div class="card" style="flex:1; padding:12px 8px; margin-bottom:0;">
+        <div style="text-align:center; margin-bottom:10px; padding-bottom:8px; border-bottom:2px solid var(--line);">
+          <div style="font-size:19px; font-weight:900; color:var(--forest-dark); line-height:1.15;">${parts.weekday}</div>
+          <div style="font-size:12px; font-weight:700; color:var(--ink-soft); margin-top:2px;">${parts.monthDay}</div>
+        </div>
         <div class="rsvp-grid" style="gap:4px;">
           <div class="rsvp-btn ${status==='available'?'sel-confirmed':''}" style="padding:8px 2px; font-size:16px;" onclick="setAvailabilityStatus('${d.date}','available')">✅</div>
           <div class="rsvp-btn ${status==='maybe'?'sel-maybe':''}" style="padding:8px 2px; font-size:16px;" onclick="setAvailabilityStatus('${d.date}','maybe')">🤔</div>
@@ -2639,9 +2650,13 @@ async function renderManageAvailability(){
     if(!d) return `<div style="flex:1;"></div>`;
     const t = tallyFor(d);
     const expanded = state.expandedAvailabilityDate === d.date;
+    const parts = formatSeasonDateParts(d.date);
     return `
-      <div class="card" style="flex:1; padding:10px; margin-bottom:0; cursor:pointer; ${expanded ? 'border-color:var(--forest);' : ''}" onclick="toggleExpandAvailabilityDate('${d.date}')">
-        <div style="font-size:15px; font-weight:900; margin-bottom:6px; text-align:center; color:var(--forest-dark);">${esc(d.label)}</div>
+      <div class="card" style="flex:1; padding:12px 8px; margin-bottom:0; cursor:pointer; ${expanded ? 'border-color:var(--forest);' : ''}" onclick="toggleExpandAvailabilityDate('${d.date}')">
+        <div style="text-align:center; margin-bottom:8px; padding-bottom:6px; border-bottom:2px solid var(--line);">
+          <div style="font-size:17px; font-weight:900; color:var(--forest-dark); line-height:1.15;">${parts.weekday}</div>
+          <div style="font-size:11px; font-weight:700; color:var(--ink-soft); margin-top:2px;">${parts.monthDay}</div>
+        </div>
         <div style="font-size:11px; font-weight:700; color:var(--ink-soft); text-align:center;">✅${t.available} &nbsp;🤔${t.maybe} &nbsp;❌${t.cant}</div>
       </div>`;
   };
@@ -6668,14 +6683,15 @@ async function exportAvailabilityXlsx(){
       return rec && rec.responses && rec.responses[d.date];
     };
 
-    const matrix = [['Date', ...roster.map(p=>p.name)]];
-    dates.forEach(d => {
-      matrix.push([d.label, ...roster.map(p => { const s = statusFor(p, d); return s ? STATUS_LABEL[s] : ''; })]);
+    const dateHeader = dates.map(d => { const parts = formatSeasonDateParts(d.date); return parts.weekday + ' ' + parts.monthDay; });
+    const matrix = [['Player', ...dateHeader]];
+    roster.forEach(p => {
+      matrix.push([p.name, ...dates.map(d => { const s = statusFor(p, d); return s ? STATUS_LABEL[s] : ''; })]);
     });
 
     const ws = XLSX.utils.aoa_to_sheet(matrix);
-    dates.forEach((d, rowIdx) => {
-      roster.forEach((p, colIdx) => {
+    roster.forEach((p, rowIdx) => {
+      dates.forEach((d, colIdx) => {
         const s = statusFor(p, d);
         if(!s) return;
         const cellRef = XLSX.utils.encode_cell({ r: rowIdx + 1, c: colIdx + 1 });
