@@ -523,6 +523,13 @@ function formatSeasonDateParts(iso){
 function formatSeasonDateForExport(iso){
   return formatSeasonDateParts(iso).monthDay + ', ' + iso.slice(0,4);
 }
+// Formats a "YYYY-MM" value (from an <input type="month">) as e.g. "Oct 2026" — used for a
+// TBD event's optional expected-month note, distinct from a real confirmed date.
+function formatApproxMonth(ym){
+  if(!ym) return '';
+  const [y, m] = ym.split('-');
+  return MONTHS[parseInt(m,10)-1] + ' ' + y;
+}
 
 function uid(prefix){ return prefix + '_' + Date.now().toString(36) + Math.random().toString(36).slice(2,7); }
 // Lowercase, hyphenated identifier for a player name (e.g. "Harry Chace" -> "harry-chace").
@@ -2125,23 +2132,26 @@ async function renderEvents(){
         <div class="page-sub" style="margin-bottom:4px;">📌 DATE NOT SET YET</div>
         <h3 style="font-size:18px;">${esc(e.name)}</h3>
         ${opponentName ? `<div style="color:var(--ink-soft); font-size:13px; margin-top:4px;">vs ${esc(opponentName)}</div>` : ''}
+        ${e.approxMonth ? `<div style="color:var(--ink-soft); font-size:13px; margin-top:4px;">📅 Expected: ${formatApproxMonth(e.approxMonth)}</div>` : ''}
         ${state.adminMode
           ? `<button class="btn btn-outline" style="width:100%; margin-top:12px;" onclick="openEventModal('${e.id}')">📅 Add Date</button>`
           : `<div style="font-size:12.5px; color:var(--ink-soft); margin-top:10px;">Check back once a date is set.</div>`}
       </div>`;
   }
+  // TBD events sit below the confirmed schedule — regular players should see what's actually
+  // happening (real dates) before an unscheduled placeholder.
   const tbdHtml = tbdEvents.length
-    ? `<div class="section-label" style="margin-top:0;">📌 Date Not Set Yet</div>${tbdEvents.map(tbdCardFor).join('')}`
+    ? `<div class="section-label">📌 Date Not Set Yet</div>${tbdEvents.map(tbdCardFor).join('')}`
     : '';
 
   return `
     <div class="page-title">Events</div>
     <div class="page-sub">Tap an event to RSVP and see who's in.</div>
-    ${tbdHtml}
     ${tabsHtml}
     ${state.adminMode ? `<div class="fab-row"><button class="btn btn-orange btn-sm" onclick="openEventModal()">+ Add Event</button></div>` : ''}
     ${upcomingHtml}
     ${pastHtml}
+    ${tbdHtml}
   `;
 }
 function selectSeason(s){
@@ -2208,6 +2218,11 @@ function openEventModal(existingId){
             <label>Date</label>
             <input id="ev_date" type="date" value="${ev ? ev.date : ''}">
             <div style="font-size:11.5px; color:var(--ink-soft); margin-top:4px;">Leave blank to save this as a placeholder for an event you know is happening but doesn't have a date yet — add the date later by editing it.</div>
+          </div>
+          <div class="field">
+            <label>Approximate Month (optional)</label>
+            <input id="ev_approx_month" type="month" value="${ev && ev.approxMonth ? ev.approxMonth : ''}">
+            <div style="font-size:11.5px; color:var(--ink-soft); margin-top:4px;">For a TBD event, note the month you expect it to happen — shows on the event's card without confirming an actual date. Ignored once a real date is set above.</div>
           </div>
           <div class="field">
             <label>Start Time</label>
@@ -2287,37 +2302,14 @@ function closeModal(){ document.getElementById('modalRoot').innerHTML = ''; }
 
 // Guards against silently turning an already-dated event into a TBD placeholder: if the
 // event currently has a real date and the form's date field has been cleared, confirm first
-// rather than saving straight through.
+// rather than saving straight through. All form fields are read HERE, once, and carried
+// through explicitly — the confirmation sheet replaces the modal's contents, so the original
+// #ev_date/#ev_time/etc inputs no longer exist in the DOM by the time a confirmed save runs.
+let _pendingEventSave = null;
 async function saveEventFromModal(existingId){
   const date = document.getElementById('ev_date').value;
-  if(existingId){
-    const existing = state.events.find(e=>e.id===existingId);
-    if(existing && existing.date && !date){
-      openConfirmClearEventDateModal(existingId);
-      return;
-    }
-  }
-  await saveEventFromModalConfirmed(existingId);
-}
-function openConfirmClearEventDateModal(existingId){
-  const modal = document.getElementById('modalRoot');
-  modal.innerHTML = `
-    <div class="overlay" onclick="closeModalIfBackdrop(event)">
-      <div class="sheet" onclick="event.stopPropagation()">
-        <h3>Remove this event's date?</h3>
-        <div style="font-size:13.5px; color:var(--ink-soft); line-height:1.6; margin-bottom:16px;">
-          This event already has a date set. Saving with the date field blank turns it into a "Date TBD" placeholder and takes it out of the scheduled list — you'd have to re-enter the date yourself to undo this.
-        </div>
-        <div class="btn-row">
-          <button class="btn btn-ghost" onclick="openEventModal('${existingId}')">← Keep Editing</button>
-          <button class="btn btn-primary" style="background:var(--red); border-color:var(--red);" onclick="saveEventFromModalConfirmed('${existingId}')">Remove Date</button>
-        </div>
-      </div>
-    </div>`;
-}
-async function saveEventFromModalConfirmed(existingId){
-  const date = document.getElementById('ev_date').value;
   const time = document.getElementById('ev_time').value;
+  const approxMonth = document.getElementById('ev_approx_month').value;
   const season = document.getElementById('ev_season').value.trim() || inferSeason(date);
   const location = document.getElementById('ev_location').value.trim();
   const venueBtn = document.querySelector('#ev_venueRow .seg-sel');
@@ -2337,6 +2329,42 @@ async function saveEventFromModalConfirmed(existingId){
   }
   const wickCourseSelect = document.getElementById('ev_wickCourse');
   const wickCourse = wickCourseSelect ? wickCourseSelect.value : '';
+  const fields = { date, time, approxMonth, season, location, isHome, venue, opponentTeamId, opponentName, wickCourse };
+
+  if(existingId){
+    const existing = state.events.find(e=>e.id===existingId);
+    if(existing && existing.date && !date){
+      _pendingEventSave = { existingId, fields };
+      openConfirmClearEventDateModal(existingId);
+      return;
+    }
+  }
+  await saveEventFromModalConfirmed(existingId, fields);
+}
+function confirmClearEventDate(){
+  if(!_pendingEventSave) return;
+  const { existingId, fields } = _pendingEventSave;
+  _pendingEventSave = null;
+  saveEventFromModalConfirmed(existingId, fields);
+}
+function openConfirmClearEventDateModal(existingId){
+  const modal = document.getElementById('modalRoot');
+  modal.innerHTML = `
+    <div class="overlay" onclick="closeModalIfBackdrop(event)">
+      <div class="sheet" onclick="event.stopPropagation()">
+        <h3>Remove this event's date?</h3>
+        <div style="font-size:13.5px; color:var(--ink-soft); line-height:1.6; margin-bottom:16px;">
+          This event already has a date set. Saving with the date field blank turns it into a "Date TBD" placeholder and takes it out of the scheduled list — you'd have to re-enter the date yourself to undo this.
+        </div>
+        <div class="btn-row">
+          <button class="btn btn-ghost" onclick="_pendingEventSave=null; openEventModal('${existingId}')">← Keep Editing</button>
+          <button class="btn btn-primary" style="background:var(--red); border-color:var(--red);" onclick="confirmClearEventDate()">Remove Date</button>
+        </div>
+      </div>
+    </div>`;
+}
+async function saveEventFromModalConfirmed(existingId, fields){
+  const { date, time, approxMonth, season, location, isHome, venue, opponentTeamId, opponentName, wickCourse } = fields;
   // The title is derived from venue + opponent, not typed in. Build it against the
   // resolved opponent (linked team or custom name) so it stays consistent everywhere.
   const teams = await loadOppTeams();
@@ -2344,9 +2372,9 @@ async function saveEventFromModalConfirmed(existingId){
   const name = buildEventTitle(draft, teams);
   if(existingId){
     const ev = state.events.find(e=>e.id===existingId);
-    Object.assign(ev, {name, date, time, season, location, isHome, venue, opponentTeamId, opponentName, wickCourse: wickCourse || null});
+    Object.assign(ev, {name, date, time, approxMonth: approxMonth || null, season, location, isHome, venue, opponentTeamId, opponentName, wickCourse: wickCourse || null});
   } else {
-    state.events.push({id: uid('ev'), name, date, time, season, location, isHome, venue, opponentTeamId, opponentName, wickCourse: wickCourse || null});
+    state.events.push({id: uid('ev'), name, date, time, approxMonth: approxMonth || null, season, location, isHome, venue, opponentTeamId, opponentName, wickCourse: wickCourse || null});
   }
   await saveEvents();
   closeModal();
