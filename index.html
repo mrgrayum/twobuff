@@ -510,6 +510,9 @@ const state = {
   expandedOppPlayerId: null, // Teams page: which opponent player is expanded to show notes + history
   homeNotesExpanded: false,  // Home: whether the full bulletin board list is expanded past the initial preview
   expandedTeamEventId: null, // Stats page: which Team Record event is expanded to show the Matchplay/Doubles breakdown
+  rosterMovesLog: null,        // Roster Moves: cached dg_roster_moves_log array (lazy-loaded)
+  rosterTrackingLocked: null,  // Roster Moves: cached dg_roster_tracking_locked bool; null = not yet loaded this session
+  rosterMovesExpanded: false,  // Team tab: whether the Roster Moves log card is expanded
 };
 
 const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
@@ -849,6 +852,28 @@ async function loadNotes(){
 }
 async function saveNotes(notes){
   await storeSet('dg_notes', JSON.stringify(notes), true);
+}
+
+/* ---- Roster Moves: log of drop+add pairs, and the season-tracking lock flag ---- */
+async function loadRosterMovesLog(){
+  if(state.rosterMovesLog) return state.rosterMovesLog;
+  const raw = await storeGet('dg_roster_moves_log', true);
+  state.rosterMovesLog = raw ? JSON.parse(raw) : [];
+  return state.rosterMovesLog;
+}
+async function saveRosterMovesLog(log){
+  state.rosterMovesLog = log;
+  await storeSet('dg_roster_moves_log', JSON.stringify(log), true);
+}
+async function loadRosterTrackingLocked(){
+  if(state.rosterTrackingLocked !== null) return state.rosterTrackingLocked;
+  const raw = await storeGet('dg_roster_tracking_locked', true);
+  state.rosterTrackingLocked = raw === 'true';
+  return state.rosterTrackingLocked;
+}
+async function saveRosterTrackingLocked(val){
+  state.rosterTrackingLocked = val;
+  await storeSet('dg_roster_tracking_locked', val ? 'true' : 'false', true);
 }
 
 /* ---- Scheduling / Availability storage ----
@@ -1392,6 +1417,8 @@ async function refreshAllData(){
   state.allStatsCache = null;
   state.benchCache = {};
   state.matchupStateCache = null;
+  state.rosterMovesLog = null;
+  state.rosterTrackingLocked = null;
   await Promise.all([loadPlayers(), loadEvents()]);
 }
 
@@ -2647,7 +2674,7 @@ async function renderAvailability(){
   }
 
   if(!state.selectedPlayerSlug){
-    const sorted = [...state.players].filter(p=>p.active!==false).sort((a,b)=>a.name.localeCompare(b.name));
+    const sorted = [...state.players].sort((a,b)=>a.name.localeCompare(b.name));
     return `
       <button class="btn btn-ghost btn-sm" style="width:auto; margin-bottom:12px;" onclick="setView('home')">← Back to Home</button>
       <div class="page-title">My Availability</div>
@@ -2723,7 +2750,7 @@ function setAvailabilityStatus(date, status){
 /* ---- Scheduling: Manage Availability (admin dashboard) ---- */
 async function renderManageAvailability(){
   const [dates, availability] = await Promise.all([loadSeasonDates(), loadAvailability()]);
-  const roster = state.players.filter(p=>p.active!==false).sort((a,b)=>a.name.localeCompare(b.name));
+  const roster = state.players.slice().sort((a,b)=>a.name.localeCompare(b.name));
 
   // Minimum turnout for a full slate: 16 men + 2 women marked Available.
   const MIN_MEN_AVAILABLE = 16;
@@ -2748,9 +2775,10 @@ async function renderManageAvailability(){
     const nudge = s ? '' : (p.phone && isMobileDevice())
       ? `<a href="sms:${cleanPhoneHref(p.phone)}?&body=${encodeURIComponent(availabilityNudgeMessage(p.name.split(' ')[0], slug))}" onclick="event.stopPropagation()" style="text-decoration:none; margin-left:6px;">💬</a>`
       : `<span onclick="event.stopPropagation(); copyAvailabilityMessageForSlug('${slug}')" style="cursor:pointer; margin-left:6px;">💬</span>`;
+    const notRosteredTag = p.active===false ? '<span style="color:var(--ink-soft); font-style:italic; font-size:11px;"> Not Rostered</span>' : '';
     return `
       <div style="display:flex; align-items:center; justify-content:space-between; padding:8px 0; border-bottom:1px solid var(--line);">
-        <div style="font-size:13px; font-weight:700;">${esc(p.name)}${nudge}</div>
+        <div style="font-size:13px; font-weight:700;">${esc(p.name)}${notRosteredTag}${nudge}</div>
         <div class="rsvp-grid" style="flex:0 0 auto; width:auto; gap:4px;">
           <div class="rsvp-btn ${s==='available'?'sel-confirmed':''}" style="padding:4px 8px; font-size:11px;" onclick="setAdminAvailabilityStatus('${slug}','${d.date}','available')">✅</div>
           <div class="rsvp-btn ${s==='maybe'?'sel-maybe':''}" style="padding:4px 8px; font-size:11px;" onclick="setAdminAvailabilityStatus('${slug}','${d.date}','maybe')">🤔</div>
@@ -4395,8 +4423,13 @@ function setPlayerCardScope(scope){
   state.expandedPlayerCardScope = scope;
   render();
 }
-async function teamCardFor(p){
+async function teamCardFor(p, isActiveRoster){
   const expanded = state.expandedPlayerId === p.id;
+  const rosterActionBtn = isActiveRoster
+    ? (state.rosterTrackingLocked
+        ? `<button class="icon-btn" onclick="event.stopPropagation(); openRosterMoveModal('${p.id}')" aria-label="Roster move">🔁</button>`
+        : `<button class="icon-btn" onclick="event.stopPropagation(); dropPlayerToPool('${p.id}')" aria-label="Move to Available Pool">⏸️</button>`)
+    : `<button class="icon-btn" onclick="event.stopPropagation(); promotePlayerToActive('${p.id}')" aria-label="Promote to Active Roster">⬆️</button>`;
   return `
     <div class="team-row" style="flex-direction:column; align-items:stretch;">
       <div style="display:flex; align-items:flex-start; justify-content:space-between;">
@@ -4408,7 +4441,7 @@ async function teamCardFor(p){
               <span class="gender-badge ${p.gender==='F' ? 'g-f':'g-m'}">${p.gender==='F' ? 'F':'M'}</span>
               <span style="font-size:11px; color:var(--ink-soft);">${expanded ? '▲' : '▼'}</span>
             </div>
-            <div style="font-size:12px; color:var(--ink-soft);">${p.active===false ? 'Inactive' : 'Active'} · tap for details</div>
+            <div style="font-size:12px; color:var(--ink-soft);">${isActiveRoster ? 'Active Roster' : 'Available Pool'} · tap for details</div>
             ${state.adminMode && (p.phone || p.email) ? `
               <div style="font-size:11.5px; color:var(--ink-soft); margin-top:3px; line-height:1.5;">
                 ${p.phone ? `📞 ${esc(p.phone)}` : ''}${p.phone && p.email ? '<br>' : ''}${p.email ? `✉️ ${esc(p.email)}` : ''}
@@ -4422,7 +4455,7 @@ async function teamCardFor(p){
         </div>
         ${state.adminMode ? `
           <div class="btn-row" style="width:auto; gap:6px;">
-            <button class="icon-btn" onclick="event.stopPropagation(); togglePlayerActive('${p.id}')">${p.active===false ? '↩️' : '⏸️'}</button>
+            ${rosterActionBtn}
             <button class="icon-btn" onclick="event.stopPropagation(); openPlayerModal('${p.id}')">✏️</button>
           </div>
         ` : ''}
@@ -4557,14 +4590,14 @@ function downloadCSV(filename, rows){
   setTimeout(()=>URL.revokeObjectURL(url), 1000);
 }
 function exportTeamRosterCSV(){
-  const header = ['Name','Gender','Status','Phone','Email','Skill Rank','PDGA Rating','Throw Hand','Handedness','Age','Notes'];
+  const header = ['Name','Gender','Roster Status','Phone','Email','Skill Rank','PDGA Rating','Throw Hand','Handedness','Age','Notes'];
   const rows = [header];
   const sorted = [...state.players].sort((a,b)=>a.name.localeCompare(b.name));
   sorted.forEach(p=>{
     rows.push([
       p.name || '',
       p.gender || '',
-      p.active===false ? 'Inactive' : 'Active',
+      p.active===false ? 'Available Pool' : 'Active Roster',
       p.phone || '',
       p.email || '',
       p.skillRank != null ? p.skillRank : '',
@@ -4614,22 +4647,335 @@ async function exportOpponentRostersCSV(){
   showToast('Opponent rosters downloaded');
 }
 async function renderTeam(){
+  await Promise.all([loadRosterMovesLog(), loadRosterTrackingLocked()]);
   const sorted = [...state.players].sort((a,b)=>a.name.localeCompare(b.name));
-  let rows = '';
-  if(sorted.length===0){
-    rows = `<div class="card empty"><span class="em">👥</span><p>No players added yet.</p></div>`;
-  } else {
-    const cards = await Promise.all(sorted.map(p=>teamCardFor(p)));
-    rows = cards.join('');
-  }
+  const activeRoster = sorted.filter(p=>p.active!==false);
+  const availablePool = sorted.filter(p=>p.active===false);
+  const menCount = activeRoster.filter(p=>p.gender!=='F').length;
+  const womenCount = activeRoster.filter(p=>p.gender==='F').length;
+
+  const activeRows = activeRoster.length
+    ? (await Promise.all(activeRoster.map(p=>teamCardFor(p, true)))).join('')
+    : `<div class="card empty"><span class="em">👥</span><p>No players on the Active Roster yet.</p></div>`;
+  const poolRows = availablePool.length
+    ? (await Promise.all(availablePool.map(p=>teamCardFor(p, false)))).join('')
+    : `<div class="card empty"><span class="em">📋</span><p>No players in the Available Pool.</p></div>`;
+
   return `
     <button class="btn btn-ghost btn-sm" style="width:auto; margin-bottom:12px;" onclick="setView('home')">← Back to Home</button>
     <div class="page-title">Team</div>
-    <div class="page-sub">${sorted.filter(p=>p.active!==false).length} active player${sorted.length===1?'':'s'}</div>
+    <div class="page-sub">${activeRoster.length} on the Active Roster · ${availablePool.length} in the Available Pool</div>
     ${state.adminMode ? `<div class="fab-row" style="gap:8px;"><button class="btn btn-ghost btn-sm" onclick="exportTeamRosterCSV()">⬇️ Export CSV</button><button class="btn btn-orange btn-sm" onclick="openPlayerModal()">+ Add Player</button></div>` : ''}
-    ${rows}
+    <div class="section-label" style="margin-top:0;">Active Roster (${activeRoster.length}/26 · ${menCount}/22 Men · ${womenCount} Women)</div>
+    ${activeRows}
+    <div class="section-label">Available Pool (Not Rostered) (${availablePool.length})</div>
+    ${poolRows}
+    ${renderRosterMovesSection()}
   `;
 }
+
+/* ---- Roster Moves: simple pre-lock toggle, promote (always free), and the tracked section ---- */
+async function dropPlayerToPool(id){
+  const p = state.players.find(pl=>pl.id===id);
+  if(!p) return;
+  p.active = false;
+  render();
+  await savePlayers();
+  showToast(p.name + ' moved to Available Pool');
+}
+async function promotePlayerToActive(id){
+  const p = state.players.find(pl=>pl.id===id);
+  if(!p) return;
+  const reason = wouldExceedRosterCap(p.gender);
+  if(reason){ showToast(reason); return; }
+  p.active = true;
+  render();
+  await savePlayers();
+  showToast(p.name + ' promoted to Active Roster');
+}
+function toggleRosterMovesExpanded(){
+  state.rosterMovesExpanded = !state.rosterMovesExpanded;
+  render();
+}
+function renderRosterMovesSection(){
+  const log = state.rosterMovesLog || [];
+  const season = inferSeason(todayISO());
+  const seasonMoves = log.filter(e => e.season === season).sort((a,b)=>b.date.localeCompare(a.date));
+  const locked = !!state.rosterTrackingLocked;
+  const expanded = state.rosterMovesExpanded;
+
+  const logRows = seasonMoves.map(e => `
+    <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid var(--line); font-size:13px;">
+      <div>${esc(e.droppedPlayerName)} → ${esc(e.addedPlayerName)}</div>
+      <div style="display:flex; align-items:center; gap:8px;">
+        <div style="color:var(--ink-soft); font-size:11.5px;">${fmtDate(e.date).mon} ${fmtDate(e.date).day}</div>
+        ${state.adminMode ? `<button class="icon-btn" onclick="event.stopPropagation(); deleteRosterMoveEntry('${e.id}')" aria-label="Delete entry">✕</button>` : ''}
+      </div>
+    </div>`).join('');
+
+  const lockControl = (state.isSuperAdmin && state.adminMode) ? `
+    <div class="section-label" style="margin-top:0;">Season Tracking</div>
+    <div class="card">
+      <div style="font-size:13px; margin-bottom:10px;">${locked ? '🔒 Roster moves are being tracked this season.' : '🔓 Roster moves are not being tracked yet — swaps are free while you build your first roster.'}</div>
+      <button class="btn ${locked ? 'btn-outline' : 'btn-primary'}" style="width:100%;" onclick="${locked ? 'openUnlockRosterTrackingConfirm()' : 'openLockRosterTrackingConfirm()'}">${locked ? 'Turn Off Tracking' : 'Begin Season Tracking'}</button>
+    </div>` : '';
+
+  return `
+    ${lockControl}
+    <div class="section-label">Roster Moves</div>
+    <div class="card" style="cursor:pointer;" onclick="toggleRosterMovesExpanded()">
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <div style="font-weight:800; font-size:14px;">📋 ${seasonMoves.length} of 8 used this season</div>
+        <div style="font-size:12px; color:var(--ink-soft);">${expanded ? '▲ Hide' : '▼ Show'}</div>
+      </div>
+      ${expanded ? `
+        <div style="margin-top:10px;" onclick="event.stopPropagation()">
+          ${seasonMoves.length ? logRows : '<div style="font-size:12.5px; color:var(--ink-soft); padding:6px 0;">No roster moves logged yet this season.</div>'}
+          ${state.adminMode ? `<button class="btn btn-outline btn-sm" style="width:100%; margin-top:10px;" onclick="openRosterMovesManageModal()">⚙️ Manage Log</button>` : ''}
+        </div>
+      ` : ''}
+    </div>`;
+}
+
+/* ---- Begin Season Tracking toggle (super-admin only) ---- */
+function openLockRosterTrackingConfirm(){
+  if(!state.isSuperAdmin){ showToast('Super admin PIN required'); return; }
+  const modal = document.getElementById('modalRoot');
+  modal.innerHTML = `
+    <div class="overlay" onclick="closeModalIfBackdrop(event)">
+      <div class="sheet" onclick="event.stopPropagation()">
+        <h3>Begin Season Tracking?</h3>
+        <div style="font-size:13.5px; color:var(--ink-soft); line-height:1.6; margin-bottom:16px;">
+          Once enabled, dropping a player from the Active Roster will require picking a replacement in the same action, and will count toward your 8 roster moves for the season. This doesn't change anything already on your roster — it only changes what happens on the next drop.
+        </div>
+        <div class="btn-row">
+          <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+          <button class="btn btn-primary" onclick="confirmSetRosterTracking(true)">Begin Tracking</button>
+        </div>
+      </div>
+    </div>`;
+}
+function openUnlockRosterTrackingConfirm(){
+  if(!state.isSuperAdmin){ showToast('Super admin PIN required'); return; }
+  const modal = document.getElementById('modalRoot');
+  modal.innerHTML = `
+    <div class="overlay" onclick="closeModalIfBackdrop(event)">
+      <div class="sheet" onclick="event.stopPropagation()">
+        <h3>Turn Off Roster Move Tracking?</h3>
+        <div style="font-size:13.5px; color:var(--ink-soft); line-height:1.6; margin-bottom:16px;">
+          Dropping a player will go back to a free, untracked action until you turn tracking back on. Your existing logged moves aren't affected.
+        </div>
+        <div class="btn-row">
+          <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+          <button class="btn btn-primary" onclick="confirmSetRosterTracking(false)">Turn Off</button>
+        </div>
+      </div>
+    </div>`;
+}
+async function confirmSetRosterTracking(val){
+  if(!state.isSuperAdmin){ showToast('Super admin PIN required'); return; }
+  await saveRosterTrackingLocked(val);
+  closeModal();
+  showToast(val ? 'Season tracking begun' : 'Season tracking turned off');
+  render();
+}
+
+/* ---- Roster Move modal: only reached once tracking has begun (dropPlayerToPool handles the
+   free pre-lock case). Reads every form field once into `fields` before any confirmation sheet
+   might replace the modal's DOM — same reasoning as the TBD-event-date guard elsewhere. ---- */
+function openRosterMoveModal(dropId){
+  const dropPlayer = state.players.find(p=>p.id===dropId);
+  if(!dropPlayer) return;
+  const availablePool = state.players.filter(p=>p.active===false).sort((a,b)=>a.name.localeCompare(b.name));
+  const modal = document.getElementById('modalRoot');
+  modal.innerHTML = `
+    <div class="overlay" onclick="closeModalIfBackdrop(event)">
+      <div class="sheet" onclick="event.stopPropagation()">
+        <h3>Roster Move</h3>
+        <div class="field">
+          <label>Dropping</label>
+          <div style="font-weight:800; font-size:15px; padding:6px 0;">${esc(dropPlayer.name)}</div>
+        </div>
+        <div class="field">
+          <label>Add</label>
+          <div class="seg-row" id="rm_addModeRow">
+            <div class="seg-btn ${availablePool.length ? 'seg-sel' : ''}" data-v="existing" onclick="selectSeg(this); onRosterMoveAddModeChange();">Existing Available Pool Player</div>
+            <div class="seg-btn ${availablePool.length ? '' : 'seg-sel'}" data-v="new" onclick="selectSeg(this); onRosterMoveAddModeChange();">New Player</div>
+          </div>
+        </div>
+        <div id="rm_existingWrap" class="field" style="display:${availablePool.length ? 'block' : 'none'};">
+          <select id="rm_add_existing">
+            ${availablePool.map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join('')}
+          </select>
+        </div>
+        ${!availablePool.length ? `<div style="font-size:11.5px; color:var(--ink-soft); margin:-6px 0 8px;">No one in the Available Pool yet — add a new player instead.</div>` : ''}
+        <div id="rm_newWrap" style="display:${availablePool.length ? 'none' : 'block'};">
+          <div class="field">
+            <label>Name</label>
+            <input id="rm_new_name" type="text" placeholder="Player name">
+          </div>
+          <div class="field">
+            <label>Gender</label>
+            <div class="seg-row" id="rm_new_genderRow">
+              <div class="seg-btn seg-sel" data-g="M" onclick="selectSeg(this)">Male</div>
+              <div class="seg-btn" data-g="F" onclick="selectSeg(this)">Female</div>
+            </div>
+          </div>
+          ${renderPlayerBaselineFields('rm_new', null)}
+        </div>
+        <div class="btn-row">
+          <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+          <button class="btn btn-primary" onclick="submitRosterMove('${dropId}')">Log Roster Move</button>
+        </div>
+      </div>
+    </div>`;
+}
+function onRosterMoveAddModeChange(){
+  const mode = document.querySelector('#rm_addModeRow .seg-sel').dataset.v;
+  document.getElementById('rm_existingWrap').style.display = mode === 'existing' ? 'block' : 'none';
+  document.getElementById('rm_newWrap').style.display = mode === 'new' ? 'block' : 'none';
+}
+async function submitRosterMove(dropId){
+  const dropPlayer = state.players.find(p=>p.id===dropId);
+  if(!dropPlayer) return;
+  const mode = document.querySelector('#rm_addModeRow .seg-sel').dataset.v;
+  let addedGender, addPayload;
+  if(mode === 'existing'){
+    const addId = document.getElementById('rm_add_existing').value;
+    const addPlayer = state.players.find(p=>p.id===addId);
+    if(!addPlayer){ showToast('Pick a player to add'); return; }
+    addedGender = addPlayer.gender;
+    addPayload = { mode: 'existing', id: addId };
+  } else {
+    const name = document.getElementById('rm_new_name').value.trim();
+    if(!name){ showToast('Enter a name for the new player'); return; }
+    const genderBtn = document.querySelector('#rm_new_genderRow .seg-sel');
+    addedGender = genderBtn ? genderBtn.dataset.g : 'M';
+    const baseline = readPlayerBaselineFields('rm_new');
+    addPayload = { mode: 'new', name, gender: addedGender, baseline };
+  }
+  const reason = wouldExceedRosterCap(addedGender, dropId);
+  if(reason){ showToast(reason); return; }
+  const log = await loadRosterMovesLog();
+  const season = inferSeason(todayISO());
+  const seasonCount = log.filter(e=>e.season===season).length;
+  if(seasonCount >= 8){
+    openRosterMoveCapConfirm(dropId, addPayload);
+    return;
+  }
+  await performRosterMove(dropId, addPayload);
+}
+function openRosterMoveCapConfirm(dropId, addPayload){
+  const modal = document.getElementById('modalRoot');
+  state._pendingRosterMove = { dropId, addPayload };
+  modal.innerHTML = `
+    <div class="overlay" onclick="closeModalIfBackdrop(event)">
+      <div class="sheet" onclick="event.stopPropagation()">
+        <h3>All 8 Roster Moves Used</h3>
+        <div style="font-size:13.5px; color:var(--ink-soft); line-height:1.6; margin-bottom:16px;">
+          You've already used all 8 roster moves this season — are you sure you want to log another?
+        </div>
+        <div class="btn-row">
+          <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+          <button class="btn btn-primary" onclick="confirmRosterMoveOverCap()">Continue</button>
+        </div>
+      </div>
+    </div>`;
+}
+async function confirmRosterMoveOverCap(){
+  const pending = state._pendingRosterMove;
+  state._pendingRosterMove = null;
+  if(!pending) return;
+  await performRosterMove(pending.dropId, pending.addPayload);
+}
+async function performRosterMove(dropId, addPayload){
+  const dropPlayer = state.players.find(p=>p.id===dropId);
+  if(!dropPlayer) return;
+  dropPlayer.active = false;
+  let addPlayer;
+  if(addPayload.mode === 'existing'){
+    addPlayer = state.players.find(p=>p.id===addPayload.id);
+    if(!addPlayer) return;
+    addPlayer.active = true;
+  } else {
+    addPlayer = { id: uid('pl'), name: addPayload.name, active: true, gender: addPayload.gender, ...addPayload.baseline };
+    state.players.push(addPlayer);
+  }
+  await savePlayers();
+  const log = await loadRosterMovesLog();
+  log.push({
+    id: uid('rm'),
+    season: inferSeason(todayISO()),
+    date: todayISO(),
+    droppedPlayerId: dropPlayer.id,
+    droppedPlayerName: dropPlayer.name,
+    addedPlayerId: addPlayer.id,
+    addedPlayerName: addPlayer.name
+  });
+  await saveRosterMovesLog(log);
+  closeModal();
+  showToast('Roster move logged: ' + dropPlayer.name + ' → ' + addPlayer.name);
+  render();
+}
+
+/* ---- Manage Log popup: delete a single entry (regular admin), full reset (super admin) ---- */
+function openRosterMovesManageModal(){
+  const log = state.rosterMovesLog || [];
+  const modal = document.getElementById('modalRoot');
+  modal.innerHTML = `
+    <div class="overlay" onclick="closeModalIfBackdrop(event)">
+      <div class="sheet" onclick="event.stopPropagation()">
+        <h3>Manage Roster Moves Log</h3>
+        ${log.length ? `
+          <div style="max-height:260px; overflow-y:auto; margin-bottom:12px;">
+            ${log.slice().sort((a,b)=>b.date.localeCompare(a.date)).map(e => `
+              <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid var(--line); font-size:13px;">
+                <div>${esc(e.season)} · ${esc(e.droppedPlayerName)} → ${esc(e.addedPlayerName)}</div>
+                <button class="icon-btn" onclick="deleteRosterMoveEntry('${e.id}')" aria-label="Delete entry">✕</button>
+              </div>`).join('')}
+          </div>
+        ` : `<div style="font-size:13px; color:var(--ink-soft); margin-bottom:12px;">No roster moves logged yet.</div>`}
+        ${state.isSuperAdmin ? `
+          <button class="btn btn-danger" style="width:100%;" onclick="openResetRosterMovesConfirm()">Clear Entire Log</button>
+        ` : ''}
+        <div class="btn-row" style="margin-top:10px;">
+          <button class="btn btn-ghost" style="width:100%;" onclick="closeModal()">Close</button>
+        </div>
+      </div>
+    </div>`;
+}
+async function deleteRosterMoveEntry(entryId){
+  const log = (await loadRosterMovesLog()).filter(e=>e.id!==entryId);
+  await saveRosterMovesLog(log);
+  showToast('Entry removed');
+  openRosterMovesManageModal();
+  render();
+}
+function openResetRosterMovesConfirm(){
+  if(!state.isSuperAdmin){ showToast('Super admin PIN required'); return; }
+  const modal = document.getElementById('modalRoot');
+  modal.innerHTML = `
+    <div class="overlay" onclick="closeModalIfBackdrop(event)">
+      <div class="sheet" onclick="event.stopPropagation()">
+        <h3>Reset Roster Moves Log?</h3>
+        <div style="font-size:13.5px; color:var(--ink-soft); line-height:1.6; margin-bottom:16px;">
+          This permanently clears every logged roster move, for every season. This can't be undone.
+        </div>
+        <div class="btn-row">
+          <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+          <button class="btn btn-danger" onclick="performResetRosterMoves()">Clear Log</button>
+        </div>
+      </div>
+    </div>`;
+}
+async function performResetRosterMoves(){
+  if(!state.isSuperAdmin){ showToast('Super admin PIN required'); return; }
+  await saveRosterMovesLog([]);
+  closeModal();
+  showToast('Roster moves log cleared');
+  render();
+}
+
 function selectSeg(el){
   const row = el.parentElement;
   row.querySelectorAll('.seg-btn').forEach(b=>b.classList.remove('seg-sel'));
@@ -4710,6 +5056,19 @@ function readPlayerBaselineFields(prefix){
   const notes = document.getElementById(prefix + '_notes').value.trim();
   return { skillRank, pdgaRating, throwHand, handedness, age, notes };
 }
+
+// Hard cap on the Active Roster only: 22 men max, 26 total max (league rule — no separate
+// women cap). Available Pool is uncapped. excludePlayerId: pass the dropped player's id when
+// checking a Roster Move's "add" side, so their now-freed spot doesn't count against the new
+// player — a swap nets zero total change, but a gender mismatch (e.g. dropping a woman, adding
+// a man) can still blow the 22-men cap even though the total stays the same.
+function wouldExceedRosterCap(genderBeingAdded, excludePlayerId){
+  const activeRoster = state.players.filter(p => p.active !== false && p.id !== excludePlayerId);
+  const menAfter = activeRoster.filter(p => p.gender !== 'F').length + (genderBeingAdded !== 'F' ? 1 : 0);
+  if(genderBeingAdded !== 'F' && menAfter > 22) return 'Active Roster is already at the 22-man limit.';
+  if(activeRoster.length + 1 > 26) return 'Active Roster is already at the 26-player limit.';
+  return null; // null = OK, else a user-facing reason string
+}
 function openPlayerModal(existingId){
   const p = existingId ? state.players.find(pl=>pl.id===existingId) : null;
   const modal = document.getElementById('modalRoot');
@@ -4728,6 +5087,15 @@ function openPlayerModal(existingId){
             <div class="seg-btn ${(p && p.gender==='F') ? 'seg-sel':''}" data-g="F" onclick="selectGender(this)">F · Female</div>
           </div>
         </div>
+        ${!p ? `
+        <div class="field">
+          <label>Add to</label>
+          <div class="seg-row" id="pl_bucketRow">
+            <div class="seg-btn seg-sel" data-v="active" onclick="selectSeg(this)">Active Roster</div>
+            <div class="seg-btn" data-v="pool" onclick="selectSeg(this)">Available Pool</div>
+          </div>
+        </div>
+        ` : ''}
         <div class="divider"></div>
         ${renderPlayerBaselineFields('pl', p)}
         <div class="divider"></div>
@@ -4769,7 +5137,13 @@ async function savePlayerFromModal(existingId){
     p.email = email;
     Object.assign(p, baseline);
   } else {
-    state.players.push({id: uid('pl'), name, active:true, gender, phone, email, ...baseline});
+    const bucketBtn = document.querySelector('#pl_bucketRow .seg-sel');
+    const addToActive = !bucketBtn || bucketBtn.dataset.v === 'active';
+    if(addToActive){
+      const reason = wouldExceedRosterCap(gender);
+      if(reason){ showToast(reason); return; }
+    }
+    state.players.push({id: uid('pl'), name, active: addToActive, gender, phone, email, ...baseline});
   }
   await savePlayers();
   closeModal();
@@ -4841,12 +5215,8 @@ async function performDeletePlayer(id){
   showToast('Player and all related data removed');
   render();
 }
-async function togglePlayerActive(id){
-  const p = state.players.find(pl=>pl.id===id);
-  p.active = p.active===false ? true : false;
-  render();
-  savePlayers().catch(err=>console.error('Player status save failed', err));
-}
+// togglePlayerActive retired — Active→Available is now dropPlayerToPool (pre-lock) or
+// openRosterMoveModal (post-lock); Available→Active is promotePlayerToActive.
 
 /* ============================= STATS ============================= */
 /* ============================= BULLETIN BOARD ============================= */
@@ -6803,7 +7173,7 @@ async function exportBackup(){
 async function exportAvailabilityXlsx(){
   try{
     const [dates, availability] = await Promise.all([loadSeasonDates(), loadAvailability()]);
-    const roster = state.players.filter(p=>p.active!==false).sort((a,b)=>a.name.localeCompare(b.name));
+    const roster = state.players.slice().sort((a,b)=>a.name.localeCompare(b.name));
     const STATUS_LABEL = { available: 'Available', maybe: 'Maybe', cant: "Can't" };
     const STATUS_COLOR = { available: 'C6EFCE', maybe: 'FFEB9C', cant: 'FFC7CE' }; // plain traffic-light fills
 
