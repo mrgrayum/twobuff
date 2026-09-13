@@ -5323,13 +5323,15 @@ async function renderMatchups(){
   const selectedEvent = selectedEventId ? state.events.find(e=>e.id===selectedEventId) : null;
   const eventStats = selectedEventId ? await loadStats(selectedEventId) : null;
 
-  // Once a specific event is selected, the Two Buff pool is limited to players who are
-  // actually available for it — anyone who RSVP'd "Out" (declined) is dropped. Players who
-  // said in/maybe, or who haven't responded at all, stay. For a generic mockup (no event
-  // selected) the full active roster shows. The opponent side is always the full team.
+  // Once a specific event is selected, the Two Buff pool is limited to players explicitly
+  // RSVP'd "confirmed" for it — maybe/declined/no-response are all excluded. This only tightens
+  // the pool used to CREATE new pairings; an existing pairing still resolves normally via
+  // resolveMatchupPlayer()'s lookup against the full activeTB, even if that player's RSVP
+  // changes after they were paired. For a generic mockup (no event selected) the full active
+  // roster shows. The opponent side is always the full team.
   const eventRsvp = selectedEventId ? await loadRsvp(selectedEventId) : null;
   const eligibleTB = eventRsvp
-    ? activeTB.filter(p => !(eventRsvp[p.id] && eventRsvp[p.id].status === 'declined'))
+    ? activeTB.filter(p => eventRsvp[p.id] && eventRsvp[p.id].status === 'confirmed')
     : activeTB;
 
   // Per-event lineup bench (only when a specific event is selected). A player sitting out
