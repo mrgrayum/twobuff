@@ -1084,6 +1084,28 @@ async function getLiveMatchesByCourse(){
   }
   return { doublesByCourse, singlesByCourse };
 }
+// Course-stats match lists deliberately keep one row per TEAM per real match (so "2Buff shot
+// 14, Burgess shot 17" are two separate rounds feeding the course-difficulty numbers above) —
+// but a "full match history" list showing both sides of the very same real match reads like
+// a duplicate. This collapses each mirrored pair down to one row for display purposes only;
+// it does not touch the aggregate stats (roundCount/avgScore/bestScore/etc), which still use
+// every team's individual round. pairKeyFn identifies the two mirrored rows as the same event
+// (e.g. same two teams, same pair of scores) without depending on an event id, since the
+// imported historical archive doesn't carry one.
+function dedupeMirroredMatches(matches, pairKeyFn){
+  const indexByKey = new Map();
+  const result = [];
+  matches.forEach(m => {
+    const key = m.date + '|' + [m.team, m.oppTeam].sort().join('~') + '|' + pairKeyFn(m);
+    if(!indexByKey.has(key)){
+      indexByKey.set(key, result.length);
+      result.push(m);
+    } else if(m.team === '2Buff' && result[indexByKey.get(key)].team !== '2Buff'){
+      result[indexByKey.get(key)] = m; // prefer showing our own side when we were involved
+    }
+  });
+  return result;
+}
 
 async function loadCourseStats(){
   if(!state.courseStatsStaticCache){
@@ -1530,15 +1552,17 @@ function openSchedulingSheet(){
 function openSettingsModal(){
   const modal = document.getElementById('modalRoot');
   const manageSection = `
+      ${state.adminMode ? `
       <div class="section-label" style="margin-top:0;">Team &amp; Opponents</div>
       <div class="card">
-        <div style="font-size:12.5px; color:var(--ink-soft); line-height:1.5; margin-bottom:12px;">${state.adminMode ? 'View or edit either roster.' : 'View either roster. Admin Mode is needed to make changes.'}</div>
+        <div style="font-size:12.5px; color:var(--ink-soft); line-height:1.5; margin-bottom:12px;">View or edit either roster.</div>
         <div class="btn-row">
           <button class="btn btn-outline" onclick="closeModal(); setView('team');">👥 Team Roster</button>
           <button class="btn btn-outline" onclick="closeModal(); setView('opponents');">🏟️ Opponent Teams</button>
         </div>
       </div>
-      <div class="section-label">Important Links</div>
+      ` : ''}
+      <div class="section-label" style="margin-top:0;">Important Links</div>
       <div class="card">
         <div style="font-size:12.5px; color:var(--ink-soft); line-height:1.5; margin-bottom:12px;">The full official rulebook (searchable, in-app), plus league forms and documents.</div>
         <div class="btn-row" style="flex-direction:column;">
@@ -4652,6 +4676,11 @@ async function exportOpponentRostersCSV(){
   showToast('Opponent rosters downloaded');
 }
 async function renderTeam(){
+  if(!state.adminMode){
+    return `
+      <button class="btn btn-ghost btn-sm" style="width:auto; margin-bottom:12px;" onclick="setView('home')">← Back to Home</button>
+      <div class="card empty"><span class="em">🔒</span><p>The team roster is managed by team admins.</p></div>`;
+  }
   await Promise.all([loadRosterMovesLog(), loadRosterTrackingLocked()]);
   const sorted = [...state.players].sort((a,b)=>a.name.localeCompare(b.name));
   const activeRoster = sorted.filter(p=>p.active!==false);
@@ -6200,6 +6229,11 @@ async function removePointsAdjustment(eventId, adjId){
 /* ---- Opponent team management (admin only) ---- */
 /* ============================= OPPONENT TEAMS PAGE ============================= */
 async function renderTeamsPage(){
+  if(!state.adminMode){
+    return `
+      <button class="btn btn-ghost btn-sm" style="width:auto; margin-bottom:12px;" onclick="setView('home')">← Back to Home</button>
+      <div class="card empty"><span class="em">🔒</span><p>Opponent team rosters are managed by team admins.</p></div>`;
+  }
   const teams = await loadOppTeams();
   let body = '';
   if(teams.length === 0){
@@ -6739,6 +6773,11 @@ function renderDoublesCourseCard(courseKey, COURSE_STATS_DATASET, divisionPill){
       </div>
     </div>`;
 
+  // One row per real match for display lists — the stat card above still uses c.allMatches
+  // (every team's individual round) unchanged, per the decision to keep those pool-wide.
+  const doublesPairKey = m => [m.score, m.oppScore].sort((a,b)=>a-b).join('~');
+  const listMatches = dedupeMirroredMatches(c.allMatches || [], doublesPairKey);
+
   let recentHtml = '';
   if(c.twoBuffMostRecent && c.twoBuffMostRecent.length){
     const d = c.twoBuffMostRecent[0].date;
@@ -6762,7 +6801,7 @@ function renderDoublesCourseCard(courseKey, COURSE_STATS_DATASET, divisionPill){
     recentHtml = `
       <div class="stats-section-header">Most Recent Rounds At This Course</div>
       <div class="card">
-        ${(c.allMatches||[]).slice(0,10).map(m => `
+        ${listMatches.slice(0,10).map(m => `
           <div style="display:flex; align-items:center; gap:12px; padding:7px 0; border-bottom:1px solid var(--chip-bg, #eee);">
             <div style="font-size:18px; font-weight:800; color:var(--forest-dark); min-width:36px;">${m.score}</div>
             <div style="flex:1; min-width:0; font-size:12px;">${esc(m.partners.join(' & '))} ${divisionPill(m.division)} <span style="color:var(--ink-soft);">(${esc(m.team)}) · ${esc(m.date)}</span></div>
@@ -6774,14 +6813,14 @@ function renderDoublesCourseCard(courseKey, COURSE_STATS_DATASET, divisionPill){
   const expanded = !!state.courseDetailExpanded;
   const detailToggle = `
     <button class="btn btn-outline btn-sm" style="width:100%; margin-top:10px;" onclick="toggleCourseDetail()">
-      ${expanded ? '▲ Hide full match history' : `▼ See all ${c.allMatches.length} doubles matches at this course`}
+      ${expanded ? '▲ Hide full match history' : `▼ See all ${listMatches.length} doubles matches at this course`}
     </button>`;
 
   let detailListHtml = '';
   if(expanded){
     detailListHtml = `
       <div class="card" style="margin-top:8px; max-height:420px; overflow-y:auto;">
-        ${c.allMatches.map(m => {
+        ${listMatches.map(m => {
           const isPlayoff = m.score === m.oppScore;
           const scoreColor = m.result==='Won' ? 'var(--forest)' : (m.result==='Lost' ? 'var(--red)' : 'var(--ink-soft)');
           return `
@@ -6836,6 +6875,11 @@ function renderSinglesCourseCard(courseKey, SINGLES_COURSE_STATS_DATASET, divisi
       </div>
     </div>`;
 
+  // One row per real match for display lists — the stat card above still uses c.allMatches
+  // (every team's individual result) unchanged, per the decision to keep those pool-wide.
+  const singlesPairKey = m => [m.player, m.opponent].sort().join('~') + '~' + m.margin;
+  const listMatches = dedupeMirroredMatches(c.allMatches || [], singlesPairKey);
+
   let recentHtml = '';
   if(c.twoBuffMostRecent && c.twoBuffMostRecent.length){
     const d = c.twoBuffMostRecent[0].date;
@@ -6858,7 +6902,7 @@ function renderSinglesCourseCard(courseKey, SINGLES_COURSE_STATS_DATASET, divisi
     recentHtml = `
       <div class="stats-section-header">Most Recent Singles At This Course</div>
       <div class="card">
-        ${(c.allMatches||[]).slice(0,10).map(m => {
+        ${listMatches.slice(0,10).map(m => {
           const scoreColor = m.result==='W' ? 'var(--forest)' : (m.result==='L' ? 'var(--red)' : 'var(--ink-soft)');
           return `
           <div style="display:flex; align-items:center; gap:12px; padding:7px 0; border-bottom:1px solid var(--chip-bg, #eee);">
@@ -6872,14 +6916,14 @@ function renderSinglesCourseCard(courseKey, SINGLES_COURSE_STATS_DATASET, divisi
   const expanded = !!state.courseDetailExpanded;
   const detailToggle = `
     <button class="btn btn-outline btn-sm" style="width:100%; margin-top:10px;" onclick="toggleCourseDetail()">
-      ${expanded ? '▲ Hide full match history' : `▼ See all ${c.allMatches.length} singles matches at this course`}
+      ${expanded ? '▲ Hide full match history' : `▼ See all ${listMatches.length} singles matches at this course`}
     </button>`;
 
   let detailListHtml = '';
   if(expanded){
     detailListHtml = `
       <div class="card" style="margin-top:8px; max-height:420px; overflow-y:auto;">
-        ${c.allMatches.map(m => {
+        ${listMatches.map(m => {
           const scoreColor = m.result==='W' ? 'var(--forest)' : (m.result==='L' ? 'var(--red)' : 'var(--ink-soft)');
           return `
           <div style="display:flex; align-items:center; gap:12px; padding:8px 0; border-bottom:1px solid var(--chip-bg, #eee);">
