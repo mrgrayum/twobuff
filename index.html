@@ -5215,11 +5215,25 @@ async function renderMatchups(){
   }
 
   // ---- Event linking: which real event (if any) results get recorded against ----
-  // Excludes TBD (dateless) placeholder events — matchups/stats aren't recordable against
-  // an event that doesn't have a real date yet.
-  const linkedEvents = state.events.filter(e=>e.date && e.opponentTeamId === currentTeam.id).sort((a,b)=>b.date.localeCompare(a.date));
-  const selectedEventId = ms.eventIdByTeam[currentTeam.id] || null;
-  const selectedEvent = selectedEventId ? state.events.find(e=>e.id===selectedEventId) : null;
+  // Any event on the schedule linked to this opponent is selectable — including ones
+  // whose date isn't set yet (their pill shows "Date TBD") — so the RSVP-confirmed
+  // pool below works as soon as the event exists.
+  const linkedEvents = state.events.filter(e=>e.opponentTeamId === currentTeam.id).sort((a,b)=>(b.date||'').localeCompare(a.date||''));
+  // The persisted selection can outlive the event itself (events get deleted and
+  // re-created under new ids). A selection pointing at a gone event — or one that
+  // now belongs to a different team — would silently filter the Two Buff pool by
+  // that ghost event's (empty) RSVP list and show an empty roster, so validate it
+  // here and heal the saved state.
+  let selectedEventId = ms.eventIdByTeam[currentTeam.id] || null;
+  let selectedEvent = selectedEventId ? state.events.find(e=>e.id===selectedEventId) : null;
+  if(selectedEventId && (!selectedEvent || selectedEvent.opponentTeamId !== currentTeam.id)){
+    selectedEventId = null;
+    selectedEvent = null;
+    if(state.adminMode){
+      ms.eventIdByTeam[currentTeam.id] = null;
+      saveMatchupState(ms).catch(err=>console.error('Matchup save failed', err));
+    }
+  }
   const eventStats = selectedEventId ? await loadStats(selectedEventId) : null;
 
   // Once a specific event is selected, the Two Buff pool is limited to players explicitly
@@ -5244,7 +5258,7 @@ async function renderMatchups(){
     <div class="season-tabs">
       ${linkedEvents.map(e=>{
         const d = fmtDate(e.date);
-        return `<button class="matchup-team-pill ${e.id===selectedEventId?'active':''}" ${state.adminMode ? `onclick="selectMockupEvent('${currentTeam.id}','${e.id}')"` : ''}>${esc(e.name)} · ${d.mon} ${d.day}</button>`;
+        return `<button class="matchup-team-pill ${e.id===selectedEventId?'active':''}" ${state.adminMode ? `onclick="selectMockupEvent('${currentTeam.id}','${e.id}')"` : ''}>${esc(e.name)} · ${e.date ? `${d.mon} ${d.day}` : 'Date TBD'}</button>`;
       }).join('')}
     </div>
   ` : `<div style="font-size:11.5px; color:var(--ink-soft); margin:8px 0 4px;">No events are linked to ${esc(currentTeam.name)} yet — set this team as an event's opponent (Events tab) to record real results here.</div>`;
@@ -5375,7 +5389,7 @@ async function renderMatchups(){
     const isArmed = state.armedSinglesTB === p.id;
     const info = compactPlayerInfoLine(p);
     return `<button class="matchup-chip ${isArmed?'armed':''}" ${state.adminMode ? `onmousedown="startMatchupLongPress('${p.id}','singles')" onmouseup="cancelMatchupLongPress()" onmouseleave="cancelMatchupLongPress()" ontouchstart="startMatchupLongPress('${p.id}','singles')" ontouchend="cancelMatchupLongPress()" ontouchmove="cancelMatchupLongPress()" onclick="matchupChipTap(event, 'singlesTB', '${p.id}')"` : 'disabled'}>${esc(p.name)} ${genderBadgeHtml(p)}${info ? `<span class="sub">${esc(info)}</span>` : ''}${isArmed ? `<span class="sub">Tap an opponent →</span>` : ''}</button>${renderMatchupCard(p, false, 'singles')}`;
-  }).join('') : `<div style="font-size:12.5px; color:var(--ink-soft); text-align:center; padding:10px 0;">Everyone's matched up</div>`;
+  }).join('') : `<div style="font-size:12.5px; color:var(--ink-soft); text-align:center; padding:10px 0;">${selectedEventId && eligibleTB.length === 0 ? 'No Two Buff players are confirmed for this event yet — mark RSVPs in the Events tab' : "Everyone's matched up"}</div>`;
 
   const oppSinglesChips = availableOpp.length ? availableOpp.map(o=>{
     const isArmed = state.armedSinglesOpp === o.id;
@@ -5466,7 +5480,7 @@ async function renderMatchups(){
     const isArmed = state.armedDoublesTBPair.includes(p.id);
     const info = compactPlayerInfoLine(p);
     return `<button class="matchup-chip ${isArmed?'armed':''}" ${state.adminMode ? `onmousedown="startMatchupLongPress('${p.id}','doubles')" onmouseup="cancelMatchupLongPress()" onmouseleave="cancelMatchupLongPress()" ontouchstart="startMatchupLongPress('${p.id}','doubles')" ontouchend="cancelMatchupLongPress()" ontouchmove="cancelMatchupLongPress()" onclick="matchupChipTap(event, 'doublesTB', '${p.id}')"` : 'disabled'}>${esc(p.name)} ${genderBadgeHtml(p)}${info ? `<span class="sub">${esc(info)}</span>` : ''}</button>${renderMatchupCard(p, false, 'doubles')}`;
-  }).join('') : `<div style="font-size:12.5px; color:var(--ink-soft); text-align:center; padding:10px 0;">Everyone's grouped up</div>`;
+  }).join('') : `<div style="font-size:12.5px; color:var(--ink-soft); text-align:center; padding:10px 0;">${selectedEventId && eligibleTB.length === 0 ? 'No Two Buff players are confirmed for this event yet — mark RSVPs in the Events tab' : "Everyone's grouped up"}</div>`;
 
   const doublesOppChips = availableDoublesOpp.length ? availableDoublesOpp.map(o=>{
     const isArmed = state.armedDoublesOppPair.includes(o.id);
