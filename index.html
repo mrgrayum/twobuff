@@ -1297,7 +1297,6 @@ function relockApp(){
   state.unlocked = false;
   state.adminMode = false;
   state.isSuperAdmin = false;
-  _chatPin = null; // don't keep reusing a PIN from a session that's now locked
   closeModal();
   const adminSwitch = document.getElementById('adminSwitch');
   if(adminSwitch) adminSwitch.classList.toggle('on', false);
@@ -1432,7 +1431,6 @@ function toggleAdmin(){
   if(state.adminMode){
     state.adminMode = false;
     state.isSuperAdmin = false;
-    _chatPin = null; // don't keep reusing a PIN from a session that's now locked
     document.getElementById('adminSwitch').classList.remove('on');
     render();
     return;
@@ -1701,7 +1699,6 @@ async function saveNewRegularPin(){
   if(!/^\d{4}$/.test(p1)){ showToast('PIN must be exactly 4 digits'); return; }
   if(p1 !== p2){ showToast("PINs don't match"); return; }
   await storeSet('dg_admin_pin', p1, true);
-  _chatPin = null; // old cached PIN would just fail auth on the next chat message
   closeModal();
   showToast('Admin PIN updated');
 }
@@ -1754,7 +1751,6 @@ async function saveNewSuperPin(){
   if(!/^\d{4}$/.test(p1)){ showToast('PIN must be exactly 4 digits'); return; }
   if(p1 !== p2){ showToast("PINs don't match"); return; }
   await storeSet('dg_super_admin_pin', p1, true);
-  _chatPin = null; // old cached PIN would just fail auth on the next chat message
   closeModal();
   showToast('Super admin PIN updated');
 }
