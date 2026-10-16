@@ -1413,6 +1413,9 @@ async function refreshAllData(){
   state.matchupStateCache = null;
   state.rosterMovesLog = null;
   state.rosterTrackingLocked = null;
+  state.oppTeamsCache = null;
+  state.seasonDatesCache = null;
+  state.availabilityCache = null;
   await Promise.all([loadPlayers(), loadEvents()]);
 }
 
@@ -1758,12 +1761,11 @@ async function saveNewSuperPin(){
 function setView(v){
   state.view = v;
   state.currentEventId = null;
-  state.matchupStateCache = null; // always fetch fresh matchup/team data when (re)entering a tab
-  state.allStatsCache = null;
-  state.allRsvpCache = null;
-  state.oppTeamsCache = null;
-  state.seasonDatesCache = null;
-  state.availabilityCache = null;
+  // Data caches intentionally survive tab switches (2026-10-16 perf fix): every loader
+  // caches and every save path updates its cache in place, so re-entering a tab renders
+  // from memory instead of re-downloading (dg_opp_teams alone is ~850 KB). Freshness is
+  // handled at the real refresh points — app load, the Refresh button, and returning
+  // from the background — which all go through refreshAllData().
   state.viewedTeamId = null;
   document.querySelectorAll('.navbtn').forEach(b=>b.classList.toggle('active', b.dataset.view === v));
   document.getElementById('viewRoot').innerHTML = '<div class="loading-dots">Loading…</div>';
