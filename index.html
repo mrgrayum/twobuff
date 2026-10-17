@@ -5339,6 +5339,10 @@ async function renderMatchups(){
           <div style="display:flex; flex-wrap:wrap;">${suggestionsHtml}</div>
           ${state.adminMode ? `<button class="btn btn-outline btn-sm" style="margin-top:8px;" onclick="openOppPlayerEditModal('${currentTeam.id}','${player.id}')">✏️ Edit Notes &amp; Suggestions</button>` : ''}`;
       }
+    } else {
+      inner += player.notes
+        ? `<div style="font-size:12.5px; color:var(--ink); white-space:pre-wrap; line-height:1.5; margin-bottom:8px;">📝 ${esc(player.notes)}</div>`
+        : `<div style="font-size:12px; color:var(--ink-soft); margin-bottom:8px;">No notes yet.</div>`;
     }
     inner += renderSeasonHistoryDropdown(player, isOpponent, teams); // applies to both Two Buff players and opponents alike
     // Sit-out toggle, scoped to the section's format. Only available with an event
