@@ -6214,7 +6214,10 @@ async function oppPlayerRowFor(team, p){
         : 'border-top:1px solid var(--line); padding:9px 2px; cursor:pointer;'}${p.active===false ? ' opacity:0.55;' : ''}" onclick="toggleExpandOppPlayer('${p.id}')">
       <div style="display:flex; justify-content:space-between; align-items:center;">
         <span style="font-size:13.5px; font-weight:700; display:inline-flex; align-items:center; gap:6px;">${esc(p.name)}${genderBadgeHtml(p)}${p.notes ? ' 📝' : ''}${p.active===false ? ' <span class="pill pill-gray" style="font-size:9.5px;">Inactive</span>' : ''}</span>
-        <span style="font-size:11px; color:var(--ink-soft);">${expanded ? '▲' : '▼'}</span>
+        <span style="display:inline-flex; align-items:center; gap:8px;">
+          ${p.active===false && state.adminMode ? `<button class="btn btn-primary btn-sm" style="padding:4px 10px; font-size:11.5px;" onclick="event.stopPropagation(); toggleOppPlayerActive('${team.id}','${p.id}')">↩️ Reactivate</button>` : ''}
+          <span style="font-size:11px; color:var(--ink-soft);">${expanded ? '▲' : '▼'}</span>
+        </span>
       </div>
       ${detailHtml}
     </div>`;
