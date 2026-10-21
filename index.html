@@ -4333,6 +4333,7 @@ async function teamCardFor(p, isActiveRoster){
             <div style="display:flex; align-items:center; gap:6px;">
               <span style="font-weight:800; font-size:15px;">${esc(p.name)}</span>
               <span class="gender-badge ${p.gender==='F' ? 'g-f':'g-m'}">${p.gender==='F' ? 'F':'M'}</span>
+              ${p.formCompleted ? '<span class="pill" style="background:#DFF0E2; color:#1D6B38; padding:2px 8px; font-size:10.5px;">✓ Form</span>' : ''}
               <span style="font-size:11px; color:var(--ink-soft);">${expanded ? '▲' : '▼'}</span>
             </div>
             <div style="font-size:12px; color:var(--ink-soft);">${isActiveRoster ? 'Active Roster' : 'Available Pool'} · tap for details</div>
@@ -5008,6 +5009,14 @@ function openPlayerModal(existingId){
         </div>
         <div style="font-size:11.5px; color:var(--ink-soft); margin-top:-4px;">Contact info is only visible to admins — teammates browsing normally won't see it.</div>
         <div class="divider"></div>
+        <div class="field">
+          <label style="display:flex; align-items:center; gap:9px; cursor:pointer; text-transform:none; letter-spacing:0; font-size:14px; color:var(--ink);">
+            <input id="pl_formCompleted" type="checkbox" ${p && p.formCompleted ? 'checked' : ''} style="width:19px; height:19px; accent-color:var(--forest); flex-shrink:0;">
+            Player registration form completed
+          </label>
+          <div style="font-size:11px; color:var(--ink-soft); margin-top:4px;">Check this once you've seen confirmation the player filled out the registration form. A ✓ Form badge then shows on their roster card.</div>
+        </div>
+        <div class="divider"></div>
         <div class="btn-row">
           ${p ? `<button class="btn btn-danger" onclick="openDeleteConfirm('${p.id}')">Remove</button>` : ''}
           <button class="btn btn-primary" onclick="savePlayerFromModal('${p ? p.id : ''}')">${p ? 'Save Changes' : 'Add Player'}</button>
@@ -5026,6 +5035,8 @@ async function savePlayerFromModal(existingId){
   const gender = genderBtn ? genderBtn.dataset.g : 'M';
   const phone = document.getElementById('pl_phone').value.trim();
   const email = document.getElementById('pl_email').value.trim();
+  const formCompletedEl = document.getElementById('pl_formCompleted');
+  const formCompleted = formCompletedEl ? formCompletedEl.checked : false;
   const baseline = readPlayerBaselineFields('pl');
   if(!name){ showToast('Enter a name'); return; }
   if(existingId){
@@ -5034,6 +5045,7 @@ async function savePlayerFromModal(existingId){
     p.gender = gender;
     p.phone = phone;
     p.email = email;
+    p.formCompleted = formCompleted;
     Object.assign(p, baseline);
   } else {
     const bucketBtn = document.querySelector('#pl_bucketRow .seg-sel');
@@ -5042,7 +5054,7 @@ async function savePlayerFromModal(existingId){
       const reason = wouldExceedRosterCap(gender);
       if(reason){ showToast(reason); return; }
     }
-    state.players.push({id: uid('pl'), name, active: addToActive, gender, phone, email, ...baseline});
+    state.players.push({id: uid('pl'), name, active: addToActive, gender, phone, email, formCompleted, ...baseline});
   }
   await savePlayers();
   closeModal();
