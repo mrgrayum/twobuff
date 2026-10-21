@@ -1503,6 +1503,21 @@ function toggleAdmin(){
   openAdminPinModal();
 }
 
+// Log this device out of admin entirely: clears the saved trust window, so the
+// next admin toggle asks for a PIN again. This is the way to switch from a
+// regular-admin trust (30 days) to a super-admin unlock on the same device —
+// toggling admin off alone keeps the trust and silently re-enters at that tier.
+function logoutAdminDevice(){
+  clearDeviceTrust();
+  state.adminMode = false;
+  state.isSuperAdmin = false;
+  const sw = document.getElementById('adminSwitch');
+  if(sw) sw.classList.remove('on');
+  closeModal();
+  showToast('Logged out on this device');
+  render();
+}
+
 function openAdminPinModal(){
   const modal = document.getElementById('modalRoot');
   modal.innerHTML = `
@@ -1598,6 +1613,14 @@ function openSettingsModal(){
         </div>
       </div>`;
   const adminSection = state.adminMode ? `
+      <div class="section-label">Admin Level</div>
+      <div class="card">
+        <div style="font-size:12.5px; color:var(--ink-soft); line-height:1.5; margin-bottom:12px;">${state.isSuperAdmin ? 'You are unlocked as <strong>super admin</strong> on this device (lasts 1 hour).' : 'You are unlocked as a <strong>regular admin</strong> on this device (lasts 30 days). A few controls — like Begin Season Tracking and changing PINs — need super admin.'}</div>
+        <div class="btn-row">
+          ${state.isSuperAdmin ? '' : '<button class="btn btn-primary" onclick="openAdminPinModal()">🛡️ Unlock Super Admin</button>'}
+          <button class="btn btn-ghost" onclick="logoutAdminDevice()">Log Out on This Device</button>
+        </div>
+      </div>
       <div class="section-label">Team Entry PIN</div>
       <div class="card">
         <div style="font-size:12.5px; color:var(--ink-soft); line-height:1.5; margin-bottom:12px;">This is the basic PIN everyone — players and admins alike — needs just to open the app. Changing it needs the super admin PIN.</div>
