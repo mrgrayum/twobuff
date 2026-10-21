@@ -47,6 +47,10 @@
     min-height:100vh;
   }
   .app{max-width:640px;margin:0 auto;position:relative;}
+  html{overscroll-behavior-y:none;}
+  #ptrBar{position:fixed; top:10px; left:50%; transform:translate(-50%,-64px); z-index:40; background:var(--forest-dark); color:#fff; padding:8px 16px; border-radius:20px; font-size:13px; font-weight:700; opacity:0; pointer-events:none; transition:transform .18s ease, opacity .18s ease, background .18s ease; box-shadow:0 4px 14px rgba(0,0,0,0.25); white-space:nowrap;}
+  #ptrBar.show{transform:translate(-50%,0); opacity:1;}
+  #ptrBar.ready{background:#1D6B38;}
 
   /* ---------- Top bar ---------- */
   .topbar{
@@ -354,6 +358,7 @@
 </style>
 </head>
 <body>
+<div id="ptrBar">↓ Pull to refresh</div>
 <div class="app" id="mainApp">
   <div class="topbar">
     <div class="brand">
@@ -1214,6 +1219,52 @@ async function hardRefresh(){
   render();
   showToast('Data refreshed');
 }
+// ---- Pull-to-refresh: unlike the header 🔄 (data only), this performs a real
+// reload through a cache-busting URL so the phone picks up a new app build.
+(function initPullToRefresh(){
+  const bar = document.getElementById('ptrBar');
+  if(!bar) return;
+  const THRESH = 70;
+  let startY = null, pulling = false;
+  function inScrollable(el){
+    while(el && el !== document.body){
+      const s = getComputedStyle(el);
+      if((s.overflowY === 'auto' || s.overflowY === 'scroll') && el.scrollHeight > el.clientHeight) return true;
+      el = el.parentElement;
+    }
+    return false;
+  }
+  document.addEventListener('touchstart', (e)=>{
+    startY = null; pulling = false;
+    if(window.scrollY > 0) return;
+    if(document.querySelector('.overlay')) return;
+    if(e.touches.length !== 1) return;
+    if(inScrollable(e.target)) return;
+    startY = e.touches[0].clientY;
+  }, {passive:true});
+  document.addEventListener('touchmove', (e)=>{
+    if(startY === null) return;
+    const dy = e.touches[0].clientY - startY;
+    if(dy <= 0){ pulling = false; bar.classList.remove('show','ready'); return; }
+    pulling = true;
+    bar.textContent = dy >= THRESH ? '↑ Release to refresh' : '↓ Pull to refresh';
+    bar.classList.add('show');
+    bar.classList.toggle('ready', dy >= THRESH);
+  }, {passive:true});
+  document.addEventListener('touchend', ()=>{
+    if(startY === null) return;
+    const wasReady = pulling && bar.classList.contains('ready');
+    startY = null; pulling = false;
+    if(wasReady){
+      bar.textContent = '↻ Refreshing…';
+      const url = new URL(window.location.href);
+      url.searchParams.set('v', Date.now().toString());
+      setTimeout(()=>window.location.replace(url.toString()), 150);
+    } else {
+      bar.classList.remove('show','ready');
+    }
+  });
+})();
 // ---- Per-device unlock ("trust this device") ----
 // Entering a valid PIN trusts THIS device (browser) for a set window, so people aren't
 // re-prompted every time they open the app. Team and regular-admin unlocks last 30 days;
