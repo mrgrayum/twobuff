@@ -5354,7 +5354,12 @@ function suggestNextPutUp(availTB, availOpp){
   if(forced && pick.strictAns.length) note = `Everyone left is holding a top cover — ${she ? "she's" : "he's"} the answer for ${pick.strictAns[0].name}, least-bad option`;
   else if(pick.softAns.length){
     const top = [...pick.softAns].sort((a,b)=>((skill(b) ?? -1) - (skill(a) ?? -1)))[0];
-    note = `⚑ ${she ? "She's" : "He's"} the answer for ${top.name} — lead ${she ? 'her' : 'him'} only if that cover is settled`;
+    const tbById = {}; availTB.forEach(p=>tbById[p.id]=p);
+    const lst = Array.isArray(top.suggestedMatchups) ? top.suggestedMatchups : [];
+    const nxt = lst.slice(1).map(id=>tbById[id]).find(Boolean);
+    note = nxt
+      ? `⚑ Also the answer for ${top.name} — next in line there: ${nxt.name}`
+      : `⚑ Also the answer for ${top.name} — no backup left on that list`;
   }
   else if(pick.reserve) note = `⚑ In reserve for their top players — a fallback lead`;
   else if(pick.concession) note = `Strong lead — most of their remaining players can't match ${she ? 'her' : 'him'}`;
