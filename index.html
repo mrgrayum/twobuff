@@ -5272,73 +5272,88 @@ function compactPlayerInfoLine(p){
   return bits.join(' · ');
 }
 // ---- Next put-up recommendation (singles only, text-only suggestion) ----
-// Computed from the live board: who is still available on each side, plus the
-// preference lists saved on the opponent roster (slot 1 of a list = the player
-// we hold as that opponent's designated answer). v1 brain: skill ranks only.
-// Rules from the captains' put-up strategy:
-//  - STRICT HOLD: never suggest the designated answer for one of their three
-//    strongest remaining players (same gender) while that player is unmatched.
-//  - THROW MARK: never suggest the player in the throw slot (last name on a
-//    shortened list) of one of those top opponents.
-//  - SOFT FLAG: the designated answer for anyone else still unmatched can be
-//    suggested, but scores lower and the note names who he is holding for.
-//  - Prefer the concession band (a lead most of their remaining players can't
-//    beat); penalize likely donations (weaker than their mid-line).
+// v3: priced by the captains' put-up strategy, with the response problem
+// handled as explicit gates (an exchange model that values the remaining
+// board at optimal-assignment prices was tested against the strategy sim
+// and misfired -- it over-trusts how well saved players deploy later).
+//  - STRICT HOLD: never suggest the designated answer (slot 1 of a saved
+//    list) for one of their three strongest remaining players, same gender.
+//  - THROW SLOT: never suggest the man in the throw slot (last name) of a
+//    top opponent's shortened list.
+//  - HAMMER GATE: while they still hold a live throwaway -- a bottom player
+//    who loses to our typical remaining player almost always -- one of our
+//    three strongest remaining players is not suggested as a lead: he would
+//    just draw the throw and bank a point anyone could bank. The gate lifts
+//    once their bottom tier is spent.
+//  - LEAD BAND: a put-up must at least contest their mid-line (median of
+//    their remaining players) -- weaker leads just donate the slot.
+//  - Score: skill, minus a soft flag if he is the designated answer for
+//    someone else still live (the note names the cover and the next in
+//    line), minus a bottom-answer discount, plus a concession-band bonus.
 function suggestNextPutUp(availTB, availOpp){
-  const skill = p => { const v = parseFloat(p && p.skillRank); return isNaN(v) ? null : v; };
+  const skillRaw = p => { const v = parseFloat(p && p.skillRank); return isNaN(v) ? null : v; };
+  const sk = p => (skillRaw(p) ?? 4.0);
+  const wpVs = (aSkill, bSkill) => 1 / (1 + Math.pow(10, -(aSkill - bSkill) / 2.5));
   if(!availTB.length || !availOpp.length) return null;
   const answersFor = {}; // our player id -> [opp records he is slot 1 for]
   availOpp.forEach(o=>{
     const list = Array.isArray(o.suggestedMatchups) ? o.suggestedMatchups : [];
     if(list.length) (answersFor[list[0]] = answersFor[list[0]] || []).push(o);
   });
-  const scored = [];
-  ['M','F'].forEach(g=>{
+  const evalGender = g => {
     const tb = availTB.filter(p=>(p.gender || 'M') === g);
     const op = availOpp.filter(p=>(p.gender || 'M') === g);
-    if(!tb.length || !op.length) return;
-    const opSkills = op.map(skill).filter(v=>v != null).sort((a,b)=>a-b);
-    if(!opSkills.length) return;
+    if(!tb.length || !op.length) return [];
+    const opSkills = op.map(sk).sort((a,b)=>a-b);
     const median = opSkills[Math.floor(opSkills.length/2)];
     const p75 = opSkills[Math.min(opSkills.length-1, Math.floor(opSkills.length*0.75))];
-    const bySkillDesc = [...op].sort((a,b)=>((skill(b) ?? -1) - (skill(a) ?? -1)));
-    const top2 = bySkillDesc.slice(0,2);
+    const bySkillDesc = [...op].sort((a,b)=>sk(b)-sk(a));
     const top3 = bySkillDesc.slice(0,3);
     const bottom3 = bySkillDesc.slice(-3);
+    const weakest = bySkillDesc[bySkillDesc.length-1];
+    const tbSkills = tb.map(sk).sort((a,b)=>a-b);
+    const ourMedian = tbSkills[Math.floor(tbSkills.length/2)];
+    const ourTop3 = new Set([...tb].sort((a,b)=>sk(b)-sk(a)).slice(0,3).map(p=>p.id));
+    // A live throwaway for them: loses to our typical remaining player ~always.
+    const throwTier = op.filter(t => wpVs(ourMedian, sk(t)) >= 0.85);
     const throwIds = new Set();
-    top2.forEach(o=>{
+    bySkillDesc.slice(0,2).forEach(o=>{
       const list = Array.isArray(o.suggestedMatchups) ? o.suggestedMatchups : [];
       if(list.length && list.length <= 5) throwIds.add(list[list.length-1]);
     });
-    // Top-end reserve: a player sitting in the top 3 of a top-2 opponent's list
-    // is part of the model's cover plan for their best — don't spend him as a
-    // lead even when he isn't that opponent's slot 1 (e.g. Benson on Zak's list).
-    const reserveIds = new Set();
-    top2.forEach(o=>{
-      const list = Array.isArray(o.suggestedMatchups) ? o.suggestedMatchups : [];
-      list.slice(0,3).forEach(id=>reserveIds.add(id));
-    });
-    tb.forEach(p=>{
-      const myAnswers = answersFor[p.id] || [];
+    return tb.map(L => {
+      const myAnswers = answersFor[L.id] || [];
       const strictAns = myAnswers.filter(o=>top3.includes(o));
       const softAns = myAnswers.filter(o=>!top3.includes(o));
-      const s = skill(p) ?? 4.0;
+      const s = sk(L);
       let score = s;
       if(softAns.length) score -= 0.75;
       if(myAnswers.some(o=>bottom3.includes(o))) score -= 0.5;
       if(s >= p75) score += 0.5;
-      if(s < median - 0.5) score -= 1.5;
-      const reserve = reserveIds.has(p.id) && !strictAns.length;
-      if(reserve) score -= 1.25;
-      scored.push({ p, g, s, score, strict: strictAns.length>0, isThrow: throwIds.has(p.id),
-        strictAns, softAns, reserve, concession: s >= p75 });
+      const hammer = ourTop3.has(L.id) && throwTier.some(t => sk(t) <= s - 1.5);
+      return { p: L, g, s, score,
+        strict: strictAns.length > 0,
+        isThrow: throwIds.has(L.id),
+        hammer, throwName: hammer ? weakest.name : null,
+        // Lead band: a put-up must at least contest their mid-line.
+        eligible: s >= median - 0.25,
+        strictAns, softAns, concession: s >= p75, median };
     });
-  });
+  };
+  const scored = [...evalGender('M'), ...evalGender('F')];
   if(!scored.length) return null;
   const byScore = (a,b)=>b.score-a.score;
-  const pickFrom = pool => pool.filter(c=>!c.strict && !c.isThrow).sort(byScore)[0]
-    || pool.filter(c=>!c.isThrow).sort(byScore)[0]
-    || [...pool].sort(byScore)[0];
+  const pickFrom = pool => {
+    const tiers = [
+      pool.filter(c=>c.eligible && !c.strict && !c.isThrow && !c.hammer),
+      pool.filter(c=>!c.strict && !c.isThrow && !c.hammer),
+      pool.filter(c=>!c.strict && !c.isThrow),
+      pool.filter(c=>!c.isThrow),
+      [...pool]
+    ];
+    const tier = tiers.find(t=>t.length);
+    return [...tier].sort(byScore)[0];
+  };
   // The genders draft in parallel — recommend from the side with more of their
   // players still unmatched (normally the men's pool), not across pools.
   const oppCount = g => availOpp.filter(p=>(p.gender || 'M') === g).length;
@@ -5348,12 +5363,15 @@ function suggestNextPutUp(availTB, availOpp){
     const pool = scored.filter(c=>c.g === g);
     if(pool.length){ pick = pickFrom(pool); break; }
   }
-  const forced = pick.strict || pick.isThrow;
+  const forced = pick.strict || pick.isThrow || pick.hammer;
   const she = pick.g === 'F';
   let note;
-  if(forced && pick.strictAns.length) note = `Everyone left is holding a top cover — ${she ? "she's" : "he's"} the answer for ${pick.strictAns[0].name}, least-bad option`;
-  else if(pick.softAns.length){
-    const top = [...pick.softAns].sort((a,b)=>((skill(b) ?? -1) - (skill(a) ?? -1)))[0];
+  if(forced && pick.strictAns.length){
+    note = `Everyone left is holding a top cover — ${she ? "she's" : "he's"} the answer for ${pick.strictAns[0].name}, least-bad option`;
+  } else if(forced && pick.hammer){
+    note = `Only real option left — ${she ? 'she' : 'he'} would likely draw a throw (${pick.throwName})`;
+  } else if(pick.softAns.length){
+    const top = [...pick.softAns].sort((a,b)=>sk(b)-sk(a))[0];
     const tbById = {}; availTB.forEach(p=>tbById[p.id]=p);
     const lst = Array.isArray(top.suggestedMatchups) ? top.suggestedMatchups : [];
     const nxt = lst.slice(1).map(id=>tbById[id]).find(Boolean);
@@ -5361,7 +5379,6 @@ function suggestNextPutUp(availTB, availOpp){
       ? `⚑ Also the answer for ${top.name} — next in line there: ${nxt.name}`
       : `⚑ Also the answer for ${top.name} — no backup left on that list`;
   }
-  else if(pick.reserve) note = `⚑ In reserve for their top players — a fallback lead`;
   else if(pick.concession) note = `Strong lead — most of their remaining players can't match ${she ? 'her' : 'him'}`;
   else note = `Best available — no live cover held`;
   return { name: pick.p.name, note };
