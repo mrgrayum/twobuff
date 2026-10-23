@@ -5271,6 +5271,11 @@ function compactPlayerInfoLine(p){
   if(p.age) bits.push(`${p.age}y`);
   return bits.join(' · ');
 }
+function medOf(arr){
+  const s = [...arr].sort((a,b)=>a-b);
+  const m = Math.floor(s.length/2);
+  return s.length % 2 ? s[m] : (s[m-1] + s[m]) / 2;
+}
 // ---- Next put-up recommendation (singles only, text-only suggestion) ----
 // v3: priced by the captains' put-up strategy, with the response problem
 // handled as explicit gates (an exchange model that values the remaining
@@ -5305,14 +5310,14 @@ function suggestNextPutUp(availTB, availOpp){
     const op = availOpp.filter(p=>(p.gender || 'M') === g);
     if(!tb.length || !op.length) return [];
     const opSkills = op.map(sk).sort((a,b)=>a-b);
-    const median = opSkills[Math.floor(opSkills.length/2)];
+    const median = medOf(opSkills);
     const p75 = opSkills[Math.min(opSkills.length-1, Math.floor(opSkills.length*0.75))];
     const bySkillDesc = [...op].sort((a,b)=>sk(b)-sk(a));
     const top3 = bySkillDesc.slice(0,3);
     const bottom3 = bySkillDesc.slice(-3);
     const weakest = bySkillDesc[bySkillDesc.length-1];
     const tbSkills = tb.map(sk).sort((a,b)=>a-b);
-    const ourMedian = tbSkills[Math.floor(tbSkills.length/2)];
+    const ourMedian = medOf(tbSkills);
     const ourTop3 = new Set([...tb].sort((a,b)=>sk(b)-sk(a)).slice(0,3).map(p=>p.id));
     // A live throwaway for them: loses to our typical remaining player ~always.
     const throwTier = op.filter(t => wpVs(ourMedian, sk(t)) >= 0.85);
@@ -5382,6 +5387,89 @@ function suggestNextPutUp(availTB, availOpp){
   else if(pick.concession) note = `Strong lead — most of their remaining players can't match ${she ? 'her' : 'him'}`;
   else note = `Best available — no live cover held`;
   return { name: pick.p.name, note };
+}
+// ---- Answer recommendation + stranding warning (singles) ----
+// When an opponent player is tapped (their put-up is on the table), suggest
+// who should answer. Starts from that opponent's saved list, then applies
+// state the static list cannot see:
+//  - USE-IT-OR-LOSE-IT: a premium player (our three strongest remaining)
+//    whose other good matchups are gone gets recommended NOW, even if he is
+//    not the list's first name -- otherwise he ends up stranded against
+//    their throw tier at the end (the Chace/Colin trap).
+//  - PRESERVATION: a premium player is skipped while his put-up is not a
+//    top-tier opponent and he still has 2+ good matchups left.
+//  - Never spend a premium player answering a throw-tier put-up.
+function suggestAnswer(availTB, availOpp, target){
+  const skillRaw = p => { const v = parseFloat(p && p.skillRank); return isNaN(v) ? null : v; };
+  const sk = p => (skillRaw(p) ?? 4.0);
+  const wpVs = (aSkill, bSkill) => 1 / (1 + Math.pow(10, -(aSkill - bSkill) / 2.5));
+  const g = target.gender || 'M';
+  const pool = availTB.filter(p=>(p.gender || 'M') === g);
+  const oppGender = availOpp.filter(p=>(p.gender || 'M') === g);
+  if(!pool.length || !oppGender.length) return null;
+  const tbSkills = pool.map(sk).sort((a,b)=>a-b);
+  const ourMedian = medOf(tbSkills);
+  const throwTier = new Set(oppGender.filter(t => wpVs(ourMedian, sk(t)) >= 0.85).map(t=>t.id));
+  const premium = new Set([...pool].sort((a,b)=>sk(b)-sk(a)).slice(0,3).map(p=>p.id));
+  const theirTop3 = new Set([...oppGender].sort((a,b)=>sk(b)-sk(a)).slice(0,3).map(p=>p.id));
+  const goodUses = (A, exclude) => oppGender.filter(T => T !== exclude && !throwTier.has(T.id) && wpVs(sk(A), sk(T)) >= 0.6).length;
+  const byId = {}; availTB.forEach(p=>byId[p.id]=p);
+  const list = (Array.isArray(target.suggestedMatchups) ? target.suggestedMatchups : [])
+    .map(id=>byId[id]).filter(p=>p && pool.includes(p));
+  const rest = pool.filter(p=>!list.includes(p)).sort((a,b)=>wpVs(sk(b), sk(target)) - wpVs(sk(a), sk(target)));
+  const ordered = [...list, ...rest];
+  const pIsThrow = throwTier.has(target.id);
+  const pIsTop = theirTop3.has(target.id);
+  const strandedNote = A => {
+    const she = A.gender === 'F';
+    return `Last good slot for ${A.name} — use ${she ? 'her' : 'him'} now or ${she ? 'she' : 'he'} gets stranded`;
+  };
+  if(pIsThrow){
+    // Answer a throw with the cheapest player who still beats him soundly --
+    // never a premium piece (in a two-man endgame pool everyone is 'premium'
+    // by rank, so price it by skill, not by the premium set).
+    const adequate = ordered.filter(A => wpVs(sk(A), sk(target)) >= 0.75);
+    const cheap = [...adequate].sort((a,b)=>sk(a)-sk(b))[0] || ordered[0];
+    return { name: cheap.name, note: 'Cheap answer — save the real players' };
+  }
+  const stranded = pool
+    .filter(A => premium.has(A.id) && wpVs(sk(A), sk(target)) >= 0.6 && goodUses(A, target) === 0)
+    .sort((a,b)=>sk(b)-sk(a))[0];
+  if(stranded && ordered[0] !== stranded) return { name: stranded.name, note: strandedNote(stranded) };
+  for(const A of ordered){
+    if(premium.has(A.id) && !pIsTop && goodUses(A, target) >= 2) continue;
+    const isPlanned = list.length && list[0] === A;
+    if(A === stranded && !isPlanned) return { name: A.name, note: strandedNote(A) };
+    return { name: A.name, note: isPlanned ? 'The planned answer' : 'Best available answer' };
+  }
+  return { name: ordered[0].name, note: 'Best available answer' };
+}
+// Warns when a premium player is about to be stranded: at most one good
+// (non-throw) matchup remains for him among their unpaired players.
+function strandingWarning(availTB, availOpp){
+  const skillRaw = p => { const v = parseFloat(p && p.skillRank); return isNaN(v) ? null : v; };
+  const sk = p => (skillRaw(p) ?? 4.0);
+  const wpVs = (aSkill, bSkill) => 1 / (1 + Math.pow(10, -(aSkill - bSkill) / 2.5));
+  if(availOpp.length > 8) return null; // board still young -- nobody is stranded yet
+  for(const g of ['M','F']){
+    const pool = availTB.filter(p=>(p.gender || 'M') === g);
+    const oppGender = availOpp.filter(p=>(p.gender || 'M') === g);
+    if(!pool.length || oppGender.length < 2) continue;
+    const tbSkills = pool.map(sk).sort((a,b)=>a-b);
+    const ourMedian = medOf(tbSkills);
+    const throwTier = new Set(oppGender.filter(t => wpVs(ourMedian, sk(t)) >= 0.85).map(t=>t.id));
+    const premium = [...pool].sort((a,b)=>sk(b)-sk(a)).slice(0,3);
+    for(const A of premium){
+      const uses = oppGender.filter(T => !throwTier.has(T.id) && wpVs(sk(A), sk(T)) >= 0.6);
+      if(uses.length <= 1){
+        const she = A.gender === 'F';
+        return uses.length
+          ? `⚠ ${A.name} is running out of good matchups — only ${uses[0].name} left. Answer with ${she ? 'her' : 'him'} when a real one is put up.`
+          : `⚠ ${A.name} has no good matchups left — only their throw tier remains for ${she ? 'her' : 'him'}.`;
+      }
+    }
+  }
+  return null;
 }
 async function setFirstPutUp(boardKey, who){
   const ms = state.matchupStateCache || await loadMatchupState();
@@ -5732,12 +5820,20 @@ async function renderMatchups(){
         <button class="btn ${firstPutUp==='us' ? 'btn-primary' : 'btn-ghost'} btn-sm" style="padding:2px 8px;" onclick="setFirstPutUp('${putUpBoardKey}','us')">Us</button>
       </span>`
     : `<span style="margin-left:auto; font-weight:600; color:var(--ink-soft);">First put-up: ${firstPutUp==='us' ? 'Us' : 'Them'}</span>`;
+  const armedOpp = state.armedSinglesOpp ? currentTeam.players.find(p=>p.id===state.armedSinglesOpp) : null;
+  const ans = (armedOpp && !state.armedSinglesTB && availableTB.length && availableOpp.length)
+    ? suggestAnswer(availableTB, availableOpp, armedOpp) : null;
+  const strandWarn = (availableTB.length && availableOpp.length) ? strandingWarning(availableTB, availableOpp) : null;
+  const strandingHtml = strandWarn ? `
+    <div style="background:var(--chip-bg); border-radius:10px; padding:8px 12px; margin:0 0 10px; font-size:12.5px; font-weight:600; color:var(--ink);">${esc(strandWarn)}</div>` : '';
   let putUpHtml;
   if(availableTB.length && availableOpp.length){
     const sug = nextLeader === 'us' ? suggestNextPutUp(availableTB, availableOpp) : null;
     putUpHtml = `
     <div style="display:flex; align-items:center; flex-wrap:wrap; gap:6px 8px; background:var(--chip-bg); border-radius:10px; padding:8px 12px; margin:0 0 10px; font-size:12.5px; color:var(--ink);">
-      ${sug
+      ${ans
+        ? `<span>🛡️ <strong>${esc(armedOpp.name)} is up — answer: ${esc(ans.name)}</strong> <span style="color:var(--ink-soft); font-weight:600;">— ${esc(ans.note)}</span></span>`
+        : sug
         ? `<span>🎯 <strong>Next put-up: ${esc(sug.name)}</strong> <span style="color:var(--ink-soft); font-weight:600;">— ${esc(sug.note)}</span></span>`
         : `<span style="color:var(--ink-soft); font-weight:600;">🎯 Next put-up: theirs</span>`}
       ${putUpToggleHtml}
@@ -5832,6 +5928,7 @@ async function renderMatchups(){
     <div class="stats-section-header">🥏 Singles</div>
     ${singlesCounterHtml}
     ${putUpHtml}
+    ${strandingHtml}
     ${pairedSinglesHtml}
     <div class="matchup-cols">
       <div>
