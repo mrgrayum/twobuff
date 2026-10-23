@@ -5271,6 +5271,104 @@ function compactPlayerInfoLine(p){
   if(p.age) bits.push(`${p.age}y`);
   return bits.join(' · ');
 }
+// ---- Next put-up recommendation (singles only, text-only suggestion) ----
+// Computed from the live board: who is still available on each side, plus the
+// preference lists saved on the opponent roster (slot 1 of a list = the player
+// we hold as that opponent's designated answer). v1 brain: skill ranks only.
+// Rules from the captains' put-up strategy:
+//  - STRICT HOLD: never suggest the designated answer for one of their three
+//    strongest remaining players (same gender) while that player is unmatched.
+//  - THROW MARK: never suggest the player in the throw slot (last name on a
+//    shortened list) of one of those top opponents.
+//  - SOFT FLAG: the designated answer for anyone else still unmatched can be
+//    suggested, but scores lower and the note names who he is holding for.
+//  - Prefer the concession band (a lead most of their remaining players can't
+//    beat); penalize likely donations (weaker than their mid-line).
+function suggestNextPutUp(availTB, availOpp){
+  const skill = p => { const v = parseFloat(p && p.skillRank); return isNaN(v) ? null : v; };
+  if(!availTB.length || !availOpp.length) return null;
+  const answersFor = {}; // our player id -> [opp records he is slot 1 for]
+  availOpp.forEach(o=>{
+    const list = Array.isArray(o.suggestedMatchups) ? o.suggestedMatchups : [];
+    if(list.length) (answersFor[list[0]] = answersFor[list[0]] || []).push(o);
+  });
+  const scored = [];
+  ['M','F'].forEach(g=>{
+    const tb = availTB.filter(p=>(p.gender || 'M') === g);
+    const op = availOpp.filter(p=>(p.gender || 'M') === g);
+    if(!tb.length || !op.length) return;
+    const opSkills = op.map(skill).filter(v=>v != null).sort((a,b)=>a-b);
+    if(!opSkills.length) return;
+    const median = opSkills[Math.floor(opSkills.length/2)];
+    const p75 = opSkills[Math.min(opSkills.length-1, Math.floor(opSkills.length*0.75))];
+    const bySkillDesc = [...op].sort((a,b)=>((skill(b) ?? -1) - (skill(a) ?? -1)));
+    const top2 = bySkillDesc.slice(0,2);
+    const top3 = bySkillDesc.slice(0,3);
+    const bottom3 = bySkillDesc.slice(-3);
+    const throwIds = new Set();
+    top2.forEach(o=>{
+      const list = Array.isArray(o.suggestedMatchups) ? o.suggestedMatchups : [];
+      if(list.length && list.length <= 5) throwIds.add(list[list.length-1]);
+    });
+    // Top-end reserve: a player sitting in the top 3 of a top-2 opponent's list
+    // is part of the model's cover plan for their best — don't spend him as a
+    // lead even when he isn't that opponent's slot 1 (e.g. Benson on Zak's list).
+    const reserveIds = new Set();
+    top2.forEach(o=>{
+      const list = Array.isArray(o.suggestedMatchups) ? o.suggestedMatchups : [];
+      list.slice(0,3).forEach(id=>reserveIds.add(id));
+    });
+    tb.forEach(p=>{
+      const myAnswers = answersFor[p.id] || [];
+      const strictAns = myAnswers.filter(o=>top3.includes(o));
+      const softAns = myAnswers.filter(o=>!top3.includes(o));
+      const s = skill(p) ?? 4.0;
+      let score = s;
+      if(softAns.length) score -= 0.75;
+      if(myAnswers.some(o=>bottom3.includes(o))) score -= 0.5;
+      if(s >= p75) score += 0.5;
+      if(s < median - 0.5) score -= 1.5;
+      const reserve = reserveIds.has(p.id) && !strictAns.length;
+      if(reserve) score -= 1.25;
+      scored.push({ p, g, s, score, strict: strictAns.length>0, isThrow: throwIds.has(p.id),
+        strictAns, softAns, reserve, concession: s >= p75 });
+    });
+  });
+  if(!scored.length) return null;
+  const byScore = (a,b)=>b.score-a.score;
+  const pickFrom = pool => pool.filter(c=>!c.strict && !c.isThrow).sort(byScore)[0]
+    || pool.filter(c=>!c.isThrow).sort(byScore)[0]
+    || [...pool].sort(byScore)[0];
+  // The genders draft in parallel — recommend from the side with more of their
+  // players still unmatched (normally the men's pool), not across pools.
+  const oppCount = g => availOpp.filter(p=>(p.gender || 'M') === g).length;
+  const gOrder = oppCount('F') > oppCount('M') ? ['F','M'] : ['M','F'];
+  let pick = null;
+  for(const g of gOrder){
+    const pool = scored.filter(c=>c.g === g);
+    if(pool.length){ pick = pickFrom(pool); break; }
+  }
+  const forced = pick.strict || pick.isThrow;
+  const she = pick.g === 'F';
+  let note;
+  if(forced && pick.strictAns.length) note = `Everyone left is holding a top cover — ${she ? "she's" : "he's"} the answer for ${pick.strictAns[0].name}, least-bad option`;
+  else if(pick.softAns.length){
+    const top = [...pick.softAns].sort((a,b)=>((skill(b) ?? -1) - (skill(a) ?? -1)))[0];
+    note = `⚑ ${she ? "She's" : "He's"} the answer for ${top.name} — lead ${she ? 'her' : 'him'} only if that cover is settled`;
+  }
+  else if(pick.reserve) note = `⚑ In reserve for their top players — a fallback lead`;
+  else if(pick.concession) note = `Strong lead — most of their remaining players can't match ${she ? 'her' : 'him'}`;
+  else note = `Best available — no live cover held`;
+  return { name: pick.p.name, note };
+}
+async function setFirstPutUp(boardKey, who){
+  const ms = state.matchupStateCache || await loadMatchupState();
+  if(!ms.firstPutUpByBoard) ms.firstPutUpByBoard = {};
+  ms.firstPutUpByBoard[boardKey] = who;
+  state.matchupStateCache = ms;
+  render();
+  saveMatchupState(ms).catch(err=>console.error('Matchup save failed', err));
+}
 async function renderMatchups(){
   const [teams, ms] = await Promise.all([
     loadOppTeams(),
@@ -5598,6 +5696,38 @@ async function renderMatchups(){
     validDoubles.reduce((n,m)=>n+(m.opp || []).length, 0)
   );
 
+  // ---- Next put-up bar (singles): put-ups alternate from whoever put up
+  // first on this board, so the parity of completed pairings says whose lead
+  // is next. The first-put-up choice is stored per board (event or trial);
+  // default follows the singles rule — the home team puts up second.
+  const putUpBoardKey = selectedEventId || ('team-' + currentTeam.id);
+  const putUpMap = ms.firstPutUpByBoard || {};
+  const firstPutUp = putUpMap[putUpBoardKey] || (selectedEvent ? (selectedEvent.isHome ? 'them' : 'us') : 'them');
+  const nextLeader = (validSinglesPairs % 2 === 0) ? firstPutUp : (firstPutUp === 'us' ? 'them' : 'us');
+  const putUpToggleHtml = state.adminMode
+    ? `<span style="margin-left:auto; display:inline-flex; align-items:center; gap:4px; font-weight:600; color:var(--ink-soft);">First put-up:
+        <button class="btn ${firstPutUp==='them' ? 'btn-primary' : 'btn-ghost'} btn-sm" style="padding:2px 8px;" onclick="setFirstPutUp('${putUpBoardKey}','them')">Them</button>
+        <button class="btn ${firstPutUp==='us' ? 'btn-primary' : 'btn-ghost'} btn-sm" style="padding:2px 8px;" onclick="setFirstPutUp('${putUpBoardKey}','us')">Us</button>
+      </span>`
+    : `<span style="margin-left:auto; font-weight:600; color:var(--ink-soft);">First put-up: ${firstPutUp==='us' ? 'Us' : 'Them'}</span>`;
+  let putUpHtml;
+  if(availableTB.length && availableOpp.length){
+    const sug = nextLeader === 'us' ? suggestNextPutUp(availableTB, availableOpp) : null;
+    putUpHtml = `
+    <div style="display:flex; align-items:center; flex-wrap:wrap; gap:6px 8px; background:var(--chip-bg); border-radius:10px; padding:8px 12px; margin:0 0 10px; font-size:12.5px; color:var(--ink);">
+      ${sug
+        ? `<span>🎯 <strong>Next put-up: ${esc(sug.name)}</strong> <span style="color:var(--ink-soft); font-weight:600;">— ${esc(sug.note)}</span></span>`
+        : `<span style="color:var(--ink-soft); font-weight:600;">🎯 Next put-up: theirs</span>`}
+      ${putUpToggleHtml}
+    </div>`;
+  } else {
+    putUpHtml = `
+    <div style="display:flex; align-items:center; flex-wrap:wrap; gap:6px 8px; background:var(--chip-bg); border-radius:10px; padding:8px 12px; margin:0 0 10px; font-size:12.5px; color:var(--ink);">
+      <span style="color:var(--ink-soft); font-weight:600;">🎯 Singles board complete</span>
+      ${putUpToggleHtml}
+    </div>`;
+  }
+
   const doublesTBChips = availableDoublesTB.length ? availableDoublesTB.map(p=>{
     const isArmed = state.armedDoublesTBPair.includes(p.id);
     const info = compactPlayerInfoLine(p);
@@ -5679,6 +5809,7 @@ async function renderMatchups(){
 
     <div class="stats-section-header">🥏 Singles</div>
     ${singlesCounterHtml}
+    ${putUpHtml}
     ${pairedSinglesHtml}
     <div class="matchup-cols">
       <div>
