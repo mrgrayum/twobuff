@@ -3093,14 +3093,16 @@ function buildHistoryRows(player, isOpponent, scope, oppTeamsList, statsMap){
         if(!s.matchplay || !s.matchplay.played || s.matchplay.opponentPlayerId !== player.id) return;
         const tb = state.players.find(p=>p.id===tbId);
         const oppResult = s.matchplay.result === 'W' ? 'L' : s.matchplay.result === 'L' ? 'W' : 'T';
-        singlesRows.push({ sortKey: ev.date, html: rowHtml(`vs ${esc(tb ? tb.name : 'Two Buff player')}`, '2Buff', `${esc(ev.name)} · ${d.mon} ${d.day}`, oppResult), result: oppResult });
+        const marginTxt = formatMatchplayMargin(s.matchplay);
+        singlesRows.push({ sortKey: ev.date, html: rowHtml(`vs ${esc(tb ? tb.name : 'Two Buff player')}`, '2Buff', `${esc(ev.name)} · ${d.mon} ${d.day}${marginTxt ? ` · ${esc(marginTxt)}` : ''}`, oppResult), result: oppResult });
       });
     } else {
       const s = data[player.id];
       if(s && s.matchplay && s.matchplay.played){
         const ctx = resolveOppContext(s.matchplay.opponentPlayerId, s.matchplay.opponentName);
         const identifier = [ctx.team, ctx.pdga?`PDGA ${ctx.pdga}`:null, (state.adminMode && ctx.rank!=null)?`Rank ${Number(ctx.rank).toFixed(1)}`:null].filter(Boolean).join(' · ');
-        singlesRows.push({ sortKey: ev.date, html: rowHtml(`vs ${esc(ctx.name)}`, identifier, `${esc(ev.name)} · ${d.mon} ${d.day}`, s.matchplay.result), result: s.matchplay.result });
+        const marginTxt = formatMatchplayMargin(s.matchplay);
+        singlesRows.push({ sortKey: ev.date, html: rowHtml(`vs ${esc(ctx.name)}`, identifier, `${esc(ev.name)} · ${d.mon} ${d.day}${marginTxt ? ` · ${esc(marginTxt)}` : ''}`, s.matchplay.result), result: s.matchplay.result });
       }
     }
   });
