@@ -2164,6 +2164,8 @@ const pracUI = {
   stageCount: 0,    // completed-pick count the stage has caught up to
   stageAt: 0,       // when the currently staged pair completed (per this device)
   stageTimer: null,
+  histPress: null,
+  histHeldAt: 0,
 };
 const PRAC_LIVE_KEY = 'dg_practice_live';
 const PRAC_INDEX_KEY = 'dg_practice_index';
@@ -2296,6 +2298,7 @@ async function pracExecuteTheirMove() {
 }
 
 /* ---------- polling so every captain's phone follows the live session ---------- */
+async function storeDelete(key) { try { await window.storage.delete(key, true); } catch (e) {} }
 function pracEnsurePoll() {
   if (pracUI.pollTimer) return;
   pracUI.pollTimer = setInterval(async () => {
@@ -2360,19 +2363,20 @@ function pracHomeHtml() {
       </div>`;
   }
   const hist = (pracUI.index || []).map(e => `
-    <div class="card" style="display:flex; align-items:center; gap:10px;">
+    <div class="card" style="display:flex; align-items:center; gap:10px;" onpointerdown="pracHistPressStart('${e.id}')" onpointerup="pracHistPressCancel()" onpointerleave="pracHistPressCancel()" onpointercancel="pracHistPressCancel()" oncontextmenu="return false">
       <div style="flex:1;">
         <strong>vs ${esc(e.oppName)}</strong><br>
         <span style="font-size:12.5px; opacity:.75;">${new Date(e.closedAt).toLocaleDateString()} · ${e.picks} picks · expected ${e.ev.toFixed(1)}–${(e.picks - e.ev).toFixed(1)}</span>
       </div>
-      <button class="btn btn-outline btn-sm" onclick="pracOpenReplay('${e.id}')">▶ Replay</button>
+      <button class="btn btn-outline btn-sm" onclick="pracReplayTap('${e.id}')">▶ Replay</button>
     </div>`).join('');
   return `
     <h2 style="margin:4px 0 10px;">🧪 Draft Practice</h2>
     <p style="font-size:13.5px; opacity:.8; margin:0 0 12px;">Practice the singles snake draft against a computer opponent that plays the master-list strategy. Every captain's phone follows the same live session — anyone can make our picks.</p>
     ${liveCard}
     ${!s ? `<button class="btn btn-orange" style="width:100%;" onclick="pracStartSetup()">+ Start a practice draft</button>` : ''}
-    <h3 style="margin:18px 0 8px;">Past practice drafts</h3>
+    <h3 style="margin:18px 0 2px;">Past practice drafts</h3>
+    <div class="muted" style="font-size:12px; margin-bottom:8px;">Long-press a draft to delete it</div>
     ${hist || '<div class="card empty"><p>No saved practice drafts yet.</p></div>'}
   `;
 }
@@ -2890,6 +2894,44 @@ async function pracCloseOut(save) {
 }
 
 /* ================================ REPLAY ================================ */
+function pracHistPressStart(id) {
+  pracHistPressCancel();
+  pracUI.histPress = { id, timer: setTimeout(() => {
+    pracUI.histPress = null;
+    pracUI.histHeldAt = Date.now();
+    try { if (navigator.vibrate) navigator.vibrate(30); } catch (err) {}
+    pracAskDeleteDraft(id);
+  }, 600) };
+}
+function pracHistPressCancel() {
+  if (pracUI.histPress) { clearTimeout(pracUI.histPress.timer); pracUI.histPress = null; }
+}
+function pracReplayTap(id) {
+  if (pracUI.histHeldAt && Date.now() - pracUI.histHeldAt < 800) return Promise.resolve(); // that "tap" was a long-press
+  return pracOpenReplay(id);
+}
+function pracAskDeleteDraft(id) {
+  const e = (pracUI.index || []).find(x => x.id === id);
+  if (!e) return;
+  document.getElementById('modalRoot').innerHTML = `
+  <div class="overlay" onclick="closeModalIfBackdrop(event)"><div class="sheet">
+    <h3 style="margin:4px 0 10px">Delete this saved draft?</h3>
+    <p class="muted" style="margin:0 0 6px">vs ${esc(e.oppName)} · ${new Date(e.closedAt).toLocaleString()} · ${e.picks} picks${e.ev != null ? ' · expected ' + Number(e.ev).toFixed(1) + '–' + (e.picks - Number(e.ev)).toFixed(1) : ''}</p>
+    <p class="muted">Its picks and comments are removed for everyone. This can't be undone.</p>
+    <div class="row" style="gap:8px;margin-top:10px">
+      <button class="btn btn-danger grow" onclick="pracDeleteDraft('${id}')">Delete draft</button>
+      <button class="btn grow" onclick="closeModal()">Keep it</button>
+    </div>
+  </div></div>`;
+}
+async function pracDeleteDraft(id) {
+  closeModal();
+  await storeDelete('dg_practice_' + id);
+  pracUI.index = (pracUI.index || []).filter(x => x.id !== id);
+  await storeSet(PRAC_INDEX_KEY, JSON.stringify(pracUI.index), true);
+  if (pracUI.replay && pracUI.replay.session && pracUI.replay.session.id === id) { pracUI.replay = null; pracUI.screen = 'home'; }
+  render();
+}
 async function pracOpenReplay(id) {
   const raw = await storeGet('dg_practice_' + id, true);
   if (!raw) return;
