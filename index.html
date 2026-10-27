@@ -2327,7 +2327,12 @@ async function renderPractice() {
   if (pracUI.screen === 'setup') return pracSetupHtml();
   if (pracUI.screen === 'replay' && pracUI.replay) return pracBoardHtml(pracUI.replay.session, true);
   await pracLoadLive(false);
+  // Re-check after the awaits: a stale in-flight render must not stomp a
+  // screen the user has since moved to (it yanked replay back to home).
+  if (pracUI.screen === 'replay' && pracUI.replay) return pracBoardHtml(pracUI.replay.session, true);
+  if (pracUI.screen === 'setup') return pracSetupHtml();
   if (pracUI.screen === 'live' && pracUI.session) { pracEnsurePoll(); return pracBoardHtml(pracUI.session, false); }
+  if (pracUI.screen !== 'home') return '<div class="card empty"><p>Loading…</p></div>';
   pracUI.screen = 'home';
   pracEnsurePoll();
   const rawIdx = await storeGet(PRAC_INDEX_KEY, true);
@@ -2549,7 +2554,7 @@ function pracBoardHtml(session, isReplay) {
     return `<div style="margin-bottom:12px;">
       <div style="display:flex; justify-content:space-between; align-items:center; font-size:12px; opacity:.65; margin-bottom:4px;">
         <span>Pick ${i + 1}${pk.leader === 'them' ? ' · they led' : ''}</span>
-        ${!isReplay ? `<button class="btn btn-ghost btn-sm" onclick="pracOpenComment(${i + 1})" title="Comment on this matchup">${cmt ? '💬' : '＋💬'}</button>` : (cmt ? '<span>💬</span>' : '')}
+        <button class="btn btn-ghost btn-sm" onclick="pracOpenComment(${i + 1})" title="Comment on this matchup">${cmt ? '💬' : '＋💬'}</button>
       </div>
       ${vsPair(pk)}
       ${cmt ? `<div style="font-size:12.5px; opacity:.85; padding:4px 2px 0;">💬 ${esc(cmt)}</div>` : ''}
@@ -2799,8 +2804,12 @@ async function pracRewindTo(idx) {
   render();
 }
 
+function pracCommentTarget() {
+  return (pracUI.screen === 'replay' && pracUI.replay) ? pracUI.replay.session : pracUI.session;
+}
 function pracOpenComment(pickNo) {
-  const s = pracUI.session;
+  const s = pracCommentTarget();
+  if (!s) return;
   const pk = (s.picks || [])[pickNo - 1];
   if (!pk) return;
   const ourP = pracPickOurPlayer(s, pk), theirP = pracPickTheirPlayer(s, pk);
@@ -2821,12 +2830,17 @@ function pracOpenComment(pickNo) {
     </div>`;
 }
 async function pracSaveComment(pickNo) {
-  const s = pracUI.session;
+  const s = pracCommentTarget();
+  if (!s) return;
   const text = document.getElementById('prac_comment_text').value.trim();
   s.comments = s.comments || {};
   if (text) s.comments[String(pickNo)] = text; else delete s.comments[String(pickNo)];
   closeModal();
-  await pracSaveSession();
+  if (pracUI.screen === 'replay' && pracUI.replay && s === pracUI.replay.session) {
+    await storeSet('dg_practice_' + s.id, JSON.stringify(s), true);
+  } else {
+    await pracSaveSession();
+  }
   render();
 }
 
