@@ -386,6 +386,7 @@
     <button class="navbtn" data-view="home" onclick="setView('home')"><span class="ic">🏠</span>Home</button>
     <button class="navbtn" data-view="matchups" onclick="setView('matchups')"><span class="ic">🎯</span>Matchups</button>
     <button class="navbtn" data-view="stats" onclick="setView('stats')"><span class="ic">🏆</span>Stats</button>
+    <button class="navbtn" data-view="practice" id="navPractice" style="display:none;" onclick="setView('practice')"><span class="ic">🧪</span>Practice</button>
     <button class="navbtn" data-view="scheduling" onclick="openSchedulingSheet()"><span class="ic">📆</span>Scheduling</button>
   </div>
 </div>
@@ -1858,6 +1859,7 @@ function openEvent(id){
 async function render(){
   const navHighlight = state.view==='eventDetail' ? 'events' : (state.view==='availability'||state.view==='manageAvailability') ? 'scheduling' : state.view;
   document.querySelectorAll('.navbtn').forEach(b=>b.classList.toggle('active', b.dataset.view === navHighlight));
+  const pracBtn = document.getElementById('navPractice'); if(pracBtn) pracBtn.style.display = state.adminMode ? '' : 'none';
   const root = document.getElementById('viewRoot');
   if(!state.loaded){ root.innerHTML = '<div class="loading-dots">Loading team hub…</div>'; return; }
 
@@ -1875,6 +1877,7 @@ async function render(){
     else if(state.view === 'team') html = await renderTeam();
     else if(state.view === 'stats') html = await renderStats();
     else if(state.view === 'matchups') html = await renderMatchups();
+    else if(state.view === 'practice') html = await renderPractice();
     else if(state.view === 'opponents') html = await renderTeamsPage();
     else if(state.view === 'rules') html = renderRules();
     else if(state.view === 'availability') html = await renderAvailability();
@@ -1895,6 +1898,881 @@ async function render(){
     root.innerHTML = html; // only apply if nothing newer has started since we began
   }
 }
+
+/* Draft Practice brain — mirrors the offline master-list recipe using the
+   app's own skill ratings and wpVs estimator. Pure functions over plain
+   player objects {id, name, gender, skillRank}. wp(a, b) everywhere means
+   P(a beats b). This file is the exact code spliced into index.html. */
+const PBrain = (() => {
+  const sk = p => { const v = parseFloat(p && p.skillRank); return isNaN(v) ? 4.0 : v; };
+  const wpVs = (aSkill, bSkill) => 1 / (1 + Math.pow(10, -(aSkill - bSkill) / 2.5));
+  const wp = (a, b) => wpVs(sk(a), sk(b));
+  const genderOf = p => (p && p.gender === 'F') ? 'F' : 'M';
+
+  /* Max-weight assignment (Hungarian / JV with potentials) for a rectangular
+     matrix given as rows x cols of numbers; returns {assign: Map row->col, total}. */
+  function maxAssign(matrix) {
+    const n = matrix.length, m = n ? matrix[0].length : 0;
+    if (!n || !m) return { assign: new Map(), total: 0 };
+    // Work on a square cost matrix padded with dummy zeros (cost = -value).
+    const N = Math.max(n, m);
+    const a = [];
+    for (let i = 0; i < N; i++) {
+      a.push(new Array(N).fill(0));
+      for (let j = 0; j < N; j++) a[i][j] = (i < n && j < m) ? -matrix[i][j] : 0;
+    }
+    const u = new Array(N + 1).fill(0), v = new Array(N + 1).fill(0);
+    const p = new Array(N + 1).fill(0), way = new Array(N + 1).fill(0);
+    for (let i = 1; i <= N; i++) {
+      p[0] = i;
+      let j0 = 0;
+      const minv = new Array(N + 1).fill(Infinity), used = new Array(N + 1).fill(false);
+      do {
+        used[j0] = true;
+        const i0 = p[j0];
+        let delta = Infinity, j1 = 0;
+        for (let j = 1; j <= N; j++) {
+          if (used[j]) continue;
+          const cur = a[i0 - 1][j - 1] - u[i0] - v[j];
+          if (cur < minv[j]) { minv[j] = cur; way[j] = j0; }
+          if (minv[j] < delta) { delta = minv[j]; j1 = j; }
+        }
+        for (let j = 0; j <= N; j++) {
+          if (used[j]) { u[p[j]] += delta; v[j] -= delta; }
+          else minv[j] -= delta;
+        }
+        j0 = j1;
+      } while (p[j0] !== 0);
+      do {
+        const j1 = way[j0];
+        p[j0] = p[j1];
+        j0 = j1;
+      } while (j0);
+    }
+    const assign = new Map();
+    let total = 0;
+    for (let j = 1; j <= N; j++) {
+      if (p[j] >= 1 && p[j] <= n && j - 1 < m) {
+        assign.set(p[j] - 1, j - 1);
+        total += matrix[p[j] - 1][j - 1];
+      }
+    }
+    return { assign, total };
+  }
+
+  /* Max total value of pairing atk (rows) against def (cols) within one gender. */
+  function blockValue(atk, def, wpFn) {
+    if (!atk.length || !def.length) return 0;
+    return maxAssign(atk.map(a => def.map(d => wpFn(a, d)))).total;
+  }
+  function teamValue(atk, def, wpFn) {
+    let t = 0;
+    for (const g of ['M', 'F']) {
+      t += blockValue(atk.filter(p => genderOf(p) === g), def.filter(p => genderOf(p) === g), wpFn);
+    }
+    return t;
+  }
+  /* Optimal one-to-one card: Map defender -> attacker (slot-1 pairings). */
+  function optimalCard(atk, def, wpFn) {
+    const card = new Map();
+    for (const g of ['M', 'F']) {
+      const A = atk.filter(p => genderOf(p) === g), D = def.filter(p => genderOf(p) === g);
+      if (!A.length || !D.length) continue;
+      const { assign } = maxAssign(A.map(a => D.map(d => wpFn(a, d))));
+      assign.forEach((j, i) => card.set(D[j].id, A[i].id));
+    }
+    return card;
+  }
+
+  /* Attacker's throwaway order vs the defenders' strongest: cheapest forced
+     throw first (by full re-solve of their card total). */
+  function throwOrder(atk, def, wpFn) {
+    const men = atk.filter(p => genderOf(p) === 'M');
+    const defMen = def.filter(p => genderOf(p) === 'M');
+    if (!men.length || !defMen.length) return men.map(p => p.id);
+    const top = [...defMen].sort((x, y) => sk(y) - sk(x))[0];
+    const total = forced => {
+      let t = 0;
+      for (const [aId, dId] of Object.entries(forced)) {
+        const a = atk.find(p => p.id === aId), d = def.find(p => p.id === dId);
+        t += wpFn(a, d);
+      }
+      const ra = atk.filter(p => !(p.id in forced));
+      const rd = def.filter(p => !Object.values(forced).includes(p.id));
+      return t + teamValue(ra, rd, wpFn);
+    };
+    const base = total({});
+    return men
+      .map(p => ({ id: p.id, cost: base - total({ [p.id]: top.id }) }))
+      .sort((x, y) => x.cost - y.cost)
+      .map(x => x.id);
+  }
+
+  function teamCost(atk, def, wpFn, baseTotal, xId, dId) {
+    const forced = { [xId]: dId };
+    let t = 0;
+    const a = atk.find(p => p.id === xId), d = def.find(p => p.id === dId);
+    t += wpFn(a, d);
+    const ra = atk.filter(p => p.id !== xId);
+    const rd = def.filter(p => p.id !== dId);
+    return baseTotal - (t + teamValue(ra, rd, wpFn));
+  }
+
+  /* The master-list builder, mirrored: for each DEFENDER, the attacker's
+     preference list (attacker ids, best first). Slot 1 = card pick. */
+  function buildLists(atk, def, wpFn) {
+    const card = optimalCard(atk, def, wpFn);
+    const throwOrd = throwOrder(atk, def, wpFn);
+    const baseTotal = teamValue(atk, def, wpFn);
+    const lists = {};
+    for (const d of def) {
+      const g = genderOf(d);
+      const pool = atk.filter(p => genderOf(p) === g);
+      const pick = card.get(d.id);
+      if (pool.length <= 2) {
+        const rest = pool.filter(p => p.id !== pick).map(p => p.id);
+        lists[d.id] = pick ? [pick, ...rest] : rest;
+        continue;
+      }
+      const cand = pool.map(a => ({ a, s: sk(a), w: wpFn(a, d) }));
+      const inCap = cand.filter(c => c.s <= sk(d) + 1.5).sort((x, y) => y.w - x.w);
+      const over = cand.filter(c => c.s > sk(d) + 1.5).sort((x, y) => x.s - y.s);
+      let ladder = inCap.slice(0, 6);
+      const favOver = over.filter(c => c.w >= 0.5);
+      while (ladder.length && ladder[ladder.length - 1].w < 0.5 && favOver.length) {
+        ladder[ladder.length - 1] = favOver.shift();
+        ladder.sort((x, y) => y.w - x.w);
+      }
+      while (ladder.length < 6 && favOver.length) ladder.push(favOver.shift());
+      if (ladder.length < 6) {
+        const rest = cand.filter(c => !ladder.includes(c)).sort((x, y) => y.w - x.w);
+        ladder = ladder.concat(rest.slice(0, 6 - ladder.length));
+      }
+      let behind = ladder.filter(c => c.a.id !== pick);
+      behind.sort((x, y) => y.w - x.w);
+      let names = pick ? [pick, ...behind.slice(0, 5).map(c => c.a.id)] : behind.slice(0, 6).map(c => c.a.id);
+      let det = names.map(id => ({ id, w: wpFn(atk.find(p => p.id === id), d) }));
+      // v2.1: vs bottom-half defenders, order backups by team cost.
+      if (sk(d) <= 6.5 && det.length > 2) {
+        const tail = det.slice(1).map(c => ({ ...c, cost: teamCost(atk, def, wpFn, baseTotal, c.id, d.id) }));
+        tail.sort((x, y) => (Math.round(x.cost * 1000) - Math.round(y.cost * 1000)) || (y.w - x.w));
+        det = [det[0], ...tail];
+      }
+      // Throw truncation: sub-35% tail -> insert designated throwaway, list ends.
+      const tailIdx = det.findIndex((c, i) => i >= 1 && c.w < 0.35);
+      if (tailIdx > 0 && throwOrd.length && det[0].id !== throwOrd[0]) {
+        const tName = throwOrd.find(t => t !== det[0].id && !det.slice(0, tailIdx).some(c => c.id === t));
+        if (tName) det = [...det.slice(0, tailIdx), { id: tName, w: wpFn(atk.find(p => p.id === tName), d) }];
+      }
+      lists[d.id] = det.map(c => c.id);
+    }
+    return lists;
+  }
+
+  /* Their lead choice: maximize (their win% on the predicted pairing + their
+     optimal value of the remainder). predictedAnswer comes from our lists.
+     Returns {leadId, answerId, value} — best, or null if no legal lead. */
+  function chooseLead(theirs, ours, theirWp, ourLists, random) {
+    const options = [];
+    for (const L of theirs) {
+      const g = genderOf(L);
+      const list = (ourLists && ourLists[L.id]) || [];
+      const answer = list.find(id => ours.some(o => o.id === id))
+        || [...ours].filter(o => genderOf(o) === g).sort((x, y) => theirWp(L, y) - theirWp(L, x))[0];
+      if (!answer) continue;
+      const restT = theirs.filter(p => p.id !== L.id);
+      const restO = ours.filter(p => p.id !== answer.id);
+      const value = theirWp(L, answer) + teamValue(restT, restO, (a, b) => theirWp(a, b));
+      options.push({ leadId: L.id, answerId: answer.id, value });
+    }
+    if (!options.length) return null;
+    options.sort((x, y) => y.value - x.value);
+    if (random && options.length > 1) {
+      const top = options.slice(0, 3);
+      const weights = [0.6, 0.25, 0.15].slice(0, top.length);
+      const sum = weights.reduce((s, w) => s + w, 0);
+      let r = Math.random() * sum;
+      for (let i = 0; i < top.length; i++) { r -= weights[i]; if (r <= 0) return top[i]; }
+      return top[0];
+    }
+    return options[0];
+  }
+
+  /* Their answer to our lead: first available name on their list; in random
+     mode, 25% of the time the second available name instead. */
+  function chooseAnswer(theirs, ourLeadId, theirLists, theirWp, oursById, random) {
+    const list = (theirLists && theirLists[ourLeadId]) || [];
+    const avail = list.filter(id => theirs.some(p => p.id === id));
+    if (avail.length) {
+      if (random && avail.length > 1 && Math.random() < 0.25) return avail[1];
+      return avail[0];
+    }
+    const lead = oursById[ourLeadId];
+    const g = genderOf(lead);
+    const pool = theirs.filter(p => genderOf(p) === g);
+    if (!pool.length) return null;
+    pool.sort((x, y) => theirWp(y, lead) - theirWp(x, lead));
+    return pool[0].id;
+  }
+
+  /* Coach hint for OUR lead: for each of our remaining players, their likely
+     answer off their lists and the resulting win% for us. Best few first. */
+  function leadHints(ours, theirs, ourWp, theirLists) {
+    const hints = [];
+    for (const L of ours) {
+      const g = genderOf(L);
+      const list = (theirLists && theirLists[L.id]) || [];
+      const ans = list.find(id => theirs.some(p => p.id === id))
+        || [...theirs].filter(p => genderOf(p) === g).sort((x, y) => ourWp(L, x) - ourWp(L, y))[0];
+      if (!ans) continue;
+      const t = theirs.find(p => p.id === ans);
+      hints.push({ leadId: L.id, answerId: ans, w: ourWp(L, t) });
+    }
+    return hints.sort((x, y) => y.w - x.w);
+  }
+
+  function poissonBinomial(probs) {
+    let dist = [1];
+    for (const p of probs) {
+      const nd = new Array(dist.length + 1).fill(0);
+      dist.forEach((d, i) => { nd[i] += d * (1 - p); nd[i + 1] += d * p; });
+      dist = nd;
+    }
+    return dist;
+  }
+
+  return { sk, wpVs, wp, genderOf, maxAssign, teamValue, optimalCard, buildLists, chooseLead, chooseAnswer, leadHints, poissonBinomial };
+})();
+
+if (typeof module !== 'undefined') module.exports = PBrain;
+
+/* ============================ DRAFT PRACTICE ============================
+   Admin-only mock snake-draft practice. One shared live session lives in
+   kv_store as dg_practice_live; finished drafts are archived per-session
+   (dg_practice_<id>) with an index (dg_practice_index). The opponent plays
+   itself with PBrain (mirrored master-list strategy). Any admin can pick. */
+
+const pracUI = {
+  screen: 'home',           // home | setup | live | replay
+  setup: null,              // setup-screen working state
+  session: null,            // live session object (mirrors dg_practice_live)
+  index: null,              // cached history index
+  replay: null,             // {session, upto} when replaying an archive
+  pollTimer: null,
+  autoTimer: null,
+};
+const PRAC_LIVE_KEY = 'dg_practice_live';
+const PRAC_INDEX_KEY = 'dg_practice_index';
+
+function pracPref(key, dflt) {
+  try { const v = localStorage.getItem(key); return v === null ? dflt : v === '1'; } catch (e) { return dflt; }
+}
+function pracSetPref(key, val) { try { localStorage.setItem(key, val ? '1' : '0'); } catch (e) {} }
+
+function pracOurById() { const m = {}; (state.players || []).forEach(p => { m[p.id] = p; }); return m; }
+function pracTeamById(teamId) { return (state.oppTeamsCache || []).find(t => t.id === teamId) || null; }
+function pracObj(p) { return p ? { id: p.id, name: p.name, gender: p.gender === 'F' ? 'F' : 'M', skillRank: p.skillRank } : null; }
+function pracResolve(ids, byId) { return (ids || []).map(id => pracObj(byId[id])).filter(Boolean); }
+function pracTheirWp() { return (a, b) => 1 - PBrain.wp(b, a); }  // P(their a beats our b)
+
+function pracUsedIds(session) {
+  const usedOur = new Set(), usedTheir = new Set();
+  (session.picks || []).forEach(pk => {
+    if (pk.leader === 'us') { usedOur.add(pk.ledId); if (pk.answerId) usedTheir.add(pk.answerId); }
+    else { usedTheir.add(pk.ledId); if (pk.answerId) usedOur.add(pk.answerId); }
+  });
+  return { usedOur, usedTheir };
+}
+function pracRemaining(session) {
+  const ourById = pracOurById();
+  const team = pracTeamById(session.oppTeamId);
+  const theirById = {}; ((team && team.players) || []).forEach(p => { theirById[p.id] = p; });
+  const { usedOur, usedTheir } = pracUsedIds(session);
+  return {
+    ourById, theirById,
+    ourAll: pracResolve(session.ourPool, ourById),
+    theirAll: pracResolve(session.theirPool, theirById),
+    ourRem: pracResolve(session.ourPool.filter(id => !usedOur.has(id)), ourById),
+    theirRem: pracResolve(session.theirPool.filter(id => !usedTheir.has(id)), theirById),
+  };
+}
+function pracPairsPossible(ourArr, theirArr) {
+  let n = 0;
+  for (const g of ['M', 'F']) n += Math.min(ourArr.filter(p => p.gender === g).length, theirArr.filter(p => p.gender === g).length);
+  return n;
+}
+function pracPhase(session) {
+  const picks = session.picks || [];
+  const last = picks[picks.length - 1];
+  if (last && !last.answerId) {
+    return { kind: last.leader === 'us' ? 'their-answer' : 'our-answer', pickNo: picks.length, leader: last.leader, pending: last };
+  }
+  const rem = pracRemaining(session);
+  if (pracPairsPossible(rem.ourRem, rem.theirRem) <= 0) return { kind: 'done', pickNo: picks.length };
+  const leader = picks.length % 2 === 0 ? session.firstLeader : (session.firstLeader === 'us' ? 'them' : 'us');
+  return { kind: leader === 'us' ? 'our-lead' : 'their-lead', pickNo: picks.length + 1, leader };
+}
+function pracPickOurPlayer(session, pick) {
+  const ourById = pracOurById();
+  return pick.leader === 'us' ? ourById[pick.ledId] : ourById[pick.answerId];
+}
+function pracPickTheirPlayer(session, pick) {
+  const team = pracTeamById(session.oppTeamId);
+  const byId = {}; ((team && team.players) || []).forEach(p => { byId[p.id] = p; });
+  return pick.leader === 'us' ? byId[pick.answerId] : byId[pick.ledId];
+}
+async function pracSaveSession() {
+  pracUI.session.updatedAt = Date.now();
+  await storeSet(PRAC_LIVE_KEY, JSON.stringify(pracUI.session), true);
+}
+async function pracLoadLive(force) {
+  const raw = await storeGet(PRAC_LIVE_KEY, true);
+  const s = raw ? JSON.parse(raw) : null;
+  if (!s) { pracUI.session = null; return null; }
+  if (force || !pracUI.session || pracUI.session.id !== s.id || s.updatedAt !== pracUI.session.updatedAt) pracUI.session = s;
+  return pracUI.session;
+}
+
+/* ---------- opponent auto-move (any watching device may execute it) ---------- */
+function pracScheduleAuto() {
+  if (pracUI.autoTimer) clearTimeout(pracUI.autoTimer);
+  pracUI.autoTimer = setTimeout(() => { pracMaybeAuto(); }, 2000);
+}
+async function pracMaybeAuto() {
+  const s = pracUI.session;
+  if (!s || state.view !== 'practice') return;
+  const phase = pracPhase(s);
+  if (phase.kind !== 'their-lead' && phase.kind !== 'their-answer') return;
+  if (!s.pendingAutoAt || Date.now() < s.pendingAutoAt) { pracScheduleAuto(); return; }
+  // Re-read before writing so two devices racing don't double-move.
+  const fresh = await pracLoadLive(true);
+  if (!fresh || fresh.id !== s.id) return;
+  const fPhase = pracPhase(fresh);
+  if (fPhase.kind !== phase.kind || fPhase.pickNo !== phase.pickNo) { render(); return; }
+  pracUI.session = fresh;
+  pracExecuteTheirMove();
+}
+async function pracExecuteTheirMove() {
+  const s = pracUI.session;
+  const phase = pracPhase(s);
+  const rem = pracRemaining(s);
+  const theirWp = pracTheirWp();
+  if (phase.kind === 'their-lead') {
+    const pick = PBrain.chooseLead(rem.theirRem, rem.ourRem, theirWp, s.lists.ours, s.random);
+    if (!pick) { s.pendingAutoAt = null; await pracSaveSession(); render(); return; }
+    s.picks.push({ leader: 'them', ledId: pick.leadId, answerId: null });
+    s.pendingAutoAt = null;
+  } else if (phase.kind === 'their-answer') {
+    const pending = s.picks[s.picks.length - 1];
+    const ansId = PBrain.chooseAnswer(rem.theirRem, pending.ledId, s.lists.theirs, theirWp, rem.ourById, s.random);
+    if (!ansId) { s.pendingAutoAt = null; await pracSaveSession(); render(); return; }
+    pending.answerId = ansId;
+    const ourP = rem.ourById[pending.ledId];
+    const theirP = rem.theirRem.find(p => p.id === ansId) || pracResolve([ansId], rem.theirById)[0];
+    pending.wp = PBrain.wp(pracObj(ourP), pracObj(theirP));
+    const next = pracPhase(s);
+    s.pendingAutoAt = (next.kind === 'their-lead') ? Date.now() + 1800 : null;
+  }
+  await pracSaveSession();
+  render();
+  if (s.pendingAutoAt) pracScheduleAuto();
+}
+
+/* ---------- polling so every captain's phone follows the live session ---------- */
+function pracEnsurePoll() {
+  if (pracUI.pollTimer) return;
+  pracUI.pollTimer = setInterval(async () => {
+    if (state.view !== 'practice') { clearInterval(pracUI.pollTimer); pracUI.pollTimer = null; return; }
+    if (pracUI.screen !== 'home' && pracUI.screen !== 'live') return;
+    const before = pracUI.session ? pracUI.session.updatedAt : 0;
+    const s = await pracLoadLive(false);
+    if (s && s.updatedAt !== before) {
+      if (pracUI.screen === 'home') render();
+      else if (pracUI.screen === 'live') render();
+    } else if (!s && before) {
+      pracUI.session = null;
+      if (pracUI.screen === 'live') pracUI.screen = 'home';
+      render();
+    }
+    if (s) {
+      const phase = pracPhase(s);
+      if ((phase.kind === 'their-lead' || phase.kind === 'their-answer') && s.pendingAutoAt && Date.now() >= s.pendingAutoAt) pracMaybeAuto();
+    }
+  }, 2500);
+}
+
+/* ================================ RENDER ================================ */
+async function renderPractice() {
+  if (!state.adminMode) {
+    return `<div class="card empty"><span class="em">🔒</span><p>Draft Practice is an admin-only tool.</p></div>`;
+  }
+  await loadOppTeams();
+  if (pracUI.screen === 'setup') return pracSetupHtml();
+  if (pracUI.screen === 'replay' && pracUI.replay) return pracBoardHtml(pracUI.replay.session, true);
+  await pracLoadLive(false);
+  if (pracUI.screen === 'live' && pracUI.session) { pracEnsurePoll(); return pracBoardHtml(pracUI.session, false); }
+  pracUI.screen = 'home';
+  pracEnsurePoll();
+  const rawIdx = await storeGet(PRAC_INDEX_KEY, true);
+  pracUI.index = rawIdx ? JSON.parse(rawIdx) : [];
+  return pracHomeHtml();
+}
+
+function pracHomeHtml() {
+  const s = pracUI.session;
+  let liveCard = '';
+  if (s) {
+    const phase = pracPhase(s);
+    const total = (s.picks || []).length + pracPairsPossible(pracRemaining(s).ourRem, pracRemaining(s).theirRem);
+    liveCard = `
+      <div class="card" style="border:2px solid #c0392b;">
+        <div style="display:flex; align-items:center; gap:8px;">
+          <span style="width:10px; height:10px; border-radius:50%; background:#c0392b; display:inline-block;"></span>
+          <strong>LIVE practice in progress</strong>
+        </div>
+        <p style="margin:8px 0 4px;">vs <strong>${esc(s.oppName)}</strong> — pick ${Math.min(phase.pickNo, total)} of ${total}${s.random ? ' · 🎲 randomness on' : ''}</p>
+        <div class="btn-row">
+          <button class="btn btn-primary" onclick="pracJoinLive()">Watch / Join</button>
+          <button class="btn btn-outline" onclick="pracOpenCloseOut()">Close out</button>
+        </div>
+      </div>`;
+  }
+  const hist = (pracUI.index || []).map(e => `
+    <div class="card" style="display:flex; align-items:center; gap:10px;">
+      <div style="flex:1;">
+        <strong>vs ${esc(e.oppName)}</strong><br>
+        <span style="font-size:12.5px; opacity:.75;">${new Date(e.closedAt).toLocaleDateString()} · ${e.picks} picks · expected ${e.ev.toFixed(1)}–${(e.picks - e.ev).toFixed(1)}</span>
+      </div>
+      <button class="btn btn-outline btn-sm" onclick="pracOpenReplay('${e.id}')">▶ Replay</button>
+    </div>`).join('');
+  return `
+    <h2 style="margin:4px 0 10px;">🧪 Draft Practice</h2>
+    <p style="font-size:13.5px; opacity:.8; margin:0 0 12px;">Practice the singles snake draft against a computer opponent that plays the master-list strategy. Every captain's phone follows the same live session — anyone can make our picks.</p>
+    ${liveCard}
+    ${!s ? `<button class="btn btn-orange" style="width:100%;" onclick="pracStartSetup()">+ Start a practice draft</button>` : ''}
+    <h3 style="margin:18px 0 8px;">Past practice drafts</h3>
+    ${hist || '<div class="card empty"><p>No saved practice drafts yet.</p></div>'}
+  `;
+}
+
+/* ================================ SETUP ================================ */
+async function pracStartSetup() {
+  await loadOppTeams();
+  const teams = state.oppTeamsCache || [];
+  const tank = teams.find(t => /tank/i.test(t.name || ''));
+  const teamId = (tank || teams[0] || {}).id;
+  pracUI.setup = { teamId, ourSel: new Set(), theirSel: new Set(), firstLeader: 'us', random: false };
+  await pracSetupDefaults(teamId);
+  pracUI.screen = 'setup';
+  render();
+}
+async function pracSetupDefaults(teamId) {
+  const su = pracUI.setup;
+  const team = pracTeamById(teamId);
+  su.theirSel = new Set(((team && team.players) || []).filter(p => p.active !== false).map(p => p.id));
+  // Our default pool: confirmed RSVPs for the next event vs this team, else all actives.
+  let ours = (state.players || []).filter(p => p.active !== false);
+  const today = todayISO();
+  const ev = (state.events || []).filter(e => e.opponentTeamId === teamId && e.date && e.date >= today).sort((a, b) => a.date.localeCompare(b.date))[0];
+  if (ev) {
+    try {
+      const rsvp = await loadRsvp(ev.id);
+      const confirmed = Object.keys(rsvp || {}).filter(pid => rsvp[pid] && rsvp[pid].status === 'confirmed');
+      if (confirmed.length) ours = ours.filter(p => confirmed.includes(p.id));
+    } catch (e) { /* fall back to all actives */ }
+  }
+  su.ourSel = new Set(ours.map(p => p.id));
+}
+async function pracSetupTeam(teamId) {
+  pracUI.setup.teamId = teamId;
+  await pracSetupDefaults(teamId);
+  render();
+}
+function pracToggleSel(side, id) {
+  const set = side === 'us' ? pracUI.setup.ourSel : pracUI.setup.theirSel;
+  if (set.has(id)) set.delete(id); else set.add(id);
+  render();
+}
+function pracSelAll(side, on) {
+  const su = pracUI.setup;
+  if (side === 'us') su.ourSel = new Set(on ? (state.players || []).filter(p => p.active !== false).map(p => p.id) : []);
+  else { const t = pracTeamById(su.teamId); su.theirSel = new Set(on ? ((t && t.players) || []).filter(p => p.active !== false).map(p => p.id) : []); }
+  render();
+}
+function pracSetFirst(leader) { pracUI.setup.firstLeader = leader; render(); }
+function pracSetRandom(on) { pracUI.setup.random = on; render(); }
+
+function pracSetupHtml() {
+  const su = pracUI.setup;
+  if (!su) return '<div class="card empty"><p>Loading setup…</p></div>';
+  const teams = state.oppTeamsCache || [];
+  const team = pracTeamById(su.teamId);
+  const ourList = sortBySkillGender((state.players || []).filter(p => p.active !== false));
+  const theirList = sortBySkillGender(((team && team.players) || []).filter(p => p.active !== false));
+  const ourObjs = pracResolve([...su.ourSel], pracOurById());
+  const theirById = {}; ((team && team.players) || []).forEach(p => { theirById[p.id] = p; });
+  const theirObjs = pracResolve([...su.theirSel], theirById);
+  const pairs = pracPairsPossible(ourObjs, theirObjs);
+  const row = (p, side, set) => `
+    <label style="display:flex; align-items:center; gap:10px; padding:7px 4px; border-bottom:1px solid var(--line);">
+      <input type="checkbox" ${set.has(p.id) ? 'checked' : ''} onchange="pracToggleSel('${side}','${p.id}')" style="width:20px; height:20px;">
+      <span style="flex:1;">${esc(p.name)}${p.gender === 'F' ? ' <span style="opacity:.6;">· F</span>' : ''}</span>
+      <span style="font-weight:700;">${PBrain.sk(pracObj(p)).toFixed(1)}</span>
+    </label>`;
+  return `
+    <h2 style="margin:4px 0 10px;">🧪 New practice draft</h2>
+    <div class="card">
+      <h3 style="margin-top:0;">Opponent</h3>
+      <div style="display:flex; flex-wrap:wrap; gap:6px;">
+        ${teams.map(t => `<button class="btn ${t.id === su.teamId ? 'btn-primary' : 'btn-outline'} btn-sm" onclick="pracSetupTeam('${t.id}')">${esc(t.name)}</button>`).join('')}
+      </div>
+      <h3>First put-up</h3>
+      <div class="btn-row">
+        <button class="btn ${su.firstLeader === 'us' ? 'btn-primary' : 'btn-outline'}" onclick="pracSetFirst('us')">They defer — we lead first</button>
+        <button class="btn ${su.firstLeader === 'them' ? 'btn-primary' : 'btn-outline'}" onclick="pracSetFirst('them')">They lead first</button>
+      </div>
+      <label style="display:flex; align-items:center; gap:10px; margin-top:12px;">
+        <input type="checkbox" ${su.random ? 'checked' : ''} onchange="pracSetRandom(this.checked)" style="width:20px; height:20px;">
+        <span>🎲 Opponent plays with some randomness</span>
+      </label>
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0;">Our players (${su.ourSel.size}) <span style="float:right; font-size:12px;"><a href="#" onclick="event.preventDefault(); pracSelAll('us', true)">all</a> · <a href="#" onclick="event.preventDefault(); pracSelAll('us', false)">none</a></span></h3>
+      ${ourList.map(p => row(p, 'us', su.ourSel)).join('')}
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0;">${esc(team ? team.name : '')} players (${su.theirSel.size}) <span style="float:right; font-size:12px;"><a href="#" onclick="event.preventDefault(); pracSelAll('them', true)">all</a> · <a href="#" onclick="event.preventDefault(); pracSelAll('them', false)">none</a></span></h3>
+      ${theirList.map(p => row(p, 'them', su.theirSel)).join('')}
+    </div>
+    <p style="font-size:13px; opacity:.8;">${pairs} pairings possible with these pools.</p>
+    <div class="btn-row">
+      <button class="btn btn-ghost" onclick="pracCancelSetup()">Cancel</button>
+      <button class="btn btn-orange" ${pairs > 0 ? '' : 'disabled'} onclick="pracBeginDraft()">Start draft</button>
+    </div>
+  `;
+}
+function pracCancelSetup() { pracUI.screen = pracUI.session ? 'live' : 'home'; render(); }
+
+async function pracBeginDraft() {
+  const su = pracUI.setup;
+  const team = pracTeamById(su.teamId);
+  const ourById = pracOurById();
+  const theirById = {}; ((team && team.players) || []).forEach(p => { theirById[p.id] = p; });
+  const ourObjs = pracResolve([...su.ourSel], ourById);
+  const theirObjs = pracResolve([...su.theirSel], theirById);
+  const theirWp = pracTheirWp();
+  const theirLists = PBrain.buildLists(theirObjs, ourObjs, theirWp);
+  const recipeOurs = PBrain.buildLists(ourObjs, theirObjs, (a, b) => PBrain.wp(a, b));
+  const ourLists = {};
+  theirObjs.forEach(t => {
+    const rec = (team.players || []).find(p => p.id === t.id);
+    const appList = ((rec && rec.suggestedMatchups) || []).filter(id => su.ourSel.has(id));
+    ourLists[t.id] = appList.length ? appList : (recipeOurs[t.id] || []);
+  });
+  pracUI.session = {
+    id: 's' + Date.now().toString(36), v: 1,
+    createdAt: Date.now(), updatedAt: Date.now(),
+    oppTeamId: su.teamId, oppName: team ? team.name : 'Opponent',
+    ourPool: [...su.ourSel], theirPool: [...su.theirSel],
+    firstLeader: su.firstLeader, random: !!su.random,
+    picks: [], comments: {},
+    lists: { ours: ourLists, theirs: theirLists },
+    pendingAutoAt: su.firstLeader === 'them' ? Date.now() + 1800 : null,
+    status: 'live',
+  };
+  await pracSaveSession();
+  pracUI.screen = 'live';
+  render();
+  if (pracUI.session.pendingAutoAt) pracScheduleAuto();
+}
+function pracJoinLive() { pracUI.screen = 'live'; render(); }
+
+/* ================================ BOARD ================================ */
+function pracBoardHtml(session, isReplay) {
+  const upto = isReplay ? pracUI.replay.upto : (session.picks || []).length;
+  const view = JSON.parse(JSON.stringify(session));
+  view.picks = (session.picks || []).slice(0, upto);
+  const rem = pracRemaining(view);
+  const phase = isReplay ? { kind: 'replay' } : pracPhase(session);
+  const hideScore = pracPref('prac_hide_score', false);
+  const coachOn = pracPref('prac_coach', true);
+  const donePicks = view.picks.filter(pk => pk.answerId);
+  const banked = donePicks.reduce((sum, pk) => sum + (pk.wp || 0), 0);
+  const totalPairs = donePicks.length + pracPairsPossible(rem.ourRem, rem.theirRem);
+  const projected = banked + PBrain.teamValue(rem.ourRem, rem.theirRem, (a, b) => PBrain.wp(a, b));
+
+  const nameOf = (side, id) => {
+    const p = side === 'us' ? rem.ourById[id] : rem.theirById[id];
+    return p ? p.name : '?';
+  };
+  const banner = (() => {
+    if (isReplay) return `▶ Replaying — pick ${upto} of ${(session.picks || []).length}`;
+    switch (phase.kind) {
+      case 'our-lead': return `🟢 <strong>Your put-up</strong> — tap one of your players below (pick ${phase.pickNo})`;
+      case 'our-answer': return `🟢 <strong>They put up ${esc(nameOf('them', phase.pending.ledId))}</strong> — tap your answer below`;
+      case 'their-answer': return `⏳ <strong>We put up ${esc(nameOf('us', phase.pending.ledId))}</strong> — ${esc(session.oppName)} is answering…`;
+      case 'their-lead': return `⏳ <strong>${esc(session.oppName)} is putting up…</strong>`;
+      case 'done': return `🏁 <strong>Draft complete</strong> — close it out to save it to history.`;
+      default: return '';
+    }
+  })();
+
+  const chip = (p, side) => {
+    const tappable = !isReplay && ((phase.kind === 'our-lead' && side === 'us') || (phase.kind === 'our-answer' && side === 'us'));
+    let enabled = tappable;
+    if (phase.kind === 'our-lead' && side === 'us') enabled = rem.theirRem.some(t => t.gender === p.gender);
+    if (phase.kind === 'our-answer' && side === 'us') {
+      const led = rem.theirById[phase.pending.ledId];
+      enabled = led && p.gender === (led.gender === 'F' ? 'F' : 'M');
+    }
+    return `<button class="btn ${enabled ? 'btn-outline' : 'btn-ghost'} btn-sm" style="margin:3px; ${enabled ? '' : 'opacity:.45;'}" ${enabled ? `onclick="pracTapPlayer('${p.id}')"` : 'disabled'}>
+      ${esc(p.name)} <strong>${PBrain.sk(p).toFixed(1)}</strong></button>`;
+  };
+
+  const pairRows = view.picks.map((pk, i) => {
+    const ourP = pk.leader === 'us' ? rem.ourById[pk.ledId] : rem.ourById[pk.answerId];
+    const theirP = pk.leader === 'us' ? rem.theirById[pk.answerId] : rem.theirById[pk.ledId];
+    const cmt = (session.comments || {})[String(i + 1)];
+    return `<div style="display:flex; align-items:center; gap:8px; padding:7px 2px; border-bottom:1px solid var(--line);">
+      <span style="font-weight:800; opacity:.55; width:22px;">${i + 1}</span>
+      <span style="flex:1; font-size:14px;">${pk.leader === 'them' ? '<span style="opacity:.55;">they led · </span>' : ''}${esc(ourP ? ourP.name : '?')} <span style="opacity:.55;">vs</span> ${theirP ? esc(theirP.name) : '<em>…</em>'}</span>
+      ${pk.answerId ? `<span class="pill" style="background:${pk.wp >= 0.5 ? '#e3f2e6' : '#fbe7e4'};">${Math.round(pk.wp * 100)}%</span>` : '<span class="pill">…</span>'}
+      ${!isReplay ? `<button class="btn btn-ghost btn-sm" onclick="pracOpenComment(${i + 1})" title="Comment on this matchup">${cmt ? '💬' : '＋💬'}</button>` : (cmt ? '<span title="Has a comment">💬</span>' : '')}
+    </div>
+    ${cmt && isReplay ? `<div style="font-size:12.5px; opacity:.8; padding:2px 2px 6px 30px;">💬 ${esc(cmt)}</div>` : ''}
+    ${cmt && !isReplay ? `<div style="font-size:12.5px; opacity:.8; padding:2px 2px 6px 30px;">💬 ${esc(cmt)}</div>` : ''}`;
+  }).join('');
+
+  let coach = '';
+  if (coachOn && !isReplay) {
+    if (phase.kind === 'our-answer') {
+      const ledId = phase.pending.ledId;
+      const list = (session.lists.ours[ledId] || []).filter(id => rem.ourRem.some(p => p.id === id)).slice(0, 4);
+      const ledP = rem.theirById[ledId];
+      coach = `<div class="card" style="background:#f4f8f4;"><strong>🎯 Our list for ${esc(ledP ? ledP.name : '')}:</strong><br>` +
+        (list.length ? list.map((id, i) => { const p = rem.ourById[id]; return `${i + 1}. ${esc(p.name)} — ${Math.round(PBrain.wp(pracObj(p), pracObj(ledP)) * 100)}%`; }).join('<br>') : 'No list — pick on skill.') + '</div>';
+    } else if (phase.kind === 'our-lead') {
+      const hints = PBrain.leadHints(rem.ourRem, rem.theirRem, (a, b) => PBrain.wp(a, b), session.lists.theirs).slice(0, 3);
+      coach = `<div class="card" style="background:#f4f8f4;"><strong>🎯 Likely exchanges if we lead:</strong><br>` +
+        (hints.length ? hints.map(h => { const l = rem.ourById[h.leadId]; const t = rem.theirById[h.answerId]; if (!l || !t) return ''; return `Lead ${esc(l.name)} → they likely answer ${esc(t.name)} (${Math.round(h.w * 100)}%)`; }).filter(Boolean).join('<br>') : '—') + '</div>';
+    } else if (phase.kind === 'their-answer') {
+      const pending = phase.pending;
+      const list = (session.lists.theirs[pending.ledId] || []).filter(id => rem.theirRem.some(p => p.id === id));
+      const t = list.length ? rem.theirById[list[0]] : null;
+      if (t) coach = `<div class="card" style="background:#f4f8f4;"><strong>🎯 Their likely answer:</strong> ${esc(t.name)} (top of their list)</div>`;
+    }
+  }
+
+  const replayBar = isReplay ? `
+    <div class="btn-row" style="justify-content:space-between;">
+      <button class="btn btn-outline" ${upto <= 0 ? 'disabled' : ''} onclick="pracReplayStep(-1)">‹ Prev</button>
+      <button class="btn btn-outline" ${upto >= (session.picks || []).length ? 'disabled' : ''} onclick="pracReplayStep(1)">Next ›</button>
+      <button class="btn btn-ghost" onclick="pracExitReplay()">Exit replay</button>
+    </div>` : '';
+
+  return `
+    <div style="display:flex; align-items:center; gap:8px;">
+      <h2 style="margin:4px 0;">🧪 vs ${esc(session.oppName)}</h2>
+      ${!isReplay ? '<span style="width:9px; height:9px; border-radius:50%; background:#c0392b; display:inline-block;"></span><span style="font-size:12px; font-weight:700;">LIVE</span>' : ''}
+      <span style="flex:1;"></span>
+      <button class="btn btn-ghost btn-sm" onclick="pracTogglePref('prac_coach')">${coachOn ? '🎯 Coach: on' : '🎯 Coach: off'}</button>
+      <button class="btn btn-ghost btn-sm" onclick="pracTogglePref('prac_hide_score')">${hideScore ? 'Score: hidden' : 'Score: shown'}</button>
+    </div>
+    ${!hideScore ? `<div class="card" style="text-align:center; padding:10px;"><span style="font-size:13px; opacity:.7;">Projected score</span><br><strong style="font-size:20px;">Us ${projected.toFixed(1)} — ${(totalPairs - projected).toFixed(1)} Them</strong><span style="font-size:12.5px; opacity:.7;"> · ${donePicks.length} picks banked at ${banked.toFixed(1)}</span></div>` : ''}
+    <div class="card" style="padding:10px 12px;">${banner}</div>
+    ${coach}
+    <div class="card">
+      <h3 style="margin-top:0;">Pairings</h3>
+      ${pairRows || '<p style="opacity:.7;">No picks yet.</p>'}
+      ${phase.kind === 'done' && (rem.ourRem.length || rem.theirRem.length) ? `<p style="font-size:12.5px; opacity:.7; margin-top:8px;">Did not play — Us: ${rem.ourRem.map(p => esc(p.name)).join(', ') || 'none'} · Them: ${rem.theirRem.map(p => esc(p.name)).join(', ') || 'none'}</p>` : ''}
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0;">Our remaining (${rem.ourRem.length})</h3>
+      <div>${sortBySkillGender(rem.ourRem.map(p => rem.ourById[p.id])).map(p => chip(pracObj(p), 'us')).join('')}</div>
+      <h3>${esc(session.oppName)} remaining (${rem.theirRem.length})</h3>
+      <div>${sortBySkillGender(rem.theirRem.map(p => rem.theirById[p.id])).map(p => chip(pracObj(p), 'them')).join('')}</div>
+    </div>
+    ${replayBar}
+    ${!isReplay ? `<div class="btn-row">
+      <button class="btn btn-outline" ${(session.picks || []).length ? '' : 'disabled'} onclick="pracUndo()">↩ Undo</button>
+      <button class="btn btn-outline" ${(session.picks || []).length ? '' : 'disabled'} onclick="pracOpenRewind()">⏪ Rewind</button>
+      <button class="btn btn-primary" onclick="pracOpenCloseOut()">Close out</button>
+    </div>` : ''}
+  `;
+}
+
+function pracTogglePref(key) {
+  pracSetPref(key, !pracPref(key, key === 'prac_coach'));
+  render();
+}
+
+/* ================================ ACTIONS ================================ */
+async function pracTapPlayer(id) {
+  const s = pracUI.session;
+  if (!s) return;
+  const phase = pracPhase(s);
+  const rem = pracRemaining(s);
+  if (phase.kind === 'our-lead') {
+    const leadP = rem.ourRem.find(p => p.id === id);
+    if (!leadP) return;
+    if (!rem.theirRem.some(p => p.gender === leadP.gender)) return; // no legal answer exists
+    s.picks.push({ leader: 'us', ledId: id, answerId: null });
+    s.pendingAutoAt = Date.now() + 1800;
+    await pracSaveSession();
+    render();
+    pracScheduleAuto();
+  } else if (phase.kind === 'our-answer') {
+    const ansP = rem.ourRem.find(p => p.id === id);
+    if (!ansP) return;
+    const pending = s.picks[s.picks.length - 1];
+    const ledP = rem.theirById[pending.ledId];
+    if (!ledP || ansP.gender !== (ledP.gender === 'F' ? 'F' : 'M')) return; // women vs women only
+    pending.answerId = id;
+    const ourP = rem.ourById[id];
+    const theirP = rem.theirById[pending.ledId];
+    pending.wp = PBrain.wp(pracObj(ourP), pracObj(theirP));
+    const next = pracPhase(s);
+    s.pendingAutoAt = next.kind === 'their-lead' ? Date.now() + 1800 : null;
+    await pracSaveSession();
+    render();
+    if (s.pendingAutoAt) pracScheduleAuto();
+  }
+}
+
+async function pracUndo() {
+  const s = pracUI.session;
+  if (!s || !(s.picks || []).length) return;
+  const removedNo = s.picks.length;
+  s.picks.pop();
+  if (s.comments) delete s.comments[String(removedNo)];
+  s.pendingAutoAt = null;
+  const next = pracPhase(s);
+  if (next.kind === 'their-lead' || next.kind === 'their-answer') s.pendingAutoAt = Date.now() + 1800;
+  await pracSaveSession();
+  render();
+  if (s.pendingAutoAt) pracScheduleAuto();
+}
+
+function pracOpenRewind() {
+  const s = pracUI.session;
+  const rows = (s.picks || []).map((pk, i) => {
+    const ourP = pracPickOurPlayer(s, pk), theirP = pracPickTheirPlayer(s, pk);
+    return `<button class="btn btn-outline" style="width:100%; margin:4px 0; text-align:left;" onclick="pracRewindTo(${i})">Rewind to before pick ${i + 1} — ${esc(ourP ? ourP.name : '?')} vs ${theirP ? esc(theirP.name) : '…'}</button>`;
+  }).join('');
+  document.getElementById('modalRoot').innerHTML = `
+    <div class="overlay" onclick="closeModalIfBackdrop(event)">
+      <div class="sheet" onclick="event.stopPropagation()">
+        <h3>⏪ Rewind the draft</h3>
+        <p style="font-size:13px; opacity:.8;">Everything from that pick on is removed, and you play it again from there.</p>
+        ${rows || '<p>No picks yet.</p>'}
+        <div class="btn-row"><button class="btn btn-ghost" onclick="closeModal()">Cancel</button></div>
+      </div>
+    </div>`;
+}
+async function pracRewindTo(idx) {
+  const s = pracUI.session;
+  closeModal();
+  s.picks = s.picks.slice(0, idx);
+  if (s.comments) Object.keys(s.comments).forEach(k => { if (parseInt(k, 10) > idx) delete s.comments[k]; });
+  s.pendingAutoAt = null;
+  const next = pracPhase(s);
+  if (next.kind === 'their-lead' || next.kind === 'their-answer') s.pendingAutoAt = Date.now() + 1800;
+  await pracSaveSession();
+  render();
+  if (s.pendingAutoAt) pracScheduleAuto();
+}
+
+function pracOpenComment(pickNo) {
+  const s = pracUI.session;
+  const pk = (s.picks || [])[pickNo - 1];
+  if (!pk) return;
+  const ourP = pracPickOurPlayer(s, pk), theirP = pracPickTheirPlayer(s, pk);
+  const cur = (s.comments || {})[String(pickNo)] || '';
+  document.getElementById('modalRoot').innerHTML = `
+    <div class="overlay" onclick="closeModalIfBackdrop(event)">
+      <div class="sheet" onclick="event.stopPropagation()">
+        <h3>💬 Pick ${pickNo}: ${esc(ourP ? ourP.name : '?')} vs ${theirP ? esc(theirP.name) : '…'}</h3>
+        <div class="field">
+          <label>What did you like or not like about this matchup?</label>
+          <textarea id="prac_comment_text" rows="4" style="width:100%; padding:12px; border-radius:12px; border:2px solid var(--line); font-size:15px;">${esc(cur)}</textarea>
+        </div>
+        <div class="btn-row">
+          <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+          <button class="btn btn-primary" onclick="pracSaveComment(${pickNo})">Save comment</button>
+        </div>
+      </div>
+    </div>`;
+}
+async function pracSaveComment(pickNo) {
+  const s = pracUI.session;
+  const text = document.getElementById('prac_comment_text').value.trim();
+  s.comments = s.comments || {};
+  if (text) s.comments[String(pickNo)] = text; else delete s.comments[String(pickNo)];
+  closeModal();
+  await pracSaveSession();
+  render();
+}
+
+/* ================================ CLOSE OUT / HISTORY ================================ */
+function pracOpenCloseOut() {
+  const s = pracUI.session;
+  if (!s) return;
+  const done = (s.picks || []).filter(pk => pk.answerId);
+  const ev = done.reduce((sum, pk) => sum + (pk.wp || 0), 0);
+  const dist = PBrain.poissonBinomial(done.map(pk => pk.wp || 0));
+  const n = done.length;
+  let pWin = 0, pTie = 0;
+  dist.forEach((d, k) => { if (k > n / 2) pWin += d; else if (k === n / 2) pTie += d; });
+  const winPct = Math.round((pWin + 0.5 * pTie) * 100);
+  document.getElementById('modalRoot').innerHTML = `
+    <div class="overlay" onclick="closeModalIfBackdrop(event)">
+      <div class="sheet" onclick="event.stopPropagation()">
+        <h3>Close out this practice draft?</h3>
+        <p style="font-size:14px;">vs <strong>${esc(s.oppName)}</strong> — ${n} pairings, expected score <strong>${ev.toFixed(1)}–${(n - ev).toFixed(1)}</strong>, about a <strong>${winPct}%</strong> chance to win the singles round on these numbers.</p>
+        <p style="font-size:13px; opacity:.8;">Saving keeps the full pick-by-pick draft and your comments in History, where you can replay it. Discard throws it away.</p>
+        <div class="btn-row">
+          <button class="btn btn-ghost" onclick="closeModal()">Keep drafting</button>
+          <button class="btn btn-outline" onclick="pracCloseOut(false)">Discard</button>
+          <button class="btn btn-primary" onclick="pracCloseOut(true)">Save & close</button>
+        </div>
+      </div>
+    </div>`;
+}
+async function pracCloseOut(save) {
+  const s = pracUI.session;
+  closeModal();
+  if (save && s) {
+    const done = (s.picks || []).filter(pk => pk.answerId);
+    const ev = done.reduce((sum, pk) => sum + (pk.wp || 0), 0);
+    const archived = { ...s, status: 'done', closedAt: Date.now(), pendingAutoAt: null };
+    await storeSet('dg_practice_' + s.id, JSON.stringify(archived), true);
+    const rawIdx = await storeGet(PRAC_INDEX_KEY, true);
+    const idx = rawIdx ? JSON.parse(rawIdx) : [];
+    idx.unshift({ id: s.id, oppTeamId: s.oppTeamId, oppName: s.oppName, closedAt: archived.closedAt, picks: done.length, ev });
+    await storeSet(PRAC_INDEX_KEY, JSON.stringify(idx.slice(0, 50)), true);
+    pracUI.index = idx.slice(0, 50);
+  }
+  try { await window.storage.delete(PRAC_LIVE_KEY, true); } catch (e) {}
+  pracUI.session = null;
+  pracUI.screen = 'home';
+  render();
+}
+
+/* ================================ REPLAY ================================ */
+async function pracOpenReplay(id) {
+  const raw = await storeGet('dg_practice_' + id, true);
+  if (!raw) return;
+  const s = JSON.parse(raw);
+  pracUI.replay = { session: s, upto: (s.picks || []).length };
+  pracUI.screen = 'replay';
+  render();
+}
+function pracReplayStep(d) {
+  const r = pracUI.replay;
+  r.upto = Math.max(0, Math.min((r.session.picks || []).length, r.upto + d));
+  render();
+}
+function pracExitReplay() { pracUI.replay = null; pracUI.screen = 'home'; render(); }
 
 /* ============================= HOME ============================= */
 function todayISO(){
