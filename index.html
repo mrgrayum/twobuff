@@ -4626,7 +4626,7 @@ async function renderTeam(){
       <div class="card empty"><span class="em">🔒</span><p>The team roster is managed by team admins.</p></div>`;
   }
   await Promise.all([loadRosterMovesLog(), loadRosterTrackingLocked()]);
-  const sorted = [...state.players].sort((a,b)=>a.name.localeCompare(b.name));
+  const sorted = sortBySkillGender(state.players);
   const activeRoster = sorted.filter(p=>p.active!==false);
   const availablePool = sorted.filter(p=>p.active===false);
   const menCount = activeRoster.filter(p=>p.gender!=='F').length;
@@ -5481,6 +5481,16 @@ async function setFirstPutUp(boardKey, who){
   render();
   saveMatchupState(ms).catch(err=>console.error('Matchup save failed', err));
 }
+// Display order for player pools and roster lists (Matt, 2026-10-26): men first
+// by skill (best → lowest), then women by skill (highest → lowest). Players
+// with no skill rating go last in their group; ties break alphabetically.
+// Display-only — returns a sorted copy, never mutates stored roster order.
+function sortBySkillGender(players){
+  const grp = p => p.gender === 'F' ? 1 : 0;
+  const sk = p => (typeof p.skillRank === 'number' ? p.skillRank : -1);
+  return [...players].sort((a,b)=> (grp(a)-grp(b)) || (sk(b)-sk(a)) || a.name.localeCompare(b.name));
+}
+
 async function renderMatchups(){
   const [teams, ms] = await Promise.all([
     loadOppTeams(),
@@ -5574,8 +5584,8 @@ async function renderMatchups(){
   // ---- Singles (each opponent team keeps its own independent set of pairings) ----
   const singles = getSinglesBucket(ms);
   const usedOppIds = new Set(Object.values(singles));
-  const availableOpp = currentTeam.players.filter(p=>p.active !== false && !usedOppIds.has(p.id) && !benchedSingles.has(p.id));
-  const availableTB = eligibleTB.filter(p=>singles[p.id] === undefined && !benchedSingles.has(p.id));
+  const availableOpp = sortBySkillGender(currentTeam.players.filter(p=>p.active !== false && !usedOppIds.has(p.id) && !benchedSingles.has(p.id)));
+  const availableTB = sortBySkillGender(eligibleTB.filter(p=>singles[p.id] === undefined && !benchedSingles.has(p.id)));
 
   const singlesConnector = (tbId, oppId, key) => {
     let statusEmoji = '';
@@ -5703,8 +5713,8 @@ async function renderMatchups(){
   const doubles = getDoublesBucket(ms);
   const pairedTBIds = new Set(doubles.flatMap(m=>m.tb));
   const pairedOppIds = new Set(doubles.flatMap(m=>m.opp));
-  const availableDoublesTB = eligibleTB.filter(p=>!pairedTBIds.has(p.id) && !benchedDoubles.has(p.id));
-  const availableDoublesOpp = currentTeam.players.filter(p=>p.active !== false && !pairedOppIds.has(p.id) && !benchedDoubles.has(p.id));
+  const availableDoublesTB = sortBySkillGender(eligibleTB.filter(p=>!pairedTBIds.has(p.id) && !benchedDoubles.has(p.id)));
+  const availableDoublesOpp = sortBySkillGender(currentTeam.players.filter(p=>p.active !== false && !pairedOppIds.has(p.id) && !benchedDoubles.has(p.id)));
 
   const doublesConnector = (m, key) => {
     let statusEmoji = '';
@@ -6507,8 +6517,8 @@ async function renderTeamsPage(){
 }
 async function oppTeamCardFor(t){
   const teamExpanded = state.expandedOppTeamId === t.id;
-  const activePlayers = t.players.filter(p=>p.active !== false);
-  const inactivePlayers = t.players.filter(p=>p.active === false);
+  const activePlayers = sortBySkillGender(t.players.filter(p=>p.active !== false));
+  const inactivePlayers = sortBySkillGender(t.players.filter(p=>p.active === false));
   let rosterHtml = '';
   if(teamExpanded){
     if(t.players.length === 0){
