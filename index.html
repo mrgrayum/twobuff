@@ -2160,6 +2160,7 @@ const pracUI = {
   replay: null,             // {session, upto} when replaying an archive
   pollTimer: null,
   autoTimer: null,
+  rosterOpen: {},   // live-board <details> open states, remembered across re-renders
 };
 const PRAC_LIVE_KEY = 'dg_practice_live';
 const PRAC_INDEX_KEY = 'dg_practice_index';
@@ -2171,7 +2172,14 @@ function pracSetPref(key, val) { try { localStorage.setItem(key, val ? '1' : '0'
 
 function pracOurById() { const m = {}; (state.players || []).forEach(p => { m[p.id] = p; }); return m; }
 function pracTeamById(teamId) { return (state.oppTeamsCache || []).find(t => t.id === teamId) || null; }
-function pracObj(p) { return p ? { id: p.id, name: p.name, gender: p.gender === 'F' ? 'F' : 'M', skillRank: p.skillRank } : null; }
+function pracObj(p) { return p ? { id: p.id, name: p.name, gender: p.gender === 'F' ? 'F' : 'M', skillRank: p.skillRank, pdgaRating: p.pdgaRating } : null; }
+function pracInfo(p) {
+  if (!p) return '';
+  const parts = ['skill ' + PBrain.sk(p).toFixed(1)];
+  const r = p.pdgaRating;
+  if (r !== null && r !== undefined && r !== '' && !isNaN(parseFloat(r))) parts.push('PDGA ' + r);
+  return parts.join(' · ');
+}
 function pracResolve(ids, byId) { return (ids || []).map(id => pracObj(byId[id])).filter(Boolean); }
 function pracTheirWp() { return (a, b) => 1 - PBrain.wp(b, a); }  // P(their a beats our b)
 
@@ -2229,7 +2237,11 @@ async function pracLoadLive(force) {
   const raw = await storeGet(PRAC_LIVE_KEY, true);
   const s = raw ? JSON.parse(raw) : null;
   if (!s) { pracUI.session = null; return null; }
-  if (force || !pracUI.session || pracUI.session.id !== s.id || s.updatedAt !== pracUI.session.updatedAt) pracUI.session = s;
+  // Monotonic guard: never adopt a stored copy OLDER than what this device
+  // already holds — a poll read that started before a local write must not
+  // roll the session back (it would flicker, and a tap on the stale copy
+  // could overwrite a teammate's pick or a comment).
+  if (!pracUI.session || pracUI.session.id !== s.id || s.updatedAt > pracUI.session.updatedAt) pracUI.session = s;
   return pracUI.session;
 }
 
@@ -2241,6 +2253,7 @@ function pracScheduleAuto() {
 async function pracMaybeAuto() {
   const s = pracUI.session;
   if (!s || state.view !== 'practice') return;
+  if (s.mode === 'manual' || s.awaitingContinue) return;
   const phase = pracPhase(s);
   if (phase.kind !== 'their-lead' && phase.kind !== 'their-answer') return;
   if (!s.pendingAutoAt || Date.now() < s.pendingAutoAt) { pracScheduleAuto(); return; }
@@ -2271,7 +2284,8 @@ async function pracExecuteTheirMove() {
     const theirP = rem.theirRem.find(p => p.id === ansId) || pracResolve([ansId], rem.theirById)[0];
     pending.wp = PBrain.wp(pracObj(ourP), pracObj(theirP));
     const next = pracPhase(s);
-    s.pendingAutoAt = (next.kind === 'their-lead') ? Date.now() + 1800 : null;
+    s.pendingAutoAt = null;
+    s.awaitingContinue = (next.kind === 'their-lead');
   }
   await pracSaveSession();
   render();
@@ -2361,7 +2375,7 @@ async function pracStartSetup() {
   const teams = state.oppTeamsCache || [];
   const tank = teams.find(t => /tank/i.test(t.name || ''));
   const teamId = (tank || teams[0] || {}).id;
-  pracUI.setup = { teamId, ourSel: new Set(), theirSel: new Set(), firstLeader: 'us', random: false };
+  pracUI.setup = { teamId, ourSel: new Set(), theirSel: new Set(), firstLeader: 'us', random: false, mode: 'auto' };
   await pracSetupDefaults(teamId);
   pracUI.screen = 'setup';
   render();
@@ -2401,6 +2415,7 @@ function pracSelAll(side, on) {
 }
 function pracSetFirst(leader) { pracUI.setup.firstLeader = leader; render(); }
 function pracSetRandom(on) { pracUI.setup.random = on; render(); }
+function pracSetMode(m) { pracUI.setup.mode = m; render(); }
 
 function pracSetupHtml() {
   const su = pracUI.setup;
@@ -2435,6 +2450,12 @@ function pracSetupHtml() {
         <input type="checkbox" ${su.random ? 'checked' : ''} onchange="pracSetRandom(this.checked)" style="width:20px; height:20px;">
         <span>🎲 Opponent plays with some randomness</span>
       </label>
+      <h3>Mode</h3>
+      <div class="btn-row">
+        <button class="btn ${su.mode === 'auto' ? 'btn-primary' : 'btn-outline'}" onclick="pracSetMode('auto')">🤖 Opponent plays itself</button>
+        <button class="btn ${su.mode === 'manual' ? 'btn-primary' : 'btn-outline'}" onclick="pracSetMode('manual')">✋ We pick both sides</button>
+      </div>
+      <p style="font-size:12.5px; opacity:.75; margin:6px 0 0;">Both-sides mode: you choose their put-ups and answers too — walk through a specific scenario at your own pace.</p>
     </div>
     <div class="card">
       <h3 style="margin-top:0;">Our players (${su.ourSel.size}) <span style="float:right; font-size:12px;"><a href="#" onclick="event.preventDefault(); pracSelAll('us', true)">all</a> · <a href="#" onclick="event.preventDefault(); pracSelAll('us', false)">none</a></span></h3>
@@ -2477,13 +2498,14 @@ async function pracBeginDraft() {
     firstLeader: su.firstLeader, random: !!su.random,
     picks: [], comments: {},
     lists: { ours: ourLists, theirs: theirLists },
-    pendingAutoAt: su.firstLeader === 'them' ? Date.now() + 1800 : null,
+    mode: su.mode || 'auto',
+    awaitingContinue: (su.mode !== 'manual' && su.firstLeader === 'them'),
+    pendingAutoAt: null,
     status: 'live',
   };
   await pracSaveSession();
   pracUI.screen = 'live';
   render();
-  if (pracUI.session.pendingAutoAt) pracScheduleAuto();
 }
 function pracJoinLive() { pracUI.screen = 'live'; render(); }
 
@@ -2494,71 +2516,103 @@ function pracBoardHtml(session, isReplay) {
   view.picks = (session.picks || []).slice(0, upto);
   const rem = pracRemaining(view);
   const phase = isReplay ? { kind: 'replay' } : pracPhase(session);
-  const hideScore = pracPref('prac_hide_score', false);
-  const coachOn = pracPref('prac_coach', true);
+  const manual = session.mode === 'manual';
+  const hideScore = pracPref('prac_hide_score', true);
+  const coachOn = pracPref('prac_coach', false);
   const donePicks = view.picks.filter(pk => pk.answerId);
   const banked = donePicks.reduce((sum, pk) => sum + (pk.wp || 0), 0);
   const totalPairs = donePicks.length + pracPairsPossible(rem.ourRem, rem.theirRem);
   const projected = banked + PBrain.teamValue(rem.ourRem, rem.theirRem, (a, b) => PBrain.wp(a, b));
+  const ourRec = id => rem.ourById[id];
+  const theirRec = id => rem.theirById[id];
+  const infoOf = p => esc(pracInfo(p));
 
-  const nameOf = (side, id) => {
-    const p = side === 'us' ? rem.ourById[id] : rem.theirById[id];
-    return p ? p.name : '?';
-  };
-  const banner = (() => {
-    if (isReplay) return `▶ Replaying — pick ${upto} of ${(session.picks || []).length}`;
-    switch (phase.kind) {
-      case 'our-lead': return `🟢 <strong>Your put-up</strong> — tap one of your players below (pick ${phase.pickNo})`;
-      case 'our-answer': return `🟢 <strong>They put up ${esc(nameOf('them', phase.pending.ledId))}</strong> — tap your answer below`;
-      case 'their-answer': return `⏳ <strong>We put up ${esc(nameOf('us', phase.pending.ledId))}</strong> — ${esc(session.oppName)} is answering…`;
-      case 'their-lead': return `⏳ <strong>${esc(session.oppName)} is putting up…</strong>`;
-      case 'done': return `🏁 <strong>Draft complete</strong> — close it out to save it to history.`;
-      default: return '';
-    }
-  })();
-
-  const chip = (p, side) => {
-    const tappable = !isReplay && ((phase.kind === 'our-lead' && side === 'us') || (phase.kind === 'our-answer' && side === 'us'));
-    let enabled = tappable;
-    if (phase.kind === 'our-lead' && side === 'us') enabled = rem.theirRem.some(t => t.gender === p.gender);
-    if (phase.kind === 'our-answer' && side === 'us') {
-      const led = rem.theirById[phase.pending.ledId];
-      enabled = led && p.gender === (led.gender === 'F' ? 'F' : 'M');
-    }
-    return `<button class="btn ${enabled ? 'btn-outline' : 'btn-ghost'} btn-sm" style="margin:3px; ${enabled ? '' : 'opacity:.45;'}" ${enabled ? `onclick="pracTapPlayer('${p.id}')"` : 'disabled'}>
-      ${esc(p.name)} <strong>${PBrain.sk(p).toFixed(1)}</strong></button>`;
-  };
-
-  const pairRows = view.picks.map((pk, i) => {
-    const ourP = pk.leader === 'us' ? rem.ourById[pk.ledId] : rem.ourById[pk.answerId];
-    const theirP = pk.leader === 'us' ? rem.theirById[pk.answerId] : rem.theirById[pk.ledId];
+  /* ---------- pair rows (used in the Matched list + replay) ---------- */
+  const pairRow = (pk, i) => {
+    const ourP = pk.leader === 'us' ? ourRec(pk.ledId) : ourRec(pk.answerId);
+    const theirP = pk.leader === 'us' ? theirRec(pk.answerId) : theirRec(pk.ledId);
     const cmt = (session.comments || {})[String(i + 1)];
     return `<div style="display:flex; align-items:center; gap:8px; padding:7px 2px; border-bottom:1px solid var(--line);">
       <span style="font-weight:800; opacity:.55; width:22px;">${i + 1}</span>
-      <span style="flex:1; font-size:14px;">${pk.leader === 'them' ? '<span style="opacity:.55;">they led · </span>' : ''}${esc(ourP ? ourP.name : '?')} <span style="opacity:.55;">vs</span> ${theirP ? esc(theirP.name) : '<em>…</em>'}</span>
+      <span style="flex:1; font-size:14px;">${pk.leader === 'them' ? '<span style="opacity:.55;">they led · </span>' : ''}${esc(ourP ? ourP.name : '?')} <span style="opacity:.55;">(${ourP ? PBrain.sk(pracObj(ourP)).toFixed(1) : '?'})</span> <span style="opacity:.55;">vs</span> ${theirP ? esc(theirP.name) : '<em>…</em>'}${theirP ? ` <span style="opacity:.55;">(${PBrain.sk(pracObj(theirP)).toFixed(1)})</span>` : ''}</span>
       ${pk.answerId ? `<span class="pill" style="background:${pk.wp >= 0.5 ? '#e3f2e6' : '#fbe7e4'};">${Math.round(pk.wp * 100)}%</span>` : '<span class="pill">…</span>'}
       ${!isReplay ? `<button class="btn btn-ghost btn-sm" onclick="pracOpenComment(${i + 1})" title="Comment on this matchup">${cmt ? '💬' : '＋💬'}</button>` : (cmt ? '<span title="Has a comment">💬</span>' : '')}
     </div>
-    ${cmt && isReplay ? `<div style="font-size:12.5px; opacity:.8; padding:2px 2px 6px 30px;">💬 ${esc(cmt)}</div>` : ''}
-    ${cmt && !isReplay ? `<div style="font-size:12.5px; opacity:.8; padding:2px 2px 6px 30px;">💬 ${esc(cmt)}</div>` : ''}`;
-  }).join('');
+    ${cmt ? `<div style="font-size:12.5px; opacity:.8; padding:2px 2px 6px 30px;">💬 ${esc(cmt)}</div>` : ''}`;
+  };
 
+  /* ---------- chips ---------- */
+  const chip = (p, side) => {
+    let enabled = false;
+    if (!isReplay) {
+      if (phase.kind === 'our-lead' && side === 'us') enabled = rem.theirRem.some(t => t.gender === p.gender);
+      else if (phase.kind === 'our-answer' && side === 'us') { const led = theirRec(phase.pending.ledId); enabled = !!led && p.gender === (led.gender === 'F' ? 'F' : 'M'); }
+      else if (manual && phase.kind === 'their-lead' && side === 'them') enabled = rem.ourRem.some(o => o.gender === p.gender);
+      else if (manual && phase.kind === 'their-answer' && side === 'them') { const led = ourRec(phase.pending.ledId); enabled = !!led && p.gender === (led.gender === 'F' ? 'F' : 'M'); }
+    }
+    return `<button class="btn ${enabled ? 'btn-outline' : 'btn-ghost'} btn-sm" style="margin:3px; ${enabled ? '' : 'opacity:.45;'}" ${enabled ? `onclick="pracTapPlayer('${side}','${p.id}')"` : 'disabled'}>
+      ${esc(p.name)} <strong>${PBrain.sk(p).toFixed(1)}</strong></button>`;
+  };
+  const detailsSection = (key, title, defaultOpen, inner) => {
+    const open = pracUI.rosterOpen[key] !== undefined ? pracUI.rosterOpen[key] : defaultOpen;
+    return `<div class="card" style="padding:10px 14px;">
+      <details ${open ? 'open' : ''} ontoggle="pracRosterToggle('${key}', this.open)">
+        <summary style="font-weight:800; cursor:pointer; padding:4px 0;">${title}</summary>
+        <div style="margin-top:8px;">${inner}</div>
+      </details>
+    </div>`;
+  };
+
+  /* ---------- NOW card (live board) ---------- */
+  const lastDone = donePicks[donePicks.length - 1];
+  let lastLine = '';
+  if (!isReplay && lastDone) {
+    const ourP = lastDone.leader === 'us' ? ourRec(lastDone.ledId) : ourRec(lastDone.answerId);
+    const theirP = lastDone.leader === 'us' ? theirRec(lastDone.answerId) : theirRec(lastDone.ledId);
+    const li = donePicks.length - 1;
+    lastLine = `<div style="margin-top:10px; padding-top:10px; border-top:1px solid var(--line); font-size:14px;">
+      <span style="opacity:.6;">Last match:</span> <strong>${esc(ourP ? ourP.name : '?')}</strong> <span style="opacity:.7;">(${infoOf(ourP)})</span>
+      vs <strong>${esc(theirP ? theirP.name : '?')}</strong> <span style="opacity:.7;">(${infoOf(theirP)})</span>
+      <span class="pill" style="background:${lastDone.wp >= 0.5 ? '#e3f2e6' : '#fbe7e4'};">${Math.round(lastDone.wp * 100)}%</span>
+      <button class="btn btn-ghost btn-sm" onclick="pracOpenComment(${li + 1})" title="Comment on this matchup">${(session.comments || {})[String(li + 1)] ? '💬' : '＋💬'}</button>
+    </div>`;
+  }
+  const bigPlayer = p => p ? `<div style="margin:6px 0;"><span style="font-size:18px; font-weight:800;">${esc(p.name)}</span><br><span style="opacity:.75;">${infoOf(p)}${p.gender === 'F' ? ' · F' : ''}</span></div>` : '';
+  let nowBody = '';
+  if (isReplay) nowBody = `▶ <strong>Replaying</strong> — pick ${upto} of ${(session.picks || []).length}`;
+  else switch (phase.kind) {
+    case 'our-lead': nowBody = `🟢 <strong>Your put-up</strong> (pick ${phase.pickNo}) — tap one of your players below.`; break;
+    case 'our-answer': nowBody = `🟢 <strong>They put up:</strong>${bigPlayer(theirRec(phase.pending.ledId))}Tap your answer below.`; break;
+    case 'their-answer': nowBody = manual
+      ? `🟢 <strong>We put up:</strong>${bigPlayer(ourRec(phase.pending.ledId))}Tap their answer below (you're playing both sides).`
+      : `⏳ <strong>We put up:</strong>${bigPlayer(ourRec(phase.pending.ledId))}${esc(session.oppName)} is answering…`; break;
+    case 'their-lead': nowBody = manual
+      ? `🟢 <strong>Their put-up</strong> (pick ${phase.pickNo}) — tap one of ${esc(session.oppName)}'s players below.`
+      : (session.awaitingContinue
+        ? `💬 <strong>Talk it over.</strong> When you're ready, tap Continue and ${esc(session.oppName)} will put up.`
+        : `⏳ <strong>${esc(session.oppName)} is putting up…</strong>`); break;
+    case 'done': nowBody = `🏁 <strong>Draft complete</strong> — close it out to save it to history.`; break;
+  }
+  const continueBtn = (!isReplay && !manual && phase.kind === 'their-lead' && session.awaitingContinue)
+    ? `<button class="btn btn-orange" style="width:100%; margin-top:10px;" onclick="pracContinue()">Continue — ${esc(session.oppName)} puts up ›</button>` : '';
+
+  /* ---------- coach ---------- */
   let coach = '';
   if (coachOn && !isReplay) {
     if (phase.kind === 'our-answer') {
       const ledId = phase.pending.ledId;
       const list = (session.lists.ours[ledId] || []).filter(id => rem.ourRem.some(p => p.id === id)).slice(0, 4);
-      const ledP = rem.theirById[ledId];
+      const ledP = theirRec(ledId);
       coach = `<div class="card" style="background:#f4f8f4;"><strong>🎯 Our list for ${esc(ledP ? ledP.name : '')}:</strong><br>` +
-        (list.length ? list.map((id, i) => { const p = rem.ourById[id]; return `${i + 1}. ${esc(p.name)} — ${Math.round(PBrain.wp(pracObj(p), pracObj(ledP)) * 100)}%`; }).join('<br>') : 'No list — pick on skill.') + '</div>';
+        (list.length ? list.map((id, i) => { const p = ourRec(id); return `${i + 1}. ${esc(p.name)} — ${Math.round(PBrain.wp(pracObj(p), pracObj(ledP)) * 100)}%`; }).join('<br>') : 'No list — pick on skill.') + '</div>';
     } else if (phase.kind === 'our-lead') {
       const hints = PBrain.leadHints(rem.ourRem, rem.theirRem, (a, b) => PBrain.wp(a, b), session.lists.theirs).slice(0, 3);
       coach = `<div class="card" style="background:#f4f8f4;"><strong>🎯 Likely exchanges if we lead:</strong><br>` +
-        (hints.length ? hints.map(h => { const l = rem.ourById[h.leadId]; const t = rem.theirById[h.answerId]; if (!l || !t) return ''; return `Lead ${esc(l.name)} → they likely answer ${esc(t.name)} (${Math.round(h.w * 100)}%)`; }).filter(Boolean).join('<br>') : '—') + '</div>';
-    } else if (phase.kind === 'their-answer') {
+        (hints.length ? hints.map(h => { const l = ourRec(h.leadId); const t = theirRec(h.answerId); if (!l || !t) return ''; return `Lead ${esc(l.name)} → they likely answer ${esc(t.name)} (${Math.round(h.w * 100)}%)`; }).filter(Boolean).join('<br>') : '—') + '</div>';
+    } else if (phase.kind === 'their-answer' && !manual) {
       const pending = phase.pending;
       const list = (session.lists.theirs[pending.ledId] || []).filter(id => rem.theirRem.some(p => p.id === id));
-      const t = list.length ? rem.theirById[list[0]] : null;
+      const t = list.length ? theirRec(list[0]) : null;
       if (t) coach = `<div class="card" style="background:#f4f8f4;"><strong>🎯 Their likely answer:</strong> ${esc(t.name)} (top of their list)</div>`;
     }
   }
@@ -2570,28 +2624,29 @@ function pracBoardHtml(session, isReplay) {
       <button class="btn btn-ghost" onclick="pracExitReplay()">Exit replay</button>
     </div>` : '';
 
+  const oursDefaultOpen = isReplay ? true : (phase.kind === 'our-lead' || phase.kind === 'our-answer' || manual);
+  const theirsDefaultOpen = isReplay ? true : (manual && (phase.kind === 'their-lead' || phase.kind === 'their-answer'));
+  const matchedDefaultOpen = isReplay ? true : false;
+
   return `
     <div style="display:flex; align-items:center; gap:8px;">
       <h2 style="margin:4px 0;">🧪 vs ${esc(session.oppName)}</h2>
       ${!isReplay ? '<span style="width:9px; height:9px; border-radius:50%; background:#c0392b; display:inline-block;"></span><span style="font-size:12px; font-weight:700;">LIVE</span>' : ''}
+      ${manual && !isReplay ? '<span class="pill" style="background:#eef;">✋ both sides</span>' : ''}
       <span style="flex:1;"></span>
       <button class="btn btn-ghost btn-sm" onclick="pracTogglePref('prac_coach')">${coachOn ? '🎯 Coach: on' : '🎯 Coach: off'}</button>
       <button class="btn btn-ghost btn-sm" onclick="pracTogglePref('prac_hide_score')">${hideScore ? 'Score: hidden' : 'Score: shown'}</button>
     </div>
     ${!hideScore ? `<div class="card" style="text-align:center; padding:10px;"><span style="font-size:13px; opacity:.7;">Projected score</span><br><strong style="font-size:20px;">Us ${projected.toFixed(1)} — ${(totalPairs - projected).toFixed(1)} Them</strong><span style="font-size:12.5px; opacity:.7;"> · ${donePicks.length} picks banked at ${banked.toFixed(1)}</span></div>` : ''}
-    <div class="card" style="padding:10px 12px;">${banner}</div>
+    <div class="card" style="padding:12px;">${nowBody}${lastLine}${continueBtn}</div>
     ${coach}
-    <div class="card">
-      <h3 style="margin-top:0;">Pairings</h3>
-      ${pairRows || '<p style="opacity:.7;">No picks yet.</p>'}
-      ${phase.kind === 'done' && (rem.ourRem.length || rem.theirRem.length) ? `<p style="font-size:12.5px; opacity:.7; margin-top:8px;">Did not play — Us: ${rem.ourRem.map(p => esc(p.name)).join(', ') || 'none'} · Them: ${rem.theirRem.map(p => esc(p.name)).join(', ') || 'none'}</p>` : ''}
-    </div>
-    <div class="card">
-      <h3 style="margin-top:0;">Our remaining (${rem.ourRem.length})</h3>
-      <div>${sortBySkillGender(rem.ourRem.map(p => rem.ourById[p.id])).map(p => chip(pracObj(p), 'us')).join('')}</div>
-      <h3>${esc(session.oppName)} remaining (${rem.theirRem.length})</h3>
-      <div>${sortBySkillGender(rem.theirRem.map(p => rem.theirById[p.id])).map(p => chip(pracObj(p), 'them')).join('')}</div>
-    </div>
+    ${detailsSection('matched', `Matched so far (${view.picks.length})`, matchedDefaultOpen,
+      (view.picks.map((pk, i) => pairRow(pk, i)).join('') || '<p style="opacity:.7;">No picks yet.</p>') +
+      (phase.kind === 'done' && (rem.ourRem.length || rem.theirRem.length) ? `<p style="font-size:12.5px; opacity:.7; margin-top:8px;">Did not play — Us: ${rem.ourRem.map(p => esc(p.name)).join(', ') || 'none'} · Them: ${rem.theirRem.map(p => esc(p.name)).join(', ') || 'none'}</p>` : ''))}
+    ${detailsSection('ours', `Our remaining (${rem.ourRem.length})`, oursDefaultOpen,
+      sortBySkillGender(rem.ourRem.map(p => ourRec(p.id))).map(p => chip(pracObj(p), 'us')).join(''))}
+    ${detailsSection('theirs', `${esc(session.oppName)} remaining (${rem.theirRem.length})`, theirsDefaultOpen,
+      sortBySkillGender(rem.theirRem.map(p => theirRec(p.id))).map(p => chip(pracObj(p), 'them')).join(''))}
     ${replayBar}
     ${!isReplay ? `<div class="btn-row">
       <button class="btn btn-outline" ${(session.picks || []).length ? '' : 'disabled'} onclick="pracUndo()">↩ Undo</button>
@@ -2601,41 +2656,70 @@ function pracBoardHtml(session, isReplay) {
   `;
 }
 
+function pracRosterToggle(key, open) { pracUI.rosterOpen[key] = open; }
+
+async function pracContinue() {
+  const s = pracUI.session;
+  if (!s || s.mode === 'manual') return;
+  const phase = pracPhase(s);
+  s.awaitingContinue = false;
+  if (phase.kind !== 'their-lead') { await pracSaveSession(); render(); return; }
+  s.pendingAutoAt = Date.now() + 1200;
+  await pracSaveSession();
+  render();
+  pracScheduleAuto();
+}
+
 function pracTogglePref(key) {
-  pracSetPref(key, !pracPref(key, key === 'prac_coach'));
+  pracSetPref(key, !pracPref(key, key !== 'prac_coach'));
   render();
 }
 
 /* ================================ ACTIONS ================================ */
-async function pracTapPlayer(id) {
+async function pracTapPlayer(side, id) {
   const s = pracUI.session;
   if (!s) return;
   const phase = pracPhase(s);
   const rem = pracRemaining(s);
-  if (phase.kind === 'our-lead') {
+  if (phase.kind === 'our-lead' && side === 'us') {
     const leadP = rem.ourRem.find(p => p.id === id);
     if (!leadP) return;
     if (!rem.theirRem.some(p => p.gender === leadP.gender)) return; // no legal answer exists
     s.picks.push({ leader: 'us', ledId: id, answerId: null });
-    s.pendingAutoAt = Date.now() + 1800;
+    s.pendingAutoAt = s.mode === 'manual' ? null : Date.now() + 1800;
     await pracSaveSession();
     render();
-    pracScheduleAuto();
-  } else if (phase.kind === 'our-answer') {
+    if (s.pendingAutoAt) pracScheduleAuto();
+  } else if (phase.kind === 'our-answer' && side === 'us') {
     const ansP = rem.ourRem.find(p => p.id === id);
     if (!ansP) return;
     const pending = s.picks[s.picks.length - 1];
     const ledP = rem.theirById[pending.ledId];
     if (!ledP || ansP.gender !== (ledP.gender === 'F' ? 'F' : 'M')) return; // women vs women only
     pending.answerId = id;
-    const ourP = rem.ourById[id];
-    const theirP = rem.theirById[pending.ledId];
-    pending.wp = PBrain.wp(pracObj(ourP), pracObj(theirP));
+    pending.wp = PBrain.wp(pracObj(rem.ourById[id]), pracObj(ledP));
     const next = pracPhase(s);
-    s.pendingAutoAt = next.kind === 'their-lead' ? Date.now() + 1800 : null;
+    s.pendingAutoAt = null;
+    s.awaitingContinue = (s.mode !== 'manual' && next.kind === 'their-lead');
     await pracSaveSession();
     render();
-    if (s.pendingAutoAt) pracScheduleAuto();
+  } else if (s.mode === 'manual' && phase.kind === 'their-lead' && side === 'them') {
+    const leadP = rem.theirRem.find(p => p.id === id);
+    if (!leadP) return;
+    if (!rem.ourRem.some(p => p.gender === leadP.gender)) return;
+    s.picks.push({ leader: 'them', ledId: id, answerId: null });
+    await pracSaveSession();
+    render();
+  } else if (s.mode === 'manual' && phase.kind === 'their-answer' && side === 'them') {
+    const ansP = rem.theirRem.find(p => p.id === id);
+    if (!ansP) return;
+    const pending = s.picks[s.picks.length - 1];
+    const ledP = rem.ourById[pending.ledId];
+    if (!ledP || ansP.gender !== (ledP.gender === 'F' ? 'F' : 'M')) return;
+    pending.answerId = id;
+    pending.wp = PBrain.wp(pracObj(ledP), pracObj(rem.theirById[id]));
+    await pracSaveSession();
+    render();
   }
 }
 
@@ -2647,10 +2731,9 @@ async function pracUndo() {
   if (s.comments) delete s.comments[String(removedNo)];
   s.pendingAutoAt = null;
   const next = pracPhase(s);
-  if (next.kind === 'their-lead' || next.kind === 'their-answer') s.pendingAutoAt = Date.now() + 1800;
+  s.awaitingContinue = (s.mode !== 'manual' && next.kind === 'their-lead');
   await pracSaveSession();
   render();
-  if (s.pendingAutoAt) pracScheduleAuto();
 }
 
 function pracOpenRewind() {
@@ -2676,10 +2759,9 @@ async function pracRewindTo(idx) {
   if (s.comments) Object.keys(s.comments).forEach(k => { if (parseInt(k, 10) > idx) delete s.comments[k]; });
   s.pendingAutoAt = null;
   const next = pracPhase(s);
-  if (next.kind === 'their-lead' || next.kind === 'their-answer') s.pendingAutoAt = Date.now() + 1800;
+  s.awaitingContinue = (s.mode !== 'manual' && next.kind === 'their-lead');
   await pracSaveSession();
   render();
-  if (s.pendingAutoAt) pracScheduleAuto();
 }
 
 function pracOpenComment(pickNo) {
