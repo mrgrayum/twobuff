@@ -2648,7 +2648,7 @@ function pracBoardHtml(session, isReplay) {
   /* ---------- matched list (the staged pair joins it once it settles) ---------- */
   const matchedPicks = donePicks.filter(pk => pk !== freshPick);
   const matchedHtml = matchedPicks.length
-    ? matchedPicks.map(pk => pairBlock(pk, view.picks.indexOf(pk))).join('')
+    ? [...matchedPicks].reverse().map(pk => pairBlock(pk, view.picks.indexOf(pk))).join('')
     : '<p style="opacity:.7;">No matches yet — the first pairing will land here.</p>';
 
   const replayBar = isReplay ? `
