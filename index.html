@@ -2069,9 +2069,35 @@ const PBrain = (() => {
     return lists;
   }
 
+  /* Cheapest-sufficient answers — the one-way throw rule (Matt, 2026-10-28):
+     throws only run weak-into-strong, so no team voluntarily spends a
+     significant player on a much weaker opponent. An answer spends as little
+     as possible: among the legal candidates, take the cheapest whose win
+     probability clears SUFFICIENT_WP; if nobody clears it (forced case),
+     take the best shot available — that is where a hammer legitimately
+     answers a strong lead. wpFn(a, b) everywhere means P(a beats b);
+     pool must already be filtered to the legal gender. Returns a player id. */
+  const SUFFICIENT_WP = 0.70;
+  function pickAnswer(pool, target, wpFn, random) {
+    if (!pool || !pool.length || !target) return null;
+    const scored = pool.map(p => ({ p, w: wpFn(p, target) }));
+    const tier = scored.filter(c => c.w >= SUFFICIENT_WP)
+      .sort((x, y) => (sk(x.p) - sk(y.p)) || (y.w - x.w) || String(x.p.name).localeCompare(String(y.p.name)));
+    if (tier.length) {
+      if (random && tier.length > 1 && Math.random() < 0.25) return tier[1].p.id;
+      return tier[0].p.id;
+    }
+    scored.sort((x, y) => y.w - x.w);
+    return scored[0].p.id;
+  }
+
   /* Their lead choice: maximize (their win% on the predicted pairing + their
      optimal value of the remainder). predictedAnswer comes from our lists.
-     Returns {leadId, answerId, value} — best, or null if no legal lead. */
+     Waste guard (one-way throw rule): a lead by one of their five strongest
+     remaining players that would only draw a conceded throw from us
+     (theirWp >= 0.85) is a wasted hammer — real teams don't spend it while
+     any non-waste lead exists. If every lead is a waste (forced endgame),
+     all leads are allowed. Returns {leadId, answerId, value} or null. */
   function chooseLead(theirs, ours, theirWp, ourLists, random) {
     const options = [];
     for (const L of theirs) {
@@ -2086,44 +2112,44 @@ const PBrain = (() => {
       options.push({ leadId: L.id, answerId: answer.id, value });
     }
     if (!options.length) return null;
-    options.sort((x, y) => y.value - x.value);
-    if (random && options.length > 1) {
-      const top = options.slice(0, 3);
+    const top5 = new Set([...theirs].sort((x, y) => sk(y) - sk(x)).slice(0, 5).map(p => p.id));
+    const isWaste = o => top5.has(o.leadId) && theirWp(
+      theirs.find(p => p.id === o.leadId), ours.find(p => p.id === o.answerId)) >= 0.85;
+    const clean = options.filter(o => !isWaste(o));
+    const usable = clean.length ? clean : options;
+    usable.sort((x, y) => y.value - x.value);
+    if (random && usable.length > 1) {
+      const top = usable.slice(0, 3);
       const weights = [0.6, 0.25, 0.15].slice(0, top.length);
       const sum = weights.reduce((s, w) => s + w, 0);
       let r = Math.random() * sum;
       for (let i = 0; i < top.length; i++) { r -= weights[i]; if (r <= 0) return top[i]; }
       return top[0];
     }
-    return options[0];
+    return usable[0];
   }
 
-  /* Their answer to our lead: first available name on their list; in random
-     mode, 25% of the time the second available name instead. */
+  /* Their answer to our lead: the cheapest sufficient winner (pickAnswer),
+     NOT the top of their preference list — a list's slot-1 card pick can be
+     a hammer banked on a weak lead, which real teams never spend. */
   function chooseAnswer(theirs, ourLeadId, theirLists, theirWp, oursById, random) {
-    const list = (theirLists && theirLists[ourLeadId]) || [];
-    const avail = list.filter(id => theirs.some(p => p.id === id));
-    if (avail.length) {
-      if (random && avail.length > 1 && Math.random() < 0.25) return avail[1];
-      return avail[0];
-    }
-    const lead = oursById[ourLeadId];
+    const lead = oursById && oursById[ourLeadId];
+    if (!lead) return null;
     const g = genderOf(lead);
     const pool = theirs.filter(p => genderOf(p) === g);
     if (!pool.length) return null;
-    pool.sort((x, y) => theirWp(y, lead) - theirWp(x, lead));
-    return pool[0].id;
+    return pickAnswer(pool, lead, theirWp, random);
   }
 
-  /* Coach hint for OUR lead: for each of our remaining players, their likely
-     answer off their lists and the resulting win% for us. Best few first. */
+  /* Coach hint for OUR lead: for each of our remaining players, the answer
+     the brain would actually give (cheapest sufficient) and the resulting
+     win% for us. Best few first. */
   function leadHints(ours, theirs, ourWp, theirLists) {
     const hints = [];
     for (const L of ours) {
       const g = genderOf(L);
-      const list = (theirLists && theirLists[L.id]) || [];
-      const ans = list.find(id => theirs.some(p => p.id === id))
-        || [...theirs].filter(p => genderOf(p) === g).sort((x, y) => ourWp(L, x) - ourWp(L, y))[0];
+      const pool = theirs.filter(p => genderOf(p) === g);
+      const ans = pickAnswer(pool, L, (c, t) => 1 - ourWp(t, c), false);
       if (!ans) continue;
       const t = theirs.find(p => p.id === ans);
       hints.push({ leadId: L.id, answerId: ans, w: ourWp(L, t) });
