@@ -2536,6 +2536,7 @@ function pracSetupHtml() {
     </div>
     <div class="card">
       <h3 style="margin-top:0;">Our players (${su.ourSel.size}) <span style="float:right; font-size:12px;"><a href="#" onclick="event.preventDefault(); pracSelAll('us', true)">all</a> · <a href="#" onclick="event.preventDefault(); pracSelAll('us', false)">none</a></span></h3>
+      <div class="muted" style="font-size:12px; margin:2px 0 6px;">Full active roster — all ${ourList.length} actives are listed; confirmed RSVPs start checked, check anyone else to add them.</div>
       ${ourList.map(p => row(p, 'us', su.ourSel)).join('')}
     </div>
     <div class="card">
