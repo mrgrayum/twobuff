@@ -2544,6 +2544,7 @@ function pracSetupHtml() {
       ${theirList.map(p => row(p, 'them', su.theirSel)).join('')}
     </div>
     <p style="font-size:13px; opacity:.8;">${pairs} pairings possible with these pools.</p>
+    ${su.ourSel.size !== su.theirSel.size ? `<p style="font-size:13px; font-weight:700; color:#c0392b; margin:2px 0 6px;">⚠ Counts don't match: ${su.ourSel.size} vs ${su.theirSel.size} — both teams need the same number of players to start.</p>` : ''}
     <div class="btn-row">
       <button class="btn btn-ghost" onclick="pracCancelSetup()">Cancel</button>
       <button class="btn btn-orange" ${pairs > 0 ? '' : 'disabled'} onclick="pracBeginDraft()">Start sim</button>
@@ -2552,9 +2553,21 @@ function pracSetupHtml() {
 }
 function pracCancelSetup() { pracUI.screen = pracUI.session ? 'live' : 'home'; render(); }
 
+function pracOpenCountMismatch(ourCount, theirCount, oppName) {
+  document.getElementById('modalRoot').innerHTML = `
+    <div class="overlay" onclick="closeModalIfBackdrop(event)">
+      <div class="sheet" onclick="event.stopPropagation()">
+        <h3>⚠ Player counts don't match</h3>
+        <p style="font-size:13.5px;">Two Buff has ${ourCount} selected, ${esc(oppName)} has ${theirCount}. Add or remove players so both teams have the same number before starting the sim.</p>
+        <div class="btn-row"><button class="btn btn-primary" onclick="closeModal()">OK</button></div>
+      </div>
+    </div>`;
+}
+
 async function pracBeginDraft() {
   const su = pracUI.setup;
   const team = pracTeamById(su.teamId);
+  if (su.ourSel.size !== su.theirSel.size) { pracOpenCountMismatch(su.ourSel.size, su.theirSel.size, team ? team.name : 'Opponent'); return; }
   const ourById = pracOurById();
   const theirById = {}; ((team && team.players) || []).forEach(p => { theirById[p.id] = p; });
   const ourObjs = pracResolve([...su.ourSel], ourById);
