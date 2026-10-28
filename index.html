@@ -2117,16 +2117,14 @@ const PBrain = (() => {
       theirs.find(p => p.id === o.leadId), ours.find(p => p.id === o.answerId)) >= 0.85;
     const clean = options.filter(o => !isWaste(o));
     let usable = clean.length ? clean : options;
-    // Rulings (Matt, Oct 28): top players are seldom put up — they prefer
-    // the answer seat — and their strongest woman is held to be matched
-    // against our strongest woman. Keep their two highest-skill players
-    // (and their top woman, while we still field a woman) out of the lead
-    // seat whenever any other lead exists and the pool is not endgame-thin.
+    // Ruling (Matt, Oct 28): top players are seldom put up — they prefer
+    // the answer seat. Keep their two highest-skill players out of the
+    // lead seat whenever any other lead exists and the pool is not
+    // endgame-thin. (No woman hold here: the hold-our-best-woman rule
+    // belongs to the team holding the stronger woman. The outclassed
+    // team does the opposite in the answer seat — see the throw-cross
+    // in chooseAnswer.)
     const reluctant = new Set([...theirs].sort((x, y) => sk(y) - sk(x)).slice(0, 2).map(p => p.id));
-    if (ours.some(o => genderOf(o) === 'F')) {
-      const topWoman = theirs.filter(p => genderOf(p) === 'F').sort((x, y) => sk(y) - sk(x))[0];
-      if (topWoman) reluctant.add(topWoman.id);
-    }
     if (theirs.length > 3 && usable.some(o => !reluctant.has(o.leadId))) {
       usable = usable.filter(o => !reluctant.has(o.leadId));
     }
@@ -2142,15 +2140,43 @@ const PBrain = (() => {
     return usable[0];
   }
 
-  /* Their answer to our lead: the cheapest sufficient winner (pickAnswer),
-     NOT the top of their preference list — a list's slot-1 card pick can be
-     a hammer banked on a weak lead, which real teams never spend. */
+  /* The throw-cross (Matt, Oct 28): the women's matches price as a linked
+     pair, and the rule is asymmetric — it belongs to the team holding the
+     stronger player. When our lead is effectively unbeatable for them
+     (their best answer is under FIGHT_FLOOR) and that best answer still
+     has a real use against another of our remaining players (>=
+     ALT_USE_WP), a real team does NOT spend her here: it throws its
+     weakest legal player into the lost match and saves its best for the
+     winnable one. Tank's shape: Borgman absorbs Bennett, Pray is saved
+     for Erin. oursById is the full roster map, so the alt-use scan is
+     scoped to this sim's pool via the theirLists keys (built over it). */
+  const FIGHT_FLOOR = 0.35;
+  const ALT_USE_WP = 0.60;
+
+  /* Their answer to our lead: the throw-cross first (above); otherwise the
+     cheapest sufficient winner (pickAnswer), NOT the top of their
+     preference list — a list's slot-1 card pick can be a hammer banked on
+     a weak lead, which real teams never spend. */
   function chooseAnswer(theirs, ourLeadId, theirLists, theirWp, oursById, random) {
     const lead = oursById && oursById[ourLeadId];
     if (!lead) return null;
     const g = genderOf(lead);
     const pool = theirs.filter(p => genderOf(p) === g);
     if (!pool.length) return null;
+    if (pool.length > 1) {
+      const scored = pool.map(p => ({ p, w: theirWp(p, lead) }));
+      let best = scored[0], weakest = scored[0];
+      for (const c of scored) {
+        if (c.w > best.w) best = c;
+        if (c.w < weakest.w) weakest = c;
+      }
+      if (best.w < FIGHT_FLOOR && weakest.p.id !== best.p.id) {
+        const scoped = theirLists && Object.keys(theirLists).length
+          ? Object.values(oursById).filter(o => o && o.id !== lead.id && genderOf(o) === g && (o.id in theirLists))
+          : Object.values(oursById).filter(o => o && o.id !== lead.id && genderOf(o) === g);
+        if (scoped.some(o => theirWp(best.p, o) >= ALT_USE_WP)) return weakest.p.id;
+      }
+    }
     return pickAnswer(pool, lead, theirWp, random);
   }
 
