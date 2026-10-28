@@ -386,7 +386,7 @@
     <button class="navbtn" data-view="home" onclick="setView('home')"><span class="ic">🏠</span>Home</button>
     <button class="navbtn" data-view="matchups" onclick="setView('matchups')"><span class="ic">🎯</span>Matchups</button>
     <button class="navbtn" data-view="stats" onclick="setView('stats')"><span class="ic">🏆</span>Stats</button>
-    <button class="navbtn" data-view="practice" id="navPractice" style="display:none;" onclick="setView('practice')"><span class="ic">🧪</span>Practice</button>
+    <button class="navbtn" data-view="practice" id="navPractice" style="display:none;" onclick="setView('practice')"><span class="ic">🧪</span>Matchup Sim</button>
     <button class="navbtn" data-view="scheduling" onclick="openSchedulingSheet()"><span class="ic">📆</span>Scheduling</button>
   </div>
 </div>
@@ -2116,7 +2116,20 @@ const PBrain = (() => {
     const isWaste = o => top5.has(o.leadId) && theirWp(
       theirs.find(p => p.id === o.leadId), ours.find(p => p.id === o.answerId)) >= 0.85;
     const clean = options.filter(o => !isWaste(o));
-    const usable = clean.length ? clean : options;
+    let usable = clean.length ? clean : options;
+    // Rulings (Matt, Oct 28): top players are seldom put up — they prefer
+    // the answer seat — and their strongest woman is held to be matched
+    // against our strongest woman. Keep their two highest-skill players
+    // (and their top woman, while we still field a woman) out of the lead
+    // seat whenever any other lead exists and the pool is not endgame-thin.
+    const reluctant = new Set([...theirs].sort((x, y) => sk(y) - sk(x)).slice(0, 2).map(p => p.id));
+    if (ours.some(o => genderOf(o) === 'F')) {
+      const topWoman = theirs.filter(p => genderOf(p) === 'F').sort((x, y) => sk(y) - sk(x))[0];
+      if (topWoman) reluctant.add(topWoman.id);
+    }
+    if (theirs.length > 3 && usable.some(o => !reluctant.has(o.leadId))) {
+      usable = usable.filter(o => !reluctant.has(o.leadId));
+    }
     usable.sort((x, y) => y.value - x.value);
     if (random && usable.length > 1) {
       const top = usable.slice(0, 3);
@@ -2350,7 +2363,7 @@ function pracEnsurePoll() {
 /* ================================ RENDER ================================ */
 async function renderPractice() {
   if (!state.adminMode) {
-    return `<div class="card empty"><span class="em">🔒</span><p>Draft Practice is an admin-only tool.</p></div>`;
+    return `<div class="card empty"><span class="em">🔒</span><p>Matchup Sim is an admin-only tool.</p></div>`;
   }
   await loadOppTeams();
   if (pracUI.screen === 'setup') return pracSetupHtml();
@@ -2379,7 +2392,7 @@ function pracHomeHtml() {
       <div class="card" style="border:2px solid #c0392b;">
         <div style="display:flex; align-items:center; gap:8px;">
           <span style="width:10px; height:10px; border-radius:50%; background:#c0392b; display:inline-block;"></span>
-          <strong>LIVE practice in progress</strong>
+          <strong>LIVE sim in progress</strong>
         </div>
         <p style="margin:8px 0 4px;">vs <strong>${esc(s.oppName)}</strong> — pick ${Math.min(phase.pickNo, total)} of ${total}${s.random ? ' · 🎲 randomness on' : ''}</p>
         <div class="btn-row">
@@ -2397,13 +2410,13 @@ function pracHomeHtml() {
       <button class="btn btn-outline btn-sm" onclick="pracReplayTap('${e.id}')">▶ Replay</button>
     </div>`).join('');
   return `
-    <h2 style="margin:4px 0 10px;">🧪 Draft Practice</h2>
-    <p style="font-size:13.5px; opacity:.8; margin:0 0 12px;">Practice the singles snake draft against a computer opponent that plays the master-list strategy. Every captain's phone follows the same live session — anyone can make our picks.</p>
+    <h2 style="margin:4px 0 10px;">🧪 Matchup Sim</h2>
+    <p style="font-size:13.5px; opacity:.8; margin:0 0 12px;">Simulate the singles snake draft against a computer opponent that plays the master-list strategy. Every captain's phone follows the same live session — anyone can make our picks.</p>
     ${liveCard}
-    ${!s ? `<button class="btn btn-orange" style="width:100%;" onclick="pracStartSetup()">+ Start a practice draft</button>` : ''}
-    <h3 style="margin:18px 0 2px;">Past practice drafts</h3>
-    <div class="muted" style="font-size:12px; margin-bottom:8px;">Long-press a draft to delete it</div>
-    ${hist || '<div class="card empty"><p>No saved practice drafts yet.</p></div>'}
+    ${!s ? `<button class="btn btn-orange" style="width:100%;" onclick="pracStartSetup()">+ Start a sim</button>` : ''}
+    <h3 style="margin:18px 0 2px;">Past sims</h3>
+    <div class="muted" style="font-size:12px; margin-bottom:8px;">Long-press a sim to delete it</div>
+    ${hist || '<div class="card empty"><p>No saved sims yet.</p></div>'}
   `;
 }
 
@@ -2473,7 +2486,7 @@ function pracSetupHtml() {
       <span style="font-weight:700;">${PBrain.sk(pracObj(p)).toFixed(1)}</span>
     </label>`;
   return `
-    <h2 style="margin:4px 0 10px;">🧪 New practice draft</h2>
+    <h2 style="margin:4px 0 10px;">🧪 New sim</h2>
     <div class="card">
       <h3 style="margin-top:0;">Opponent</h3>
       <div style="display:flex; flex-wrap:wrap; gap:6px;">
@@ -2506,7 +2519,7 @@ function pracSetupHtml() {
     <p style="font-size:13px; opacity:.8;">${pairs} pairings possible with these pools.</p>
     <div class="btn-row">
       <button class="btn btn-ghost" onclick="pracCancelSetup()">Cancel</button>
-      <button class="btn btn-orange" ${pairs > 0 ? '' : 'disabled'} onclick="pracBeginDraft()">Start draft</button>
+      <button class="btn btn-orange" ${pairs > 0 ? '' : 'disabled'} onclick="pracBeginDraft()">Start sim</button>
     </div>
   `;
 }
@@ -2652,7 +2665,7 @@ function pracBoardHtml(session, isReplay) {
         : (session.awaitingContinue
           ? `💬 <strong>Talk it over.</strong> When you're ready, tap Continue and ${esc(session.oppName)} will put up.`
           : `⏳ <strong>${esc(session.oppName)} is putting up…</strong>`); break;
-      case 'done': stageInner = `🏁 <strong>Draft complete</strong> — close it out to save it to history.`; break;
+      case 'done': stageInner = `🏁 <strong>Sim complete</strong> — close it out to save it to Past sims.`; break;
       default: stageInner = '';
     }
   }
@@ -2815,7 +2828,7 @@ function pracOpenRewind() {
   document.getElementById('modalRoot').innerHTML = `
     <div class="overlay" onclick="closeModalIfBackdrop(event)">
       <div class="sheet" onclick="event.stopPropagation()">
-        <h3>⏪ Rewind the draft</h3>
+        <h3>⏪ Rewind the sim</h3>
         <p style="font-size:13px; opacity:.8;">Everything from that pick on is removed, and you play it again from there.</p>
         ${rows || '<p>No picks yet.</p>'}
         <div class="btn-row"><button class="btn btn-ghost" onclick="closeModal()">Cancel</button></div>
@@ -2888,11 +2901,11 @@ function pracOpenCloseOut() {
   document.getElementById('modalRoot').innerHTML = `
     <div class="overlay" onclick="closeModalIfBackdrop(event)">
       <div class="sheet" onclick="event.stopPropagation()">
-        <h3>Close out this practice draft?</h3>
+        <h3>Close out this sim?</h3>
         <p style="font-size:14px;">vs <strong>${esc(s.oppName)}</strong> — ${n} pairings, expected score <strong>${ev.toFixed(1)}–${(n - ev).toFixed(1)}</strong>, about a <strong>${winPct}%</strong> chance to win the singles round on these numbers.</p>
-        <p style="font-size:13px; opacity:.8;">Saving keeps the full pick-by-pick draft and your comments in History, where you can replay it. Discard throws it away.</p>
+        <p style="font-size:13px; opacity:.8;">Saving keeps the full pick-by-pick sim and your comments in Past sims, where you can replay it. Discard throws it away.</p>
         <div class="btn-row">
-          <button class="btn btn-ghost" onclick="closeModal()">Keep drafting</button>
+          <button class="btn btn-ghost" onclick="closeModal()">Keep going</button>
           <button class="btn btn-outline" onclick="pracCloseOut(false)">Discard</button>
           <button class="btn btn-primary" onclick="pracCloseOut(true)">Save & close</button>
         </div>
@@ -2941,11 +2954,11 @@ function pracAskDeleteDraft(id) {
   if (!e) return;
   document.getElementById('modalRoot').innerHTML = `
   <div class="overlay" onclick="closeModalIfBackdrop(event)"><div class="sheet">
-    <h3 style="margin:4px 0 10px">Delete this saved draft?</h3>
+    <h3 style="margin:4px 0 10px">Delete this saved sim?</h3>
     <p class="muted" style="margin:0 0 6px">vs ${esc(e.oppName)} · ${new Date(e.closedAt).toLocaleString()} · ${e.picks} picks${e.ev != null ? ' · expected ' + Number(e.ev).toFixed(1) + '–' + (e.picks - Number(e.ev)).toFixed(1) : ''}</p>
     <p class="muted">Its picks and comments are removed for everyone. This can't be undone.</p>
     <div class="row" style="gap:8px;margin-top:10px">
-      <button class="btn btn-danger grow" onclick="pracDeleteDraft('${id}')">Delete draft</button>
+      <button class="btn btn-danger grow" onclick="pracDeleteDraft('${id}')">Delete sim</button>
       <button class="btn grow" onclick="closeModal()">Keep it</button>
     </div>
   </div></div>`;
