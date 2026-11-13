@@ -7723,6 +7723,12 @@ async function oppPlayerRowFor(team, p){
               <span class="pill" style="background:${bg}; color:${color};">${opponentWon ? 'W' : 'L'}</span>
             </div>`;
         }).join('');
+    const suggestedNames = (Array.isArray(p.suggestedMatchups) ? p.suggestedMatchups : [])
+      .map(id => { const tb = state.players.find(pl=>pl.id===id); return tb ? tb.name : ''; })
+      .filter(Boolean);
+    const suggestedHtml = suggestedNames.length === 0
+      ? `<div style="font-size:12px; color:var(--ink-soft); padding:6px 0;">No suggested matchups set.</div>`
+      : `<div style="display:flex; flex-wrap:wrap; gap:5px; padding:4px 0 2px;">${suggestedNames.map((name, idx)=>`<span style="font-size:12px; font-weight:700; background:var(--chip-bg); border:1px solid var(--line); border-radius:999px; padding:3px 9px;"><span style="color:var(--ink-soft); font-weight:800; margin-right:4px;">${idx+1}.</span>${esc(name)}</span>`).join('')}</div>`;
     detailHtml = `
       <div style="padding:10px 2px 2px;">
         <div style="font-size:12px; color:var(--ink-soft);">${p.active===false ? 'Inactive' : 'Active'}</div>
@@ -7733,6 +7739,8 @@ async function oppPlayerRowFor(team, p){
             <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation(); openOppPlayerEditModal('${team.id}','${p.id}')">✏️ Edit Player</button>
             <button class="btn ${p.active===false ? 'btn-primary' : 'btn-outline'} btn-sm" onclick="event.stopPropagation(); toggleOppPlayerActive('${team.id}','${p.id}')">${p.active===false ? '↩️ Reactivate' : '⏸️ Make Inactive'}</button>
           </div>` : ''}
+        <div style="font-size:10.5px; font-weight:800; color:var(--ink-soft); text-transform:uppercase; letter-spacing:0.3px; margin:12px 0 2px;">Suggested Matchups</div>
+        ${suggestedHtml}
         <div style="font-size:10.5px; font-weight:800; color:var(--ink-soft); text-transform:uppercase; letter-spacing:0.3px; margin:12px 0 2px;">Head-to-Head vs Two Buff</div>
         ${historyHtml}
       </div>`;
